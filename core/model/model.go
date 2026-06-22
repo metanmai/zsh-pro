@@ -46,8 +46,10 @@ func CategoryDescription(c Category) string {
 		return "Aliases"
 	case CatLocal:
 		return "Machine / OS-specific overrides"
-	default:
+	case CatMisc:
 		return "Uncategorized — review by hand"
+	default:
+		return "Unknown category"
 	}
 }
 
@@ -119,7 +121,7 @@ type Issue struct {
 type CategorySummary struct {
 	Category Category `json:"category"`
 	Count    int      `json:"count"`
-	Items    []string `json:"items"`
+	Items    []string `json:"items,omitempty"`
 }
 
 // Analysis is the complete read-only result the renderers consume.
