@@ -6,14 +6,14 @@
 
 **Architecture:** A pipeline of small Go packages. A shell-agnostic `core` (model, reconcile, render, CLI) drives a shell-specific `Provider`; the zsh `Provider` parses with mvdan/sh (static) and introspects via a sandboxed `zsh -f` + `zsh/parameter` (dynamic). The two views are reconciled into one `Analysis` model that the renderers consume. Nothing is ever written or reorganized.
 
-**Tech Stack:** Go (1.22+), [mvdan.cc/sh/v3](https://github.com/mvdan/sh) for parsing (`LangVariant=Zsh`, ≥ v3.13), the system `zsh` binary for introspection, Go stdlib for everything else.
+**Tech Stack:** Go (1.25+ — mvdan/sh v3.13's zsh support requires Go 1.25), [mvdan.cc/sh/v3](https://github.com/mvdan/sh) for parsing (`LangVariant=Zsh`, ≥ v3.13), the system `zsh` binary for introspection, Go stdlib for everything else.
 
 **Spec:** `docs/superpowers/specs/2026-06-22-analyze-engine-design.md`
 
 ## Global Constraints
 
 - Single Go module, module path `zsh-pro`. Monorepo: all engine code under `core/`; `ui/` reserved for the future TUI (untouched here).
-- Go version floor: `go 1.22`.
+- Go version floor: `go 1.25` (forced by mvdan/sh v3.13's zsh support; the toolchain auto-upgrades via `GOTOOLCHAIN=auto`).
 - External dependency limited to `mvdan.cc/sh/v3` (≥ v3.13.0, for zsh support). No other third-party deps.
 - Read-only: the engine reads `~/.zshrc` and runs it in a sandbox; it never writes to user files.
 - `zsh` is required for the dynamic pass; if it is missing/errors/times out, **degrade to static-only and say so** — never crash.
