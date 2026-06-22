@@ -56,7 +56,7 @@ func runAnalyze(args []string, stdout, stderr io.Writer) int {
 
 	src, err := os.ReadFile(path)
 	if err != nil {
-		return fail(stderr, asJSON, fmt.Sprintf("cannot read %s: %v", path, err))
+		return fail(stdout, stderr, asJSON, fmt.Sprintf("cannot read %s: %v", path, err))
 	}
 
 	a := analyze.Analyze(zsh.Provider{}, src, path)
@@ -64,7 +64,7 @@ func runAnalyze(args []string, stdout, stderr io.Writer) int {
 	if asJSON {
 		b, err := render.JSON(a)
 		if err != nil {
-			return fail(stderr, true, fmt.Sprintf("render: %v", err))
+			return fail(stdout, stderr, true, fmt.Sprintf("render: %v", err))
 		}
 		fmt.Fprintln(stdout, string(b))
 	} else {
@@ -82,15 +82,18 @@ func expandHome(p string) string {
 	return p
 }
 
-// fail emits a runtime error (exit 1) in either mode.
-func fail(stderr io.Writer, asJSON bool, msg string) int {
+// fail emits a runtime error (exit 1) in either mode. The agent contract
+// requires --json to emit exactly one JSON object on STDOUT on success OR
+// failure, so the structured error envelope goes to stdout; human mode keeps
+// the readable error line on stderr.
+func fail(stdout, stderr io.Writer, asJSON bool, msg string) int {
 	if asJSON {
 		obj := map[string]any{
 			"tool": "zsh-pro", "version": buildinfo.Version, "command": "analyze",
 			"ok": false, "error": msg, "exit_code": 1,
 		}
 		b, _ := json.MarshalIndent(obj, "", "  ")
-		fmt.Fprintln(stderr, string(b))
+		fmt.Fprintln(stdout, string(b))
 	} else {
 		fmt.Fprintf(stderr, "zsh-pro: %s\n", msg)
 	}

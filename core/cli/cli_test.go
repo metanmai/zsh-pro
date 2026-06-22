@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -57,6 +58,35 @@ func TestRunMissingFileExitsOne(t *testing.T) {
 	code := Run([]string{"analyze", "/no/such/rc"}, &out, &errBuf)
 	if code != 1 {
 		t.Fatalf("exit code = %d, want 1", code)
+	}
+}
+
+// TestRunMissingFileJSONErrorOnStdout pins the agent contract: in --json mode a
+// failure must emit exactly one parseable JSON object on STDOUT (not stderr)
+// with "ok": false, and still return exit code 1.
+func TestRunMissingFileJSONErrorOnStdout(t *testing.T) {
+	var outBuf, errBuf bytes.Buffer
+	code := Run([]string{"analyze", "/no/such/file", "--json"}, &outBuf, &errBuf)
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1\nstdout: %s\nstderr: %s", code, outBuf.String(), errBuf.String())
+	}
+
+	// The structured error must land on stdout, not stderr.
+	if strings.TrimSpace(outBuf.String()) == "" {
+		t.Fatalf("expected JSON error on stdout, got empty stdout (stderr: %s)", errBuf.String())
+	}
+
+	// Exactly one parseable JSON object on stdout, with ok=false.
+	var obj map[string]any
+	dec := json.NewDecoder(bytes.NewReader(outBuf.Bytes()))
+	if err := dec.Decode(&obj); err != nil {
+		t.Fatalf("stdout is not a single parseable JSON object: %v\nstdout: %s", err, outBuf.String())
+	}
+	if dec.More() {
+		t.Errorf("expected exactly one JSON object on stdout, found trailing data:\n%s", outBuf.String())
+	}
+	if ok, found := obj["ok"].(bool); !found || ok {
+		t.Errorf("expected \"ok\": false in JSON object, got %v\nstdout: %s", obj["ok"], outBuf.String())
 	}
 }
 

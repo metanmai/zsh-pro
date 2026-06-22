@@ -73,6 +73,11 @@ func Analyze(p shell.Provider, src []byte, path string) model.Analysis {
 	// here; its role is to set Introspected. On any failure (broken/missing
 	// zsh, timeout, unavailable set) we degrade to a static-only analysis with
 	// an explanatory note rather than crashing.
+	// v1 scope: only ids.Available is consumed here — static blocks drive all
+	// issue detection so we never raise inherited-env false positives. The
+	// resolved IdentitySet (aliases/functions/env/path/options) is intentionally
+	// not read yet; consuming it (env-isolated introspection + opaque-init
+	// identity detection) is a tracked follow-up.
 	ids, err := p.Introspect(path)
 	if err != nil || !ids.Available {
 		a.Introspected = false
