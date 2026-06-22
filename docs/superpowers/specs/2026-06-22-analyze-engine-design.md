@@ -59,13 +59,23 @@ The agreed build ramp (easy → hard), for orientation:
 
 ### Shell-agnostic seam
 
-Everything shell-specific sits behind a `Provider` interface; the rest of the engine is shell-agnostic and reused across shells.
+Everything shell-specific sits behind interfaces; the rest of the engine is shell-agnostic and reused across shells. The seam is **segregated** into `Parser`, `Classifier`, and `Introspector` (composed into a `Provider` for wiring), so each concern is mocked and swapped independently.
 
 - **Shell-specific** (the zsh `Provider` impl): parse dialect, classification rules + taxonomy, introspection mechanism.
 - **Shell-agnostic** (core): pipeline orchestration, the `Analysis` model, reconciliation, dup/shadow detection, rendering, CLI.
 - **`bash-pro`** (future) = a fork that swaps `core/shell/zsh` → `core/shell/bash` (mvdan/sh `LangVariant = Bash`; introspection via `compgen`/`declare`/`alias`; bash rules). Everything in `model/ analyze/ render/ cli/` is reused untouched.
 
 > **Caveat (recorded deliberately):** we have exactly one shell as a data point. Design the `Provider` interface around what zsh needs and keep it minimal — expect to adjust it when `bash-pro` is real. Premature over-abstraction is the only risk here, and it is easy to avoid.
+
+### Architecture rules (non-negotiable)
+
+Every package and task must honor these:
+
+1. **Dependencies point inward** to `model`; nothing in `core/` imports `core/shell/zsh` except the composition root (`cli`/`main`).
+2. **`model` is pure** — data types + trivial methods only; no logic, no I/O, no third-party imports.
+3. **Segregated interfaces** — concerns sit behind `Parser`/`Classifier`/`Introspector`; consumers depend on the narrowest interface they need.
+4. **Errors are returned, never panicked**; the engine degrades gracefully and never crashes on bad input or a missing/erroring zsh.
+5. **One responsibility per file**, files kept small; **no global mutable state** — dependencies and I/O are passed explicitly.
 
 ### Components
 

@@ -20,6 +20,13 @@
 - CLI contract: exit codes `0` clean · `1` runtime error · `2` usage error · `3` actionable (issues found). `--json` emits exactly one JSON object on stdout.
 - Binary name: `zsh-pro`.
 
+**Architecture rules (every task must honor these):**
+1. Dependencies point inward to `model`; nothing in `core/` imports `core/shell/zsh` except the composition root (`cli`/`main`).
+2. `model` is pure data + trivial methods — no logic, no I/O, no third-party imports.
+3. Concerns sit behind segregated interfaces (`Parser`, `Classifier`, `Introspector`); consumers depend on the narrowest interface they need.
+4. Errors are returned, never panicked; degrade gracefully (never crash on bad input or a missing/erroring zsh).
+5. One responsibility per file; files kept small; no global mutable state — pass dependencies and I/O explicitly.
+
 ---
 
 ### Task 1: Scaffold the Go module and buildable skeleton
@@ -352,33 +359,47 @@ git commit -m "feat: add core model types"
 
 **Interfaces:**
 - Consumes: `model.Block`, `model.BlockKind` constants.
-- Produces: `shell.Provider` interface; `zsh.Provider` struct; `(zsh.Provider) Parse(src []byte) ([]model.Block, error)`.
+- Produces: segregated `shell.Parser`, `shell.Classifier`, `shell.Introspector` interfaces (composed as `shell.Provider`); `zsh.Provider` struct; `(zsh.Provider) Parse(src []byte) ([]model.Block, error)`.
 
 - [ ] **Step 1: Confirm the mvdan/sh zsh constant**
 
 Run: `go doc mvdan.cc/sh/v3/syntax LangVariant`
 Expected: a list of `LangVariant` constants including a zsh one (e.g. `LangZsh`). Use the exact name printed in the next step's `syntax.Variant(...)` call if it differs from `LangZsh`.
 
-- [ ] **Step 2: Define the Provider interface**
+- [ ] **Step 2: Define the segregated seam interfaces**
 
 Create `core/shell/provider.go`:
 ```go
-// Package shell defines the shell-agnostic seam. Each supported shell
-// implements Provider; the rest of the engine depends only on this interface.
+// Package shell defines the shell-agnostic seam. Each concern is its own small
+// interface (interface segregation); Provider composes them for wiring at the
+// composition root. The rest of the engine depends on the narrowest interface
+// it needs.
 package shell
 
 import "zsh-pro/core/model"
 
-type Provider interface {
-	// Parse turns source into ordered, structurally-described blocks.
+// Parser turns source into ordered, structurally-described blocks.
+type Parser interface {
 	Parse(src []byte) ([]model.Block, error)
-	// Classify assigns a category and confidence to a parsed block.
+}
+
+// Classifier owns the category space and assigns a block to it.
+type Classifier interface {
 	Classify(b model.Block) (model.Category, model.Confidence)
-	// Introspect runs the config in a sandbox and returns the resolved
-	// identity set. On failure it returns IdentitySet{Available: false}.
-	Introspect(path string) (model.IdentitySet, error)
-	// Categories returns the taxonomy in load order.
 	Categories() []model.Category
+}
+
+// Introspector runs the config in a sandbox and returns the resolved identity
+// set. On failure it returns IdentitySet{Available: false}.
+type Introspector interface {
+	Introspect(path string) (model.IdentitySet, error)
+}
+
+// Provider composes the three concerns for convenient wiring.
+type Provider interface {
+	Parser
+	Classifier
+	Introspector
 }
 ```
 
