@@ -1,0 +1,38 @@
+{
+  "clean_baseline.zsh": {
+    "min_blocks": 5,
+    "issue_kinds": [],
+    "has_secrets": false,
+    "expect_categories": ["environment", "aliases", "options"]
+  },
+  "installer_junk.zsh": {
+    "min_blocks": 4,
+    "issue_kinds": [],
+    "has_secrets": false,
+    "expect_categories": ["environment", "plugins"]
+  },
+  "duplicate_aliases.zsh": {
+    "min_blocks": 3,
+    "issue_kinds": ["duplicate_alias"],
+    "has_secrets": false,
+    "expect_categories": ["aliases"]
+  },
+  "reassigned_env.zsh": {
+    "min_blocks": 2,
+    "issue_kinds": ["reassigned_env"],
+    "has_secrets": false,
+    "expect_categories": ["environment"]
+  },
+  "secrets_inline.zsh": {
+    "min_blocks": 3,
+    "issue_kinds": [],
+    "has_secrets": true,
+    "expect_categories": ["secrets", "aliases"]
+  },
+  "empty.zsh": {
+    "min_blocks": 0,
+    "issue_kinds": [],
+    "has_secrets": false,
+    "expect_categories": []
+  }
+}

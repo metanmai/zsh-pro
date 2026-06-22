@@ -1,0 +1,3 @@
+export GITHUB_TOKEN=ghp_example000000000000000000000000
+export AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI
+alias ll='ls -l'
