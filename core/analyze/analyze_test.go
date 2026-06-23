@@ -30,7 +30,7 @@ func TestAnalyzeDetectsDuplicateAlias(t *testing.T) {
 		},
 		ids: model.IdentitySet{Available: true, Aliases: map[string]bool{"gs": true}},
 	}
-	a := Analyze(p, []byte("x\ny\n"), "/tmp/rc")
+	a := New(p).Analyze([]byte("x\ny\n"), "/tmp/rc")
 	if a.ExitCode() != 3 {
 		t.Fatalf("expected actionable exit code 3, got %d", a.ExitCode())
 	}
@@ -50,7 +50,7 @@ func TestAnalyzeDegradesWhenIntrospectionUnavailable(t *testing.T) {
 		blocks: []model.Block{{Kind: model.KindAssignment, Names: []string{"EDITOR"}, Category: model.CatEnvironment, StartLine: 1}},
 		ids:    model.IdentitySet{Available: false},
 	}
-	a := Analyze(p, []byte("export EDITOR=nvim\n"), "/tmp/rc")
+	a := New(p).Analyze([]byte("export EDITOR=nvim\n"), "/tmp/rc")
 	if a.Introspected {
 		t.Error("expected Introspected=false")
 	}
@@ -82,7 +82,7 @@ func TestAnalyzeIgnoresInheritedShadowIdentities(t *testing.T) {
 			Functions: map[string]bool{"run-help": true, "compinit": true},
 		},
 	}
-	a := Analyze(p, []byte("alias gs='git status'\n"), "/tmp/rc")
+	a := New(p).Analyze([]byte("alias gs='git status'\n"), "/tmp/rc")
 	for _, iss := range a.Issues {
 		if iss.Kind == model.IssueShadowed {
 			t.Fatalf("false-positive shadow issue for inherited identity %q: %+v", iss.Name, a.Issues)
@@ -110,7 +110,7 @@ func TestAnalyzeDetectsFileDefinedShadow(t *testing.T) {
 			Functions: map[string]bool{"ll": true, "run-help": true},
 		},
 	}
-	a := Analyze(p, []byte("# ll\nalias ll='ls -la'\n\n\n\n\n\nll() { ls -la }\n"), "/tmp/rc")
+	a := New(p).Analyze([]byte("# ll\nalias ll='ls -la'\n\n\n\n\n\nll() { ls -la }\n"), "/tmp/rc")
 
 	var shadow []model.Issue
 	for _, iss := range a.Issues {
@@ -137,7 +137,7 @@ func TestAnalyzeBucketsCategoriesAndFlagsSecrets(t *testing.T) {
 		},
 		ids: model.IdentitySet{Available: true},
 	}
-	a := Analyze(p, src, "/home/u/.zshrc")
+	a := New(p).Analyze(src, "/home/u/.zshrc")
 
 	if a.Path != "/home/u/.zshrc" {
 		t.Errorf("Path = %q", a.Path)
@@ -183,7 +183,7 @@ func TestAnalyzeDetectsReassignedEnvAndDuplicatePath(t *testing.T) {
 		},
 		ids: model.IdentitySet{Available: true},
 	}
-	a := Analyze(p, []byte("a\nb\nc\nd\ne\nf\ng\n"), "/tmp/rc")
+	a := New(p).Analyze([]byte("a\nb\nc\nd\ne\nf\ng\n"), "/tmp/rc")
 
 	var gotEnv, gotPath int
 	for _, iss := range a.Issues {
@@ -214,7 +214,7 @@ func TestAnalyzeDegradesOnIntrospectError(t *testing.T) {
 	p := errProvider{mockProvider{
 		blocks: []model.Block{{Kind: model.KindAlias, Names: []string{"gs"}, StartLine: 1, Category: model.CatAliases, Conf: model.ConfHigh}},
 	}}
-	a := Analyze(p, []byte("alias gs='git status'\n"), "/tmp/rc")
+	a := New(p).Analyze([]byte("alias gs='git status'\n"), "/tmp/rc")
 	if a.Introspected {
 		t.Error("expected Introspected=false on introspect error")
 	}

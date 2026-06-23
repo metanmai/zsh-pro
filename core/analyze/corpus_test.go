@@ -2,7 +2,7 @@ package analyze_test
 
 // This is the Tier-1 golden corpus runner. It lives in the EXTERNAL test
 // package (analyze_test) on purpose: it is the only place that wires the
-// concrete zsh.Provider to the agnostic analyze.Analyze reconciler, so the
+// concrete zsh.Provider to the agnostic analyze.Analyzer, so the
 // production analyze package stays shell-agnostic. The harness is data-driven —
 // adding a fixture is "drop a .zsh file in core/testdata/fixtures + add one
 // entry to manifests.json"; no test code changes.
@@ -42,7 +42,7 @@ func TestCorpusGolden(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			a := analyze.Analyze(zsh.Provider{}, src, filepath.Join(root, name))
+			a := analyze.New(zsh.Provider{}).Analyze(src, filepath.Join(root, name))
 
 			if a.BlockCount < m.MinBlocks {
 				t.Errorf("blocks = %d, want >= %d", a.BlockCount, m.MinBlocks)

@@ -59,7 +59,7 @@ func runAnalyze(args []string, stdout, stderr io.Writer) int {
 		return fail(stdout, stderr, asJSON, fmt.Sprintf("cannot read %s: %v", path, err))
 	}
 
-	a := analyze.Analyze(zsh.Provider{}, src, path)
+	a := analyze.New(zsh.Provider{}).Analyze(src, path)
 
 	if asJSON {
 		b, err := (render.JSONRenderer{}).Render(a)
