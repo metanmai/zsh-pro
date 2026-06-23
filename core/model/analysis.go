@@ -22,9 +22,9 @@ type Analysis struct {
 
 // ExitCode is 3 when actionable issues exist, else 0. Runtime (1) and usage
 // (2) errors are handled by the CLI, not derived from a successful Analysis.
-func (a Analysis) ExitCode() int {
+func (a Analysis) ExitCode() ExitCode {
 	if len(a.Issues) > 0 {
-		return 3
+		return ExitActionable
 	}
-	return 0
+	return ExitClean
 }

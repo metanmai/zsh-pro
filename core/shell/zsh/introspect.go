@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"zsh-pro/core/buildinfo"
 	"zsh-pro/core/model"
 	"zsh-pro/core/shell"
 )
@@ -42,7 +43,7 @@ func (p Provider) Introspect(path string) (model.IdentitySet, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "zsh", "-f", "-c", introspectScript, "zsh-pro", path)
+	cmd := exec.CommandContext(ctx, "zsh", "-f", "-c", introspectScript, buildinfo.Name, path)
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	if err := cmd.Run(); err != nil {

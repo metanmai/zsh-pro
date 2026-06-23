@@ -1,5 +1,8 @@
-// Package buildinfo holds static build metadata.
+// Package buildinfo holds tool identity and build metadata.
 package buildinfo
 
-// Version is the zsh-pro release version.
-const Version = "0.1.0"
+const (
+	Name    = "zsh-pro"
+	Command = "analyze"
+	Version = "0.1.0"
+)

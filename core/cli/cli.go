@@ -15,6 +15,7 @@ import (
 
 	"zsh-pro/core/analyze"
 	"zsh-pro/core/buildinfo"
+	"zsh-pro/core/model"
 	"zsh-pro/core/render"
 	"zsh-pro/core/shell"
 	"zsh-pro/core/util"
@@ -31,17 +32,17 @@ func New(p shell.Provider) *CLI { return &CLI{provider: p} }
 func (c *CLI) Run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "usage: zsh-pro analyze [path] [--json]")
-		return 2
+		return int(model.ExitUsageErr)
 	}
 	switch args[0] {
 	case "--version", "-v":
 		fmt.Fprintf(stdout, "zsh-pro %s\n", buildinfo.Version)
-		return 0
-	case "analyze":
+		return int(model.ExitClean)
+	case buildinfo.Command:
 		return c.runAnalyze(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "zsh-pro: unknown command %q\n", args[0])
-		return 2
+		return int(model.ExitUsageErr)
 	}
 }
 
@@ -54,7 +55,7 @@ func (c *CLI) runAnalyze(args []string, stdout, stderr io.Writer) int {
 			asJSON = true
 		case len(a) > 0 && a[0] == '-':
 			fmt.Fprintf(stderr, "zsh-pro: unknown flag %q\n", a)
-			return 2
+			return int(model.ExitUsageErr)
 		default:
 			path = a
 		}
@@ -77,7 +78,7 @@ func (c *CLI) runAnalyze(args []string, stdout, stderr io.Writer) int {
 		return c.fail(stdout, stderr, asJSON, fmt.Sprintf("render: %v", err))
 	}
 	fmt.Fprintln(stdout, string(b))
-	return a.ExitCode()
+	return int(a.ExitCode())
 }
 
 // fail emits a runtime error (exit 1) in either mode. The agent contract
@@ -87,13 +88,13 @@ func (c *CLI) runAnalyze(args []string, stdout, stderr io.Writer) int {
 func (c *CLI) fail(stdout, stderr io.Writer, asJSON bool, msg string) int {
 	if asJSON {
 		obj := map[string]any{
-			"tool": "zsh-pro", "version": buildinfo.Version, "command": "analyze",
-			"ok": false, "error": msg, "exit_code": 1,
+			"tool": buildinfo.Name, "version": buildinfo.Version, "command": buildinfo.Command,
+			"ok": false, "error": msg, "exit_code": int(model.ExitRuntimeErr),
 		}
 		b, _ := json.MarshalIndent(obj, "", "  ")
 		fmt.Fprintln(stdout, string(b))
 	} else {
 		fmt.Fprintf(stderr, "zsh-pro: %s\n", msg)
 	}
-	return 1
+	return int(model.ExitRuntimeErr)
 }

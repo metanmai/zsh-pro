@@ -43,11 +43,11 @@ func TestCategoryDescription(t *testing.T) {
 
 func TestExitCode(t *testing.T) {
 	clean := Analysis{}
-	if clean.ExitCode() != 0 {
+	if clean.ExitCode() != ExitClean {
 		t.Errorf("clean analysis: got %d want 0", clean.ExitCode())
 	}
 	dirty := Analysis{Issues: []Issue{{Kind: IssueDuplicateAlias, Name: "gs"}}}
-	if dirty.ExitCode() != 3 {
+	if dirty.ExitCode() != ExitActionable {
 		t.Errorf("analysis with issues: got %d want 3", dirty.ExitCode())
 	}
 }

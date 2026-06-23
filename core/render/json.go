@@ -52,12 +52,12 @@ func (JSONRenderer) toDTO(a model.Analysis) dto.Envelope {
 		}
 	}
 	return dto.Envelope{
-		Tool:        "zsh-pro",
+		Tool:        buildinfo.Name,
 		Version:     buildinfo.Version,
-		Command:     "analyze",
+		Command:     buildinfo.Command,
 		OK:          true,
 		IssuesFound: len(a.Issues) > 0,
-		ExitCode:    a.ExitCode(),
+		ExitCode:    int(a.ExitCode()),
 		Analysis:    out,
 	}
 }
