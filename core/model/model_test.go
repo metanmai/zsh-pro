@@ -24,20 +24,20 @@ func TestCategoryDescription(t *testing.T) {
 	for _, cat := range categories {
 		desc := cat.Description()
 		if desc == "" {
-			t.Errorf("CategoryDescription(%q) returned empty string", cat)
+			t.Errorf("%q.Description() returned empty string", cat)
 		}
 	}
 
 	// Test CatMisc specifically returns expected description
 	miscDesc := CatMisc.Description()
 	if miscDesc != "Uncategorized — review by hand" {
-		t.Errorf("CategoryDescription(CatMisc) = %q, want %q", miscDesc, "Uncategorized — review by hand")
+		t.Errorf("CatMisc.Description() = %q, want %q", miscDesc, "Uncategorized — review by hand")
 	}
 
 	// Test unknown category returns appropriate message
 	unknownDesc := Category("bogus").Description()
 	if unknownDesc != "Unknown category" {
-		t.Errorf("CategoryDescription(Category(\"bogus\")) = %q, want %q", unknownDesc, "Unknown category")
+		t.Errorf("Category(\"bogus\").Description() = %q, want %q", unknownDesc, "Unknown category")
 	}
 }
 
