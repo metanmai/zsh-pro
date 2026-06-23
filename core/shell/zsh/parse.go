@@ -12,7 +12,7 @@ import (
 // Parse turns zsh source into ordered, structurally-described blocks. A block
 // that the parser cannot understand (or a whole file that fails to parse) is
 // returned as an opaque block rather than causing an error.
-func (Provider) Parse(src []byte) ([]model.Block, error) {
+func (p Provider) Parse(src []byte) ([]model.Block, error) {
 	parser := syntax.NewParser(
 		syntax.Variant(syntax.LangZsh), // confirmed in Step 1
 		syntax.KeepComments(true),
@@ -48,7 +48,7 @@ func (Provider) Parse(src []byte) ([]model.Block, error) {
 			Text:      strings.TrimRight(string(src[start:end]), "\n"),
 			StartLine: int(startLine),
 		}
-		describe(stmt, &b)
+		p.describe(stmt, &b)
 		blocks = append(blocks, b)
 	}
 	return blocks, nil
@@ -56,7 +56,7 @@ func (Provider) Parse(src []byte) ([]model.Block, error) {
 
 // describe fills in the agnostic structural fields (Kind, CmdName, Names,
 // Exported) from the mvdan/sh AST node.
-func describe(stmt *syntax.Stmt, b *model.Block) {
+func (p Provider) describe(stmt *syntax.Stmt, b *model.Block) {
 	switch c := stmt.Cmd.(type) {
 	case *syntax.CallExpr:
 		// Pure assignment: leading assignments and no command words.
@@ -78,7 +78,7 @@ func describe(stmt *syntax.Stmt, b *model.Block) {
 				// alias args are name=value words; the value half is often
 				// quoted, so Word.Lit() is empty. Read the literal name prefix
 				// (the leading *Lit part) up to the '='.
-				lit := wordLitPrefix(w)
+				lit := p.wordLitPrefix(w)
 				if i := strings.IndexByte(lit, '='); i > 0 {
 					b.Names = append(b.Names, lit[:i])
 				}
@@ -92,7 +92,7 @@ func describe(stmt *syntax.Stmt, b *model.Block) {
 				}
 			}
 			for _, w := range c.Args[1:] {
-				lit := wordLitPrefix(w)
+				lit := p.wordLitPrefix(w)
 				if lit == "" || strings.HasPrefix(lit, "-") {
 					continue
 				}
@@ -140,7 +140,7 @@ func describe(stmt *syntax.Stmt, b *model.Block) {
 // wordLitPrefix returns the leading literal text of a word. For a word like
 // `gs='git status'` (a *Lit followed by a quoted part) Word.Lit() is empty,
 // but the name we care about lives in the first *Lit part ("gs=").
-func wordLitPrefix(w *syntax.Word) string {
+func (Provider) wordLitPrefix(w *syntax.Word) string {
 	if lit := w.Lit(); lit != "" {
 		return lit
 	}

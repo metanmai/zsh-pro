@@ -38,7 +38,7 @@ print -r -- '##END##'
 
 // Introspect runs the config in a sandboxed zsh and returns the resolved
 // identity set. Any failure (zsh missing, timeout) returns Available:false.
-func (Provider) Introspect(path string) (model.IdentitySet, error) {
+func (p Provider) Introspect(path string) (model.IdentitySet, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -48,10 +48,10 @@ func (Provider) Introspect(path string) (model.IdentitySet, error) {
 	if err := cmd.Run(); err != nil {
 		return model.IdentitySet{Available: false}, err
 	}
-	return parseIntrospect(out.String()), nil
+	return p.parseIntrospect(out.String()), nil
 }
 
-func parseIntrospect(s string) model.IdentitySet {
+func (Provider) parseIntrospect(s string) model.IdentitySet {
 	ids := model.IdentitySet{
 		Aliases:   map[string]bool{},
 		Functions: map[string]bool{},
