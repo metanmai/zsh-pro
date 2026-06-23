@@ -82,7 +82,7 @@ func (Provider) parseIntrospect(s string) model.IdentitySet {
 			ids.Options[line] = true
 		}
 	}
-	// v1 scoping: the engine consumes only ids.Available (see analyze.Analyze).
+	// v1 scoping: the engine consumes only ids.Available (see analyze.Analyzer.Analyze).
 	// The resolved tables (aliases/functions/env/path/options) are captured here
 	// for a backlogged enrichment — env-isolated introspection plus opaque-init
 	// identity detection — and are intentionally not yet wired into the report.
