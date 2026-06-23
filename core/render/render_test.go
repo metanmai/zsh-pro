@@ -22,7 +22,8 @@ func sampleAnalysis() model.Analysis {
 }
 
 func TestHumanIncludesCategoriesAndIssues(t *testing.T) {
-	out := Human(sampleAnalysis())
+	b, _ := (HumanRenderer{}).Render(sampleAnalysis())
+	out := string(b)
 	for _, want := range []string{"aliases", "gs", "duplicate", "1", "9"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("human output missing %q\n---\n%s", want, out)
@@ -31,7 +32,7 @@ func TestHumanIncludesCategoriesAndIssues(t *testing.T) {
 }
 
 func TestJSONIsOneObjectWithContract(t *testing.T) {
-	b, err := JSON(sampleAnalysis())
+	b, err := (JSONRenderer{}).Render(sampleAnalysis())
 	if err != nil {
 		t.Fatal(err)
 	}

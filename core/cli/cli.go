@@ -62,13 +62,17 @@ func runAnalyze(args []string, stdout, stderr io.Writer) int {
 	a := analyze.Analyze(zsh.Provider{}, src, path)
 
 	if asJSON {
-		b, err := render.JSON(a)
+		b, err := (render.JSONRenderer{}).Render(a)
 		if err != nil {
 			return fail(stdout, stderr, true, fmt.Sprintf("render: %v", err))
 		}
 		fmt.Fprintln(stdout, string(b))
 	} else {
-		fmt.Fprintln(stdout, render.Human(a))
+		b, err := (render.HumanRenderer{}).Render(a)
+		if err != nil {
+			return fail(stdout, stderr, false, fmt.Sprintf("render: %v", err))
+		}
+		fmt.Fprintln(stdout, string(b))
 	}
 	return a.ExitCode()
 }

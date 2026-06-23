@@ -12,8 +12,8 @@ const (
 
 // Issue is one reported problem.
 type Issue struct {
-	Kind  IssueKind `json:"kind"`
-	Name  string    `json:"name"`
-	Lines []int     `json:"lines,omitempty"`
-	Note  string    `json:"note,omitempty"`
+	Kind  IssueKind
+	Name  string
+	Lines []int
+	Note  string
 }
