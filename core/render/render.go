@@ -21,7 +21,7 @@ func Human(a model.Analysis) string {
 	}
 	b.WriteString("\n\n  CATEGORIES\n")
 	for _, c := range a.Categories {
-		fmt.Fprintf(&b, "   - %-12s %3d  %s\n", c.Category, c.Count, model.CategoryDescription(c.Category))
+		fmt.Fprintf(&b, "   - %-12s %3d  %s\n", c.Category, c.Count, c.Category.Description())
 	}
 	if a.HasSecrets {
 		b.WriteString("\n  !  Secrets detected — keep these in a .gitignore'd file; never sync them.\n")
