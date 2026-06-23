@@ -11,12 +11,12 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 
 	"zsh-pro/core/analyze"
 	"zsh-pro/core/buildinfo"
 	"zsh-pro/core/render"
 	"zsh-pro/core/shell/zsh"
+	"zsh-pro/core/util"
 )
 
 // Run executes a command. Exit codes: 0 clean, 1 runtime error, 2 usage,
@@ -52,7 +52,7 @@ func runAnalyze(args []string, stdout, stderr io.Writer) int {
 			path = a
 		}
 	}
-	path = expandHome(path)
+	path = util.ExpandHome(path)
 
 	src, err := os.ReadFile(path)
 	if err != nil {
@@ -75,15 +75,6 @@ func runAnalyze(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, string(b))
 	}
 	return a.ExitCode()
-}
-
-func expandHome(p string) string {
-	if p == "~" || (len(p) >= 2 && p[:2] == "~/") {
-		if home, err := os.UserHomeDir(); err == nil {
-			return filepath.Join(home, p[1:])
-		}
-	}
-	return p
 }
 
 // fail emits a runtime error (exit 1) in either mode. The agent contract
