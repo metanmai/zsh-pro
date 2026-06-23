@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"zsh-pro/core/shell/zsh"
 )
 
 func writeRC(t *testing.T, content string) string {
@@ -22,7 +24,7 @@ func writeRC(t *testing.T, content string) string {
 func TestRunCleanConfigExitsZero(t *testing.T) {
 	p := writeRC(t, "export EDITOR=nvim\nalias ll='ls -l'\n")
 	var out, errBuf bytes.Buffer
-	code := Run([]string{"analyze", p}, &out, &errBuf)
+	code := New(zsh.Provider{}).Run([]string{"analyze", p}, &out, &errBuf)
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0\nstderr: %s", code, errBuf.String())
 	}
@@ -34,7 +36,7 @@ func TestRunCleanConfigExitsZero(t *testing.T) {
 func TestRunDuplicateExitsThree(t *testing.T) {
 	p := writeRC(t, "alias gs='git status'\nalias gs='git switch'\n")
 	var out, errBuf bytes.Buffer
-	code := Run([]string{"analyze", p}, &out, &errBuf)
+	code := New(zsh.Provider{}).Run([]string{"analyze", p}, &out, &errBuf)
 	if code != 3 {
 		t.Fatalf("exit code = %d, want 3", code)
 	}
@@ -43,7 +45,7 @@ func TestRunDuplicateExitsThree(t *testing.T) {
 func TestRunJSONEmitsOneObject(t *testing.T) {
 	p := writeRC(t, "alias gs='git status'\nalias gs='git switch'\n")
 	var out, errBuf bytes.Buffer
-	code := Run([]string{"analyze", p, "--json"}, &out, &errBuf)
+	code := New(zsh.Provider{}).Run([]string{"analyze", p, "--json"}, &out, &errBuf)
 	if code != 3 {
 		t.Fatalf("exit code = %d, want 3", code)
 	}
@@ -55,7 +57,7 @@ func TestRunJSONEmitsOneObject(t *testing.T) {
 
 func TestRunMissingFileExitsOne(t *testing.T) {
 	var out, errBuf bytes.Buffer
-	code := Run([]string{"analyze", "/no/such/rc"}, &out, &errBuf)
+	code := New(zsh.Provider{}).Run([]string{"analyze", "/no/such/rc"}, &out, &errBuf)
 	if code != 1 {
 		t.Fatalf("exit code = %d, want 1", code)
 	}
@@ -66,7 +68,7 @@ func TestRunMissingFileExitsOne(t *testing.T) {
 // with "ok": false, and still return exit code 1.
 func TestRunMissingFileJSONErrorOnStdout(t *testing.T) {
 	var outBuf, errBuf bytes.Buffer
-	code := Run([]string{"analyze", "/no/such/file", "--json"}, &outBuf, &errBuf)
+	code := New(zsh.Provider{}).Run([]string{"analyze", "/no/such/file", "--json"}, &outBuf, &errBuf)
 	if code != 1 {
 		t.Fatalf("exit code = %d, want 1\nstdout: %s\nstderr: %s", code, outBuf.String(), errBuf.String())
 	}
@@ -92,7 +94,7 @@ func TestRunMissingFileJSONErrorOnStdout(t *testing.T) {
 
 func TestRunUnknownCommandExitsTwo(t *testing.T) {
 	var out, errBuf bytes.Buffer
-	code := Run([]string{"frobnicate"}, &out, &errBuf)
+	code := New(zsh.Provider{}).Run([]string{"frobnicate"}, &out, &errBuf)
 	if code != 2 {
 		t.Fatalf("exit code = %d, want 2", code)
 	}

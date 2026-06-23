@@ -1,9 +1,10 @@
-// Package cli wires flags and I/O to the engine. Run returns an exit code and
-// writes to the provided streams, so it is testable without os.Exit.
+// Package cli wires flags and I/O to the engine. A CLI is bound to a shell
+// Provider; Run returns an exit code and writes to the provided streams, so it
+// is testable without os.Exit.
 //
-// This is the composition root: it is the only package permitted to import the
-// concrete shell implementation (core/shell/zsh). Everything below the engine
-// depends on the core/shell interfaces, not this wiring.
+// cli depends on the core/shell interface, not the concrete implementation:
+// the composition root (cmd/zsh-pro) is the only package that imports
+// core/shell/zsh and injects it here via New.
 package cli
 
 import (
@@ -15,13 +16,19 @@ import (
 	"zsh-pro/core/analyze"
 	"zsh-pro/core/buildinfo"
 	"zsh-pro/core/render"
-	"zsh-pro/core/shell/zsh"
+	"zsh-pro/core/shell"
 	"zsh-pro/core/util"
 )
 
+// CLI wires flags and I/O to the engine for a given shell Provider.
+type CLI struct{ provider shell.Provider }
+
+// New returns a CLI bound to a Provider.
+func New(p shell.Provider) *CLI { return &CLI{provider: p} }
+
 // Run executes a command. Exit codes: 0 clean, 1 runtime error, 2 usage,
 // 3 actionable.
-func Run(args []string, stdout, stderr io.Writer) int {
+func (c *CLI) Run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "usage: zsh-pro analyze [path] [--json]")
 		return 2
@@ -31,14 +38,14 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "zsh-pro %s\n", buildinfo.Version)
 		return 0
 	case "analyze":
-		return runAnalyze(args[1:], stdout, stderr)
+		return c.runAnalyze(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "zsh-pro: unknown command %q\n", args[0])
 		return 2
 	}
 }
 
-func runAnalyze(args []string, stdout, stderr io.Writer) int {
+func (c *CLI) runAnalyze(args []string, stdout, stderr io.Writer) int {
 	path := "~/.zshrc"
 	asJSON := false
 	for _, a := range args {
@@ -56,24 +63,20 @@ func runAnalyze(args []string, stdout, stderr io.Writer) int {
 
 	src, err := os.ReadFile(path)
 	if err != nil {
-		return fail(stdout, stderr, asJSON, fmt.Sprintf("cannot read %s: %v", path, err))
+		return c.fail(stdout, stderr, asJSON, fmt.Sprintf("cannot read %s: %v", path, err))
 	}
 
-	a := analyze.New(zsh.Provider{}).Analyze(src, path)
+	a := analyze.New(c.provider).Analyze(src, path)
 
+	var r render.Renderer = render.HumanRenderer{}
 	if asJSON {
-		b, err := (render.JSONRenderer{}).Render(a)
-		if err != nil {
-			return fail(stdout, stderr, true, fmt.Sprintf("render: %v", err))
-		}
-		fmt.Fprintln(stdout, string(b))
-	} else {
-		b, err := (render.HumanRenderer{}).Render(a)
-		if err != nil {
-			return fail(stdout, stderr, false, fmt.Sprintf("render: %v", err))
-		}
-		fmt.Fprintln(stdout, string(b))
+		r = render.JSONRenderer{}
 	}
+	b, err := r.Render(a)
+	if err != nil {
+		return c.fail(stdout, stderr, asJSON, fmt.Sprintf("render: %v", err))
+	}
+	fmt.Fprintln(stdout, string(b))
 	return a.ExitCode()
 }
 
@@ -81,7 +84,7 @@ func runAnalyze(args []string, stdout, stderr io.Writer) int {
 // requires --json to emit exactly one JSON object on STDOUT on success OR
 // failure, so the structured error envelope goes to stdout; human mode keeps
 // the readable error line on stderr.
-func fail(stdout, stderr io.Writer, asJSON bool, msg string) int {
+func (c *CLI) fail(stdout, stderr io.Writer, asJSON bool, msg string) int {
 	if asJSON {
 		obj := map[string]any{
 			"tool": "zsh-pro", "version": buildinfo.Version, "command": "analyze",
