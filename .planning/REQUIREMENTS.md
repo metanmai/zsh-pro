@@ -47,16 +47,16 @@ Which phases cover which requirements. Populated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| LINE-01 | TBD | Pending |
-| LINE-02 | TBD | Pending |
-| PIN-01 | TBD | Pending |
-| PIN-02 | TBD | Pending |
+| LINE-01 | Phase 1 | Pending |
+| LINE-02 | Phase 1 | Pending |
+| PIN-01 | Phase 1 | Pending |
+| PIN-02 | Phase 1 | Pending |
 
 **Coverage:**
 - v1 requirements: 4 total
-- Mapped to phases: 0 (roadmap pending)
-- Unmapped: 4 ⚠️ (resolved by roadmap)
+- Mapped to phases: 4
+- Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-06-24*
-*Last updated: 2026-06-24 after initial definition*
+*Last updated: 2026-06-24 after roadmap creation*
