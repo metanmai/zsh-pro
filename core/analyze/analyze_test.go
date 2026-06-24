@@ -236,3 +236,29 @@ var errIntrospect = errTest("introspection failed")
 type errTest string
 
 func (e errTest) Error() string { return string(e) }
+
+// TestCountLines locks the editor-style line-count semantics (LINE-01, D-03):
+// an empty file is 0 lines; a trailing newline is not double-counted; an
+// unterminated final line still counts. The empty case also guards against an
+// index-out-of-range panic on a zero-length slice.
+func TestCountLines(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		want int
+	}{
+		{"empty", "", 0},
+		{"no_newline", "foo", 1},
+		{"trailing_newline", "foo\n", 1},
+		{"unterminated_final_line", "foo\nbar", 2},
+		{"two_lines_trailing_newline", "foo\nbar\n", 2},
+		{"only_newlines", "\n\n\n\n\n", 5},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := countLines([]byte(tc.src)); got != tc.want {
+				t.Errorf("countLines(%q) = %d, want %d", tc.src, got, tc.want)
+			}
+		})
+	}
+}
