@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-06-24)
 Phase: 01 (trustworthy-line-numbers) — ALL PLANS COMPLETE
 Plan: 3 of 3 (complete)
 Status: Phase 01 execution complete — ready for verification
-Last activity: 2026-06-24 -- Completed 01-03 (PIN-01/PIN-02)
+Last activity: 2026-06-24 -- Quick task 260624-lsu: added golangci-lint (linter + Makefile + pre-commit hook)
 
 Progress: [██████████] 100%
 
@@ -76,6 +76,12 @@ None yet.
 ### Blockers/Concerns
 
 - Correcting line numbers is a deliberate `analyze --json` wire-contract change (accepted): emitted `Lines` and issue `lines` values change. The `testgen` oracle (10 seeds) is now the primary regression pin with line assertions ON (`checkLines = true`) — both fixes are locked as of 01-03.
+
+### Quick Tasks Completed
+
+| # | Description | Date | Commit | Directory |
+|---|-------------|------|--------|-----------|
+| 260624-lsu | Add golangci-lint linter (Makefile + pre-commit hook) | 2026-06-24 | 75fc6b7 | [260624-lsu-add-golangci-lint-linter-with-makefile-a](./quick/260624-lsu-add-golangci-lint-linter-with-makefile-a/) |
 
 ## Deferred Items
 
