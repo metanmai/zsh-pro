@@ -60,20 +60,20 @@ Which phases cover which requirements. Populated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| SEV-01 | — | Pending |
-| SEV-02 | — | Pending |
-| PATH-01 | — | Pending |
-| PATH-02 | — | Pending |
-| PATH-03 | — | Pending |
-| COV-01 | — | Pending |
-| COV-02 | — | Pending |
-| COV-03 | — | Pending |
+| SEV-01 | Phase 2 | Pending |
+| SEV-02 | Phase 2 | Pending |
+| PATH-01 | Phase 3 | Pending |
+| PATH-02 | Phase 3 | Pending |
+| PATH-03 | Phase 3 | Pending |
+| COV-01 | Phase 4 | Pending |
+| COV-02 | Phase 4 | Pending |
+| COV-03 | Phase 4 | Pending |
 
 **Coverage:**
 - v1 requirements: 8 total
-- Mapped to phases: 0 (roadmap pending)
-- Unmapped: 8 ⚠️ (resolved at roadmap creation)
+- Mapped to phases: 8 ✓ (Phase 2: 2 · Phase 3: 3 · Phase 4: 3)
+- Unmapped: 0 ✓ — every requirement maps to exactly one phase; no orphans, no duplicates
 
 ---
 *Requirements defined: 2026-06-24*
-*Last updated: 2026-06-24 after initial definition (milestone v1.1)*
+*Last updated: 2026-06-24 after roadmap creation (milestone v1.1) — traceability populated, 8/8 mapped*

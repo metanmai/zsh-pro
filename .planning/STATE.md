@@ -2,11 +2,11 @@
 gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Trustworthy PATH Analysis
-status: planning
-last_updated: "2026-06-24T12:38:33.959Z"
+status: ready-to-plan
+last_updated: "2026-06-24T19:08:00.000Z"
 last_activity: 2026-06-24
 progress:
-  total_phases: 0
+  total_phases: 3
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -19,39 +19,41 @@ progress:
 
 See: .planning/PROJECT.md (updated 2026-06-24)
 
-**Core value:** `analyze --json` reports line numbers you can trust — every issue points at the real statement line, and the reported line count is accurate.
-**Current focus:** Milestone complete
+**Core value:** `analyze --json` reports output you can trust — every PATH entry is named exactly as written, genuine duplicates are caught across notations, and risky entries are flagged without polluting the exit-code signal.
+**Current focus:** Phase 2 — Issue Severity Tier
 
 ## Current Position
 
-Phase: Not started (defining requirements)
-Plan: —
-Status: Defining requirements
-Last activity: 2026-06-24 — Milestone v1.1 started
+Phase: 2 of 4 (Issue Severity Tier) — first phase of milestone v1.1
+Plan: — (not yet planned)
+Status: Ready to plan
+Last activity: 2026-06-24 — Roadmap created for v1.1 (Phases 2-4, A→B→C order); 8/8 requirements mapped
+
+Progress: [░░░░░░░░░░] 0%
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 3
-- Average duration: — min
-- Total execution time: 0.0 hours
+- Total plans completed: 3 (all in v1.0 / Phase 1)
+- Average duration: ~5 min
+- Total execution time: ~0.2 hours
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| 01 | 3 | - | - |
+| 1 (v1.0) | 3 | ~14 min | ~5 min |
+| 2 (v1.1) | 0 | - | - |
+| 3 (v1.1) | 0 | - | - |
+| 4 (v1.1) | 0 | - | - |
 
 **Recent Trend:**
 
-- Last 5 plans: —
-- Trend: —
+- Last 5 plans: 01-01 (4 min) · 01-02 (1 min) · 01-03 (9 min)
+- Trend: Stable
 
 *Updated after each plan completion*
-| Phase 1 P01-01 | 4 | 2 tasks | 2 files |
-| Phase 1 P01-02 | 1 min | 2 tasks | 2 files |
-| Phase 1 P01-03 | 9 min | 3 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -60,11 +62,10 @@ Last activity: 2026-06-24 — Milestone v1.1 started
 Decisions are logged in PROJECT.md Key Decisions table.
 Recent decisions affecting current work:
 
-- Scope limited to the two line-number bugs (path mis-naming, corpus expansion deferred to v2).
-- Off-by-one fix (recommended): `len==0 ? 0 : Count("\n") + (lastByte!='\n' ? 1 : 0)` — confirm in plan.
-- [Phase 1]: LINE-02 (D-01/D-02) fixed: Block.StartLine redefined to the statement line by deleting the comment-line overwrite in parse.go's comment-pull-up loop — NO new Block field, reconciler.go untouched (inherits the fix). Supersedes the earlier "add a field" recommendation.
-- [Phase ?]: LINE-01 (D-03) fixed: Analysis.Lines now uses editor-style countLines — empty file is 0, trailing newline not over-counted (core/analyze/analyzer.go).
-- [Phase 1]: PIN-01/PIN-02 (D-04/D-05) done: checkLines flipped to true; the 10-seed oracle now asserts total Lines + per-issue line slices, sourced non-circularly from a new ConfigGraph.RenderedLines render counter (NOT the engine formula); dupAlias/dupEnv first nodes carry a leading comment so LINE-02 is exercised beyond shadows; golden corpus stays minimal with empty.zsh pinned at lines 0 (no issue_lines/issue_names).
+- [v1.1 scope]: Broad option — fix PATH extraction + semantic dedup + relative-entry advisory + severity tier + close `duplicate_path`/`shadowed` coverage.
+- [v1.1]: PATH dedup is semantic but **notation-only** (`~`/`$HOME`/`${HOME}` + slashes; no filesystem/env resolution).
+- [v1.1]: Relative-entry advisory is a new **informational severity**, not exit-3 — `SevActionable` is the zero value so the 4 existing kinds stay byte-identical.
+- [Roadmap]: Strict A→B→C order — Phase 2 (severity) MUST precede Phase 3 (PATH) so advisory-only configs never transiently exit 3.
 
 ### Pending Todos
 
@@ -72,14 +73,10 @@ None yet.
 
 ### Blockers/Concerns
 
-- Correcting line numbers is a deliberate `analyze --json` wire-contract change (accepted): emitted `Lines` and issue `lines` values change. The `testgen` oracle (10 seeds) is now the primary regression pin with line assertions ON (`checkLines = true`) — both fixes are locked as of 01-03.
-
-### Quick Tasks Completed
-
-| # | Description | Date | Commit | Directory |
-|---|-------------|------|--------|-----------|
-| 260624-lsu | Add golangci-lint linter (Makefile + pre-commit hook) | 2026-06-24 | 75fc6b7 | [260624-lsu-add-golangci-lint-linter-with-makefile-a](./quick/260624-lsu-add-golangci-lint-linter-with-makefile-a/) |
-| fast | Harden `--json` agent-contract test (cli_test.go) | 2026-06-24 | 95a5897 | — |
+- **[Phase 2 gate]** Confirm with the user that `issues_found` redefined as "actionable-only" is an acceptable `analyze --json` wire-contract change (advisory-only envelope flips `issues_found:true→false`, `exit_code` stays 0).
+- **[Phase 3 design prerequisite → Phase 4]** The oracle's two-field path-node split (rendered notation vs. independent dedup key) MUST be designed before the Phase 3 canonicalizer is written — retrofitting oracle independence is the highest recovery cost in the research (Pitfall #8, HIGH).
+- **[Phase 3 open questions]** Extraction location (provider vs. reconciler-local), intra-statement duplicate policy (`PATH="/a:/a:$PATH"`), and the `CatPath` array-form classification seam check are unresolved — carry into Phase 3 planning, do not silently resolve.
+- Correcting PATH `name`/`lines` and adding the `severity` field + `relative_path_entry` kind is a deliberate, accepted `analyze --json` wire-contract change.
 
 ## Deferred Items
 
@@ -91,10 +88,10 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-06-24T09:31:33.276Z
-Stopped at: Completed 01-03-PLAN.md (PIN-01/PIN-02)
+Last session: 2026-06-24T19:08:00.000Z
+Stopped at: Roadmap created for milestone v1.1 (ROADMAP.md, STATE.md, REQUIREMENTS.md traceability)
 Resume file: None
 
 ## Operator Next Steps
 
-- Start the next milestone with /gsd-new-milestone
+- Plan the first phase with `/gsd:plan-phase 2`
