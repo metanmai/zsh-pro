@@ -74,7 +74,7 @@ zsh-pro is a read-only zsh-config analyzer CLI. It parses a zsh config file (def
 ## Code Style
 - `gofmt` enforced; all files must be `gofmt`-clean before commit
 - Build/vet: `GOTOOLCHAIN=auto go build ./...`, `GOTOOLCHAIN=auto go vet ./...`
-- No external linter config detected; `go vet` is the minimum gate
+- Lint: `golangci-lint` v2 (`.golangci.yml`, standard set — errcheck/govet/ineffassign/staticcheck/unused + gofmt), installed as a standalone dev tool (`brew install golangci-lint`), intentionally **not** a go.mod dependency. Run `make lint`; `make check` = fmt-check + vet + lint + test. A `.githooks/pre-commit` hook gates staged Go changes — enable once per clone with `make hooks`
 - No hard limit enforced; `gofmt` controls indentation; long lines are split at natural semantic breaks (function arguments, slice literals)
 ## Behavior on Role Types (Methods, Not Loose Functions)
 - `Analyzer.Analyze` owns the pipeline — `core/analyze/analyzer.go`

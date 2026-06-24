@@ -1,0 +1,15 @@
+#!/bin/sh
+# zsh-pro pre-commit hook — runs golangci-lint on staged Go changes.
+# Enable with: make hooks   (sets core.hooksPath=.githooks)
+# Doc/planning-only commits are not gated, to keep them fast.
+
+staged_go="$(git diff --cached --name-only --diff-filter=ACM | grep '\.go$' || true)"
+[ -z "$staged_go" ] && exit 0
+
+if ! command -v golangci-lint >/dev/null 2>&1; then
+	echo "pre-commit: golangci-lint not installed; skipping lint (run 'brew install golangci-lint')." >&2
+	exit 0
+fi
+
+echo "pre-commit: golangci-lint run"
+exec golangci-lint run

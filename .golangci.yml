@@ -1,0 +1,21 @@
+# golangci-lint configuration (v2 schema).
+# Standard, low-noise linter set for zsh-pro. Run via `make lint` or `golangci-lint run`.
+# golangci-lint is installed as a standalone dev tool (e.g. `brew install golangci-lint`) —
+# intentionally NOT a go.mod dependency, to preserve the single-runtime-dependency architecture.
+version: "2"
+
+linters:
+  # "standard" = errcheck, govet, ineffassign, staticcheck, unused.
+  # (In v2, gosimple/stylecheck are folded into staticcheck.)
+  default: standard
+
+formatters:
+  # gofmt formatting is reported as part of `golangci-lint run`; fix with `make fmt`.
+  enable:
+    - gofmt
+
+issues:
+  # Report every finding — the defaults (max-same-issues: 3) would hide repeated
+  # issues, which is the wrong behavior for a "must stay green" gate.
+  max-issues-per-linter: 0
+  max-same-issues: 0
