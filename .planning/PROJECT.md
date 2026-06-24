@@ -42,7 +42,7 @@ zsh-pro is a read-only zsh-config analyzer CLI. It parses a zsh config file (def
 - **Path-segment mis-naming** (`dupPathIssues` reporting `./scripts` as `/scripts`, skipping unrooted entries) — a real wrong-output bug, but the user scoped this milestone to *just* the two line bugs.
 - **Adding golden fixtures for `duplicate_path` / `shadowed`** and asserting `issue_names` in the corpus — declined for this milestone (corpus update here is limited to keeping existing fixtures honest with the corrected lines).
 - **Completing the dynamic-introspection half** (consume the resolved `IdentitySet`) — top of the product backlog, but a feature, not a bug fix.
-- **Classifier accuracy fixes** (PATH over-capture, secret-regex substrings, `eval` under-capture) — a separate accuracy pass.
+- **Classifier precision overhaul** (surface confidence, demote sub-high-confidence to an explicit "uncertain" bucket, tighten PATH/secret over-captures) — a captured design stance (see Key Decisions + REQUIREMENTS.md v2 PREC-*); its own future phase, out of scope for this line-number milestone.
 - **New commands / multi-file / other shells** (`fix`/`doctor`, `--paths`, bash-pro) — product ramp, not this milestone.
 
 ## Context
@@ -70,6 +70,7 @@ zsh-pro is a read-only zsh-config analyzer CLI. It parses a zsh config file (def
 | Fix is pinned by tests (`checkLines` → true) | The regression pin already exists in `property_test.go` awaiting exactly this fix | — Pending |
 | Off-by-one fix: `len==0 ? 0 : Count("\n") + (lastByte!='\n' ? 1 : 0)` | Empty → 0; trailing-newline files counted correctly; `Lines` stays consistent with 1-based statement line numbers | — Pending (recommended; confirm in plan) |
 | Mis-attribution fix: add a precise statement-line field on `Block` | Keeps `Block.StartLine` (the block's true start, incl. comments) intact; issues emit the exact statement line | — Pending (recommended; confirm in plan) |
+| **Classifier: precision over recall.** Below high confidence, flag an explicit "uncertain" bucket (never a confident category), surface confidence in output, and tighten over-capturing PATH/secret rules. A silent false positive is worse than an honest "unsure." | User design principle (2026-06-24). NOTE — today's classifier does the *opposite*: it always assigns a category (`misc` fallback), `Block.Conf` is computed (`analyzer.go:38`) but read nowhere, and PATH (`classify.go:39` substring) / secret (`:34` substring) rules over-capture at Medium/High confidence. | — Pending (own future phase; **NOT** Phase 1) |
 
 ## Evolution
 
