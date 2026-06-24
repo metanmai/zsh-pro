@@ -18,10 +18,11 @@ type Analysis struct {
 
 // Issue is the wire shape of one reported problem.
 type Issue struct {
-	Kind  string `json:"kind"`
-	Name  string `json:"name"`
-	Lines []int  `json:"lines,omitempty"`
-	Note  string `json:"note,omitempty"`
+	Kind     string `json:"kind"`
+	Name     string `json:"name"`
+	Lines    []int  `json:"lines,omitempty"`
+	Note     string `json:"note,omitempty"`
+	Severity string `json:"severity"` // always present (D-02): "actionable" | "advisory"
 }
 
 // CategorySummary is the wire shape of one per-category rollup.

@@ -44,10 +44,11 @@ func (JSONRenderer) toDTO(a model.Analysis) dto.Envelope {
 		out.Issues = make([]dto.Issue, len(a.Issues))
 		for i, is := range a.Issues {
 			out.Issues[i] = dto.Issue{
-				Kind:  string(is.Kind),
-				Name:  is.Name,
-				Lines: is.Lines,
-				Note:  is.Note,
+				Kind:     string(is.Kind),
+				Name:     is.Name,
+				Lines:    is.Lines,
+				Note:     is.Note,
+				Severity: is.Severity.String(),
 			}
 		}
 	}
@@ -56,7 +57,7 @@ func (JSONRenderer) toDTO(a model.Analysis) dto.Envelope {
 		Version:     buildinfo.Version,
 		Command:     buildinfo.Command,
 		OK:          true,
-		IssuesFound: len(a.Issues) > 0,
+		IssuesFound: a.HasActionableIssues(),
 		ExitCode:    int(a.ExitCode()),
 		Analysis:    out,
 	}

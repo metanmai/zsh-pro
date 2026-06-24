@@ -21,6 +21,19 @@ func sampleAnalysis() model.Analysis {
 	}
 }
 
+// advisoryOnlyAnalysis builds an analysis whose only finding is an advisory.
+// Under SEV-02 this must read as clean: exit 0, issues_found:false, while the
+// issue itself still carries severity:"advisory" on the wire (D-04 / D-02).
+func advisoryOnlyAnalysis() model.Analysis {
+	return model.Analysis{
+		Path:         "/home/u/.zshrc",
+		Lines:        12,
+		BlockCount:   3,
+		Issues:       []model.Issue{{Kind: model.IssueDuplicatePath, Name: "./scripts", Lines: []int{4}, Severity: model.SevAdvisory}},
+		Introspected: true,
+	}
+}
+
 func TestHumanIncludesCategoriesAndIssues(t *testing.T) {
 	b, _ := (HumanRenderer{}).Render(sampleAnalysis())
 	out := string(b)
@@ -51,5 +64,81 @@ func TestJSONIsOneObjectWithContract(t *testing.T) {
 	}
 	if env["issues_found"] != true {
 		t.Errorf("issues_found = %v, want true", env["issues_found"])
+	}
+}
+
+// issuesFromJSON decodes a rendered envelope and returns its issues slice.
+func issuesFromJSON(t *testing.T, a model.Analysis) []map[string]any {
+	t.Helper()
+	b, err := (JSONRenderer{}).Render(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env struct {
+		Analysis struct {
+			Issues []map[string]any `json:"issues"`
+		} `json:"analysis"`
+	}
+	if err := json.Unmarshal(b, &env); err != nil {
+		t.Fatalf("output is not a single JSON object: %v\n%s", err, b)
+	}
+	return env.Analysis.Issues
+}
+
+// TestJSONIssueHasSeverityOnEveryIssue pins D-02: the severity field is present
+// and non-empty on every issue, an actionable issue reads "actionable", and a
+// hand-set advisory reads "advisory".
+func TestJSONIssueHasSeverityOnEveryIssue(t *testing.T) {
+	// Actionable case — the existing sampleAnalysis() duplicate_alias.
+	issues := issuesFromJSON(t, sampleAnalysis())
+	if len(issues) != 1 {
+		t.Fatalf("issues len = %d, want 1", len(issues))
+	}
+	sev, ok := issues[0]["severity"]
+	if !ok {
+		t.Fatalf("issues[0] has no severity key: %v", issues[0])
+	}
+	if s, _ := sev.(string); s != "actionable" {
+		t.Errorf("issues[0].severity = %q, want %q", sev, "actionable")
+	}
+
+	// Advisory case — a hand-set advisory issue.
+	advIssues := issuesFromJSON(t, advisoryOnlyAnalysis())
+	if len(advIssues) != 1 {
+		t.Fatalf("advisory issues len = %d, want 1", len(advIssues))
+	}
+	if s, _ := advIssues[0]["severity"].(string); s != "advisory" {
+		t.Errorf("advisory issues[0].severity = %q, want %q", advIssues[0]["severity"], "advisory")
+	}
+}
+
+// TestJSONAdvisoryOnlyEnvelope pins D-04: an advisory-only analysis renders
+// issues_found:false AND exit_code:0 — the two agree — while the issue still
+// carries severity:"advisory".
+func TestJSONAdvisoryOnlyEnvelope(t *testing.T) {
+	b, err := (JSONRenderer{}).Render(advisoryOnlyAnalysis())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env map[string]any
+	if err := json.Unmarshal(b, &env); err != nil {
+		t.Fatalf("output is not a single JSON object: %v", err)
+	}
+	if env["issues_found"] != false {
+		t.Errorf("issues_found = %v, want false (advisory-only is clean)", env["issues_found"])
+	}
+	if env["exit_code"].(float64) != 0 {
+		t.Errorf("exit_code = %v, want 0 (advisory must not bump the exit code)", env["exit_code"])
+	}
+	// The two fields must never disagree.
+	if (env["issues_found"] == true) != (env["exit_code"].(float64) == 3) {
+		t.Errorf("issues_found %v and exit_code %v disagree", env["issues_found"], env["exit_code"])
+	}
+	issues, _ := env["analysis"].(map[string]any)["issues"].([]any)
+	if len(issues) != 1 {
+		t.Fatalf("issues len = %d, want 1", len(issues))
+	}
+	if s, _ := issues[0].(map[string]any)["severity"].(string); s != "advisory" {
+		t.Errorf("issue severity = %q, want %q", issues[0].(map[string]any)["severity"], "advisory")
 	}
 }
