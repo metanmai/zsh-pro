@@ -41,6 +41,29 @@ func TestCategoryDescription(t *testing.T) {
 	}
 }
 
+func TestSeverityString(t *testing.T) {
+	if got := SevActionable.String(); got != "actionable" {
+		t.Errorf("SevActionable.String() = %q, want %q", got, "actionable")
+	}
+	if got := SevAdvisory.String(); got != "advisory" {
+		t.Errorf("SevAdvisory.String() = %q, want %q", got, "advisory")
+	}
+
+	// The zero value of Severity must stringify to "actionable" — this proves
+	// SevActionable is the zero value (D-01), so an Issue literal that omits
+	// Severity stays actionable and the four existing kinds keep exit-3 behavior.
+	var zero Severity
+	if got := zero.String(); got != "actionable" {
+		t.Errorf("zero-value Severity.String() = %q, want %q (SevActionable must be the zero value)", got, "actionable")
+	}
+
+	// An Issue literal that omits Severity must default to SevActionable.
+	is := Issue{Kind: IssueDuplicateAlias}
+	if is.Severity != SevActionable {
+		t.Errorf("Issue{} omitted Severity = %v, want SevActionable (%v)", is.Severity, SevActionable)
+	}
+}
+
 func TestExitCode(t *testing.T) {
 	clean := Analysis{}
 	if clean.ExitCode() != ExitClean {
