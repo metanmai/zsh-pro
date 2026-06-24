@@ -39,13 +39,15 @@ func (HumanRenderer) Render(a model.Analysis) ([]byte, error) {
 	actionable, advisory := 0, 0
 	for _, is := range a.Issues {
 		// Softer, non-blocking marker for advisories (D-05); they stay inline in
-		// this single ISSUES list rather than in a separate section.
+		// this single ISSUES list rather than in a separate section. The marker,
+		// tally, and exit logic all key off Severity.IsActionable() so they stay
+		// provably in lockstep (single source of truth for the advisory cut).
 		marker := "!"
-		if is.Severity == model.SevAdvisory {
+		if is.Severity.IsActionable() {
+			actionable++
+		} else {
 			marker = "~"
 			advisory++
-		} else {
-			actionable++
 		}
 		line := fmt.Sprintf("   %s %-16s %s", marker, is.Kind, is.Name)
 		if len(is.Lines) > 0 {
@@ -57,7 +59,16 @@ func (HumanRenderer) Render(a model.Analysis) ([]byte, error) {
 		b.WriteString(line + "\n")
 	}
 	// Tally advisories separately from actionable issues so they are visible but
-	// clearly not counted as actionable "issues" (D-06).
-	fmt.Fprintf(&b, "   %d issues, %d advisories\n", actionable, advisory)
+	// clearly not counted as actionable "issues" (D-06). Pluralize per count so
+	// the common single-issue case reads grammatically ("1 issue", not "1 issues").
+	plural := func(n int, one, many string) string {
+		if n == 1 {
+			return one
+		}
+		return many
+	}
+	fmt.Fprintf(&b, "   %d %s, %d %s\n",
+		actionable, plural(actionable, "issue", "issues"),
+		advisory, plural(advisory, "advisory", "advisories"))
 	return []byte(b.String()), nil
 }
