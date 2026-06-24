@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-06-24)
 Phase: 01 (trustworthy-line-numbers) — ALL PLANS COMPLETE
 Plan: 3 of 3 (complete)
 Status: Phase 01 execution complete — ready for verification
-Last activity: 2026-06-24 -- Quick task 260624-lsu: added golangci-lint (linter + Makefile + pre-commit hook)
+Last activity: 2026-06-24 -- Hardened the --json agent-contract test (cli_test.go)
 
 Progress: [██████████] 100%
 
@@ -82,6 +82,7 @@ None yet.
 | # | Description | Date | Commit | Directory |
 |---|-------------|------|--------|-----------|
 | 260624-lsu | Add golangci-lint linter (Makefile + pre-commit hook) | 2026-06-24 | 75fc6b7 | [260624-lsu-add-golangci-lint-linter-with-makefile-a](./quick/260624-lsu-add-golangci-lint-linter-with-makefile-a/) |
+| fast | Harden `--json` agent-contract test (cli_test.go) | 2026-06-24 | 95a5897 | — |
 
 ## Deferred Items
 
