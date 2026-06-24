@@ -26,7 +26,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 **Milestone Goal:** Every PATH entry `analyze` reports is named correctly, genuine duplicates are caught across notations, and risky relative entries are flagged — without polluting the exit-code signal.
 
-- [ ] **Phase 2: Issue Severity Tier** - Add a per-issue severity so advisories surface without bumping the exit code (exit 3 stays reserved for genuine problems)
+- [x] **Phase 2: Issue Severity Tier** - Add a per-issue severity so advisories surface without bumping the exit code (exit 3 stays reserved for genuine problems) (completed 2026-06-24)
 - [ ] **Phase 3: Trustworthy PATH Extraction & Detection** - Replace the regex with AST-based split extraction, notation-only dedup, and a relative/unrooted advisory
 - [ ] **Phase 4: PATH Coverage & Oracle Pin** - Golden fixtures for the untested issue kinds, corpus name/line/severity assertions, and the independent oracle as the regression pin
 
@@ -52,7 +52,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 02-02-PLAN.md — Thread severity onto the JSON wire (non-omitempty) + actionable-only issues_found; severity-aware human report marker & advisory tally (SEV-01/SEV-02)
+- [x] 02-02-PLAN.md — Thread severity onto the JSON wire (non-omitempty) + actionable-only issues_found; severity-aware human report marker & advisory tally (SEV-01/SEV-02)
 
 **UI hint**: no
 
@@ -112,6 +112,6 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
 | 1. Trustworthy Line Numbers | v1.0 | 3/3 | Complete | 2026-06-24 |
-| 2. Issue Severity Tier | v1.1 | 1/2 | In Progress|  |
+| 2. Issue Severity Tier | v1.1 | 2/2 | Complete   | 2026-06-24 |
 | 3. Trustworthy PATH Extraction & Detection | v1.1 | 0/TBD | Not started | - |
 | 4. PATH Coverage & Oracle Pin | v1.1 | 0/TBD | Not started | - |

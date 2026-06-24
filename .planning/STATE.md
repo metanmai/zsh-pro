@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Trustworthy PATH Analysis
-status: executing
+status: verifying
 stopped_at: Phase 2 context gathered
-last_updated: "2026-06-24T15:49:17.861Z"
+last_updated: "2026-06-24T15:57:03.870Z"
 last_activity: 2026-06-24
 progress:
   total_phases: 3
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 2
-  completed_plans: 1
-  percent: 50
+  completed_plans: 2
+  percent: 33
 ---
 
 # Project State
@@ -27,10 +27,10 @@ See: .planning/PROJECT.md (updated 2026-06-24)
 
 Phase: 02 (issue-severity-tier) — EXECUTING
 Plan: 2 of 2
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-06-24
 
-Progress: [█████░░░░░] 50%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
@@ -56,6 +56,7 @@ Progress: [█████░░░░░] 50%
 
 *Updated after each plan completion*
 | Phase 02 P01 | 2 | 3 tasks | 3 files |
+| Phase 02 P02 | 3min | 3 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -70,6 +71,9 @@ Recent decisions affecting current work:
 - [Roadmap]: Strict A→B→C order — Phase 2 (severity) MUST precede Phase 3 (PATH) so advisory-only configs never transiently exit 3.
 - [Phase ?]: [02-01]: SevActionable is the zero value (int+iota) so the 4 existing issue kinds keep exit-3 with zero construction-site edits (D-01).
 - [Phase ?]: [02-01]: ExitCode() consults Analysis.HasActionableIssues() (single actionable predicate); len(a.Issues) no longer drives the exit code (D-04).
+- [Phase ?]: [02-02]: --json issues carry a non-omitempty 'severity' string (mapped via Severity.String()); dto stays string-only (D-02).
+- [Phase ?]: [02-02]: envelope issues_found now derives from HasActionableIssues() so it can never disagree with exit_code; advisory-only is clean (false/0) — SEV-02 (D-04).
+- [Phase ?]: [02-02]: human report uses softer '~' for advisories in the single ISSUES list + a separate advisory tally (D-05/D-06).
 
 ### Pending Todos
 
@@ -92,7 +96,7 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-06-24T15:49:11.955Z
+Last session: 2026-06-24T15:56:41.633Z
 Stopped at: Phase 2 context gathered
 Resume file: None
 
