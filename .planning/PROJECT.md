@@ -8,6 +8,17 @@ zsh-pro is a read-only zsh-config analyzer CLI. It parses a zsh config file (def
 
 `analyze --json` reports line numbers you can trust — every issue points at the real statement line, and the reported line count is accurate.
 
+## Current Milestone: v1.1 Trustworthy PATH Analysis
+
+**Goal:** Every PATH entry `analyze` reports is named correctly, genuine duplicates are caught across notations, and risky relative entries are flagged — without polluting the exit-code signal.
+
+**Target features:**
+- **Correct extraction** — split the PATH-family assignment value on `:` (verbatim entries, drop the `$PATH` self-reference), fixing both the `./scripts`→`/scripts` mis-naming and the unrooted-entry blind spot.
+- **Semantic dedup** — notation-only canonicalization (`~` ≡ `$HOME` ≡ `${HOME}`, trailing/duplicate slashes normalized); no filesystem or live-`$HOME` resolution, so analysis stays deterministic and read-only-pure.
+- **Relative-entry advisory** — a new issue kind for relative/unrooted PATH entries, including bare `.` and empty (current-directory) entries.
+- **Issue severity tier** — a new severity field on `Issue` so the advisory surfaces without bumping the exit code; exit 3 stays reserved for genuine problems (duplicates, shadows).
+- **Coverage** — golden fixtures for the two untested issue kinds (`duplicate_path`, `shadowed`), corpus assertions on `issue_names`/`issue_lines`, and the testgen oracle extended to relative/unrooted dup paths as the regression pin.
+
 ## Requirements
 
 ### Validated
@@ -31,19 +42,23 @@ zsh-pro is a read-only zsh-config analyzer CLI. It parses a zsh config file (def
 
 ### Active
 
-<!-- This milestone. Both bugs live in CONCERNS.md → ## Known Bugs; the regression pin already waits in property_test.go. -->
+<!-- Milestone v1.1 (Trustworthy PATH Analysis). REQ-IDs detailed in REQUIREMENTS.md; mapped to phases by the roadmap. -->
 
-- *None — milestone v1.0 (trustworthy-line-numbers) is complete; all four requirements above are validated in Phase 1.*
+- [ ] PATH entries are extracted by splitting the assignment value on `:`, so relative entries are named correctly (`./scripts`, not `/scripts`) and unrooted entries are detected
+- [ ] Notation-equivalent entries (`~`/`$HOME`/`${HOME}`, trailing/duplicate slashes) are treated as the same entry for duplicate detection (notation-only; no filesystem/env resolution)
+- [ ] Relative/unrooted PATH entries — including bare `.` and empty entries — are surfaced as a new advisory
+- [ ] Issues carry a severity so advisories surface without bumping the exit code (exit 3 stays reserved for duplicates/shadows)
+- [ ] Golden fixtures cover `duplicate_path` and `shadowed`, the corpus asserts `issue_names`/`issue_lines`, and the testgen oracle pins relative/unrooted dup paths
 
 ### Out of Scope
 
 <!-- Explicit boundaries with reasoning. -->
 
-- **Whole-file opaque fallback** — filed under CONCERNS.md → ## Fragile Areas, *not* a line bug. Partial-parse recovery needs upstream `mvdan/sh` work; separate effort.
-- **Path-segment mis-naming** (`dupPathIssues` reporting `./scripts` as `/scripts`, skipping unrooted entries) — a real wrong-output bug, but the user scoped this milestone to *just* the two line bugs.
-- **Adding golden fixtures for `duplicate_path` / `shadowed`** and asserting `issue_names` in the corpus — declined for this milestone (corpus update here is limited to keeping existing fixtures honest with the corrected lines).
+- **Filesystem / live-`$HOME` resolution of PATH entries** — v1.1 canonicalization is *notation-only* (string-level); resolving `~`/`$HOME` against the actual environment, or `..`/symlinks against disk, would make a read-only static analyzer env-dependent and non-deterministic.
+- **PATH ordering / precedence analysis** (which earlier entry shadows a later one) — a separate order-sensitivity feature, not part of this correctness pass.
+- **Whole-file opaque fallback** — filed under CONCERNS.md → ## Fragile Areas, *not* a path bug. Partial-parse recovery needs upstream `mvdan/sh` work; separate effort.
+- **Classifier precision overhaul** (surface confidence, demote sub-high-confidence to an explicit "uncertain" bucket, tighten the `Contains("PATH")` / secret over-captures) — a captured design stance (REQUIREMENTS.md v2 PREC-*); its own future phase. Note: v1.1's *reconciler* PATH fix is independent of the *classifier's* PATH over-capture.
 - **Completing the dynamic-introspection half** (consume the resolved `IdentitySet`) — top of the product backlog, but a feature, not a bug fix.
-- **Classifier precision overhaul** (surface confidence, demote sub-high-confidence to an explicit "uncertain" bucket, tighten PATH/secret over-captures) — a captured design stance (see Key Decisions + REQUIREMENTS.md v2 PREC-*); its own future phase, out of scope for this line-number milestone.
 - **New commands / multi-file / other shells** (`fix`/`doctor`, `--paths`, bash-pro) — product ramp, not this milestone.
 
 ## Context
@@ -72,6 +87,9 @@ zsh-pro is a read-only zsh-config analyzer CLI. It parses a zsh config file (def
 | Off-by-one fix: `len==0 ? 0 : Count("\n") + (lastByte!='\n' ? 1 : 0)` | Empty → 0; trailing-newline files counted correctly; `Lines` stays consistent with 1-based statement line numbers | ✓ Done (Phase 1, LINE-01) — implemented as recommended (editor-style `countLines`) |
 | Mis-attribution fix: add a precise statement-line field on `Block` | Keeps `Block.StartLine` (the block's true start, incl. comments) intact; issues emit the exact statement line | ✓ Done (Phase 1, LINE-02) — **superseded**: no `Block` field added; instead deleted the comment-line overwrite in `parse.go` so `Block.StartLine` stays the statement line (reconciler untouched) |
 | **Classifier: precision over recall.** Below high confidence, flag an explicit "uncertain" bucket (never a confident category), surface confidence in output, and tighten over-capturing PATH/secret rules. A silent false positive is worse than an honest "unsure." | User design principle (2026-06-24). NOTE — today's classifier does the *opposite*: it always assigns a category (`misc` fallback), `Block.Conf` is computed (`analyzer.go:38`) but read nowhere, and PATH (`classify.go:39` substring) / secret (`:34` substring) rules over-capture at Medium/High confidence. | — Pending (own future phase; **NOT** Phase 1) |
+| **v1.1 scope (broad):** fix PATH extraction + semantic dedup + relative-entry advisory + severity tier + close `duplicate_path`/`shadowed` coverage | User chose the broad option across all three v1.1 scope questions (2026-06-24): fix it, catch notational duplicates, flag risky entries, and pin with real fixtures | — Pending (Milestone v1.1) |
+| **PATH dedup is semantic but notation-only** (`~`/`$HOME`/`${HOME}` + slashes canonicalized; no filesystem/env resolution) | Catches real notational duplicates of the same dir while staying deterministic and read-only-pure; avoids the "`$HOME` reassigned mid-file" false positive | — Pending (Milestone v1.1) |
+| **Relative-entry advisory is a new informational severity, not exit-3** | A relative/unrooted entry may be intentional; conflating it with genuine duplicates/shadows at exit 3 would degrade the agent signal. Introduces the first `Issue` severity tier (also seeds future classifier-precision work). Covers bare `.`/empty (cwd) entries — the classic PATH foot-gun | — Pending (Milestone v1.1) |
 
 ## Evolution
 
@@ -91,4 +109,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-06-24 — milestone v1.0 (trustworthy-line-numbers) complete: LINE-01/02 fixed and pinned (PIN-01/02), verified 4/4.*
+*Last updated: 2026-06-24 — milestone v1.1 (Trustworthy PATH Analysis) started: PATH extraction fix + semantic dedup + relative-entry advisory (new severity tier) + duplicate_path/shadowed coverage.*
