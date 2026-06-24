@@ -31,17 +31,17 @@ func New(p shell.Provider) *CLI { return &CLI{provider: p} }
 // 3 actionable.
 func (c *CLI) Run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: zsh-pro analyze [path] [--json]")
+		_, _ = fmt.Fprintln(stderr, "usage: zsh-pro analyze [path] [--json]")
 		return int(model.ExitUsageErr)
 	}
 	switch args[0] {
 	case "--version", "-v":
-		fmt.Fprintf(stdout, "zsh-pro %s\n", buildinfo.Version)
+		_, _ = fmt.Fprintf(stdout, "zsh-pro %s\n", buildinfo.Version)
 		return int(model.ExitClean)
 	case buildinfo.Command:
 		return c.runAnalyze(args[1:], stdout, stderr)
 	default:
-		fmt.Fprintf(stderr, "zsh-pro: unknown command %q\n", args[0])
+		_, _ = fmt.Fprintf(stderr, "zsh-pro: unknown command %q\n", args[0])
 		return int(model.ExitUsageErr)
 	}
 }
@@ -54,7 +54,7 @@ func (c *CLI) runAnalyze(args []string, stdout, stderr io.Writer) int {
 		case a == "--json":
 			asJSON = true
 		case len(a) > 0 && a[0] == '-':
-			fmt.Fprintf(stderr, "zsh-pro: unknown flag %q\n", a)
+			_, _ = fmt.Fprintf(stderr, "zsh-pro: unknown flag %q\n", a)
 			return int(model.ExitUsageErr)
 		default:
 			path = a
@@ -77,7 +77,7 @@ func (c *CLI) runAnalyze(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return c.fail(stdout, stderr, asJSON, fmt.Sprintf("render: %v", err))
 	}
-	fmt.Fprintln(stdout, string(b))
+	_, _ = fmt.Fprintln(stdout, string(b))
 	return int(a.ExitCode())
 }
 
@@ -92,9 +92,9 @@ func (c *CLI) fail(stdout, stderr io.Writer, asJSON bool, msg string) int {
 			"ok": false, "error": msg, "exit_code": int(model.ExitRuntimeErr),
 		}
 		b, _ := json.MarshalIndent(obj, "", "  ")
-		fmt.Fprintln(stdout, string(b))
+		_, _ = fmt.Fprintln(stdout, string(b))
 	} else {
-		fmt.Fprintf(stderr, "zsh-pro: %s\n", msg)
+		_, _ = fmt.Fprintf(stderr, "zsh-pro: %s\n", msg)
 	}
 	return int(model.ExitRuntimeErr)
 }

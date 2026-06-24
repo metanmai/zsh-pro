@@ -86,5 +86,5 @@ func main() {
 		fmt.Fprintf(os.Stderr, "zsh-gen: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Fprintf(os.Stdout, "wrote %d cases + manifests.json to %s\n", *n, *out)
+	_, _ = fmt.Fprintf(os.Stdout, "wrote %d cases + manifests.json to %s\n", *n, *out)
 }
