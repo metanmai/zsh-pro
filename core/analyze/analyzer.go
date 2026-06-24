@@ -3,8 +3,8 @@
 package analyze
 
 import (
+	"bytes"
 	"sort"
-	"strings"
 
 	"zsh-pro/core/model"
 	"zsh-pro/core/shell"
@@ -25,7 +25,7 @@ func (az *Analyzer) Analyze(src []byte, path string) model.Analysis {
 	blocks, _ := az.provider.Parse(src)
 	a := model.Analysis{
 		Path:       path,
-		Lines:      strings.Count(string(src), "\n") + 1,
+		Lines:      countLines(src),
 		BlockCount: len(blocks),
 	}
 
@@ -95,4 +95,19 @@ func (az *Analyzer) Analyze(src []byte, path string) model.Analysis {
 		return a.Issues[i].Name < a.Issues[j].Name
 	})
 	return a
+}
+
+// countLines returns the editor-style line count of src: an empty file is 0
+// lines, a file ending in a newline is not counted one line too high, and an
+// unterminated final line still counts. Keeping Lines this way guarantees it is
+// >= every issue's 1-based statement line.
+func countLines(src []byte) int {
+	if len(src) == 0 {
+		return 0
+	}
+	n := bytes.Count(src, []byte{'\n'})
+	if src[len(src)-1] != '\n' {
+		n++
+	}
+	return n
 }
