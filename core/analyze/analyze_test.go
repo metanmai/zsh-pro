@@ -148,8 +148,8 @@ func TestAnalyzeBucketsCategoriesAndFlagsSecrets(t *testing.T) {
 	if a.OpaqueBlocks != 1 {
 		t.Errorf("OpaqueBlocks = %d, want 1", a.OpaqueBlocks)
 	}
-	if a.Lines != 6 { // 5 newlines + 1
-		t.Errorf("Lines = %d, want 6", a.Lines)
+	if a.Lines != 5 { // 5 lines (trailing \n not double-counted)
+		t.Errorf("Lines = %d, want 5", a.Lines)
 	}
 	if !a.HasSecrets {
 		t.Error("expected HasSecrets=true")
