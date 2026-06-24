@@ -32,11 +32,12 @@ func (p Provider) Parse(src []byte) ([]model.Block, error) {
 		start := stmt.Pos().Offset()
 		startLine := stmt.Pos().Line()
 		// Pull in leading comments that sit directly above the statement so the
-		// block's Text and StartLine reflect the documentation above it.
+		// block's Text carries the documentation above it for context. StartLine
+		// stays the statement's own line (not the comment's): an issue points at
+		// the construct, while Text begins at the pulled-up comment.
 		for _, c := range stmt.Comments {
 			if c.End().Offset() <= stmt.Pos().Offset() && c.Pos().Offset() < start {
 				start = c.Pos().Offset()
-				startLine = c.Pos().Line()
 			}
 		}
 		end := stmt.End().Offset()
