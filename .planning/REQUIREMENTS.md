@@ -9,7 +9,7 @@ Requirements for this milestone (correct the two known analyzer line-number bugs
 
 ### Line Accuracy
 
-- [ ] **LINE-01**: `analyze` reports `Analysis.Lines` as the true line count — an empty file reports `0`, and a file ending in a trailing newline is not counted one line too high.
+- [x] **LINE-01**: `analyze` reports `Analysis.Lines` as the true line count — an empty file reports `0`, and a file ending in a trailing newline is not counted one line too high.
 - [ ] **LINE-02**: When a config statement has a leading `#` comment, every issue involving that statement reports the statement's own line number, not the comment's line.
 
 ### Test Pinning
@@ -56,7 +56,7 @@ Which phases cover which requirements. Populated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| LINE-01 | Phase 1 | Pending |
+| LINE-01 | Phase 1 | Complete |
 | LINE-02 | Phase 1 | Pending |
 | PIN-01 | Phase 1 | Pending |
 | PIN-02 | Phase 1 | Pending |

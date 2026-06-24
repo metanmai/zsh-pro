@@ -4,14 +4,14 @@ milestone: v1.0
 milestone_name: milestone
 status: executing
 stopped_at: Phase 1 context gathered
-last_updated: "2026-06-24T07:30:09.368Z"
-last_activity: 2026-06-24 -- Phase 1 planning complete
+last_updated: "2026-06-24T07:39:45.143Z"
+last_activity: 2026-06-24
 progress:
   total_phases: 1
   completed_phases: 0
   total_plans: 3
-  completed_plans: 0
-  percent: 0
+  completed_plans: 1
+  percent: 33
 ---
 
 # Project State
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-24)
 
 **Core value:** `analyze --json` reports line numbers you can trust — every issue points at the real statement line, and the reported line count is accurate.
-**Current focus:** Phase 1 — Trustworthy Line Numbers
+**Current focus:** Phase 1 — trustworthy-line-numbers
 
 ## Current Position
 
-Phase: 1 of 1 (Trustworthy Line Numbers)
-Plan: 0 of 3 in current phase
+Phase: 1 (trustworthy-line-numbers) — EXECUTING
+Plan: 2 of 3
 Status: Ready to execute
-Last activity: 2026-06-24 -- Phase 1 planning complete
+Last activity: 2026-06-24
 
-Progress: [░░░░░░░░░░] 0%
+Progress: [███░░░░░░░] 33%
 
 ## Performance Metrics
 
@@ -52,6 +52,7 @@ Progress: [░░░░░░░░░░] 0%
 - Trend: —
 
 *Updated after each plan completion*
+| Phase 1 P01-01 | 4 | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -63,6 +64,7 @@ Recent decisions affecting current work:
 - Scope limited to the two line-number bugs (path mis-naming, corpus expansion deferred to v2).
 - Off-by-one fix (recommended): `len==0 ? 0 : Count("\n") + (lastByte!='\n' ? 1 : 0)` — confirm in plan.
 - Mis-attribution fix (recommended): add a precise statement-line field on `Block`, keep `Block.StartLine` intact — confirm in plan.
+- [Phase ?]: LINE-01 (D-03) fixed: Analysis.Lines now uses editor-style countLines — empty file is 0, trailing newline not over-counted (core/analyze/analyzer.go).
 
 ### Pending Todos
 
@@ -82,6 +84,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-06-24T05:25:05.107Z
+Last session: 2026-06-24T07:39:39.132Z
 Stopped at: Phase 1 context gathered
-Resume file: .planning/phases/01-trustworthy-line-numbers/01-CONTEXT.md
+Resume file: None
