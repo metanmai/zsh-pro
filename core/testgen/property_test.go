@@ -12,10 +12,11 @@ import (
 	"zsh-pro/core/testgen"
 )
 
-// checkLines gates the issue-line / total-Lines comparison. It stays false
-// because the engine has two known, out-of-scope bugs (comment line
-// mis-attribution; total Lines off-by-one). Flip to true once those are fixed.
-const checkLines = false
+// checkLines gates the issue-line / total-Lines comparison. It is true now that
+// LINE-01 (total Lines off-by-one) and LINE-02 (comment line mis-attribution)
+// are fixed: the gated block asserts the engine's total Lines and each issue's
+// line slice against the oracle across every seed, pinning both fixes.
+const checkLines = true
 
 func propParams() testgen.GenParams {
 	return testgen.GenParams{
@@ -87,7 +88,21 @@ func assertStrict(t *testing.T, seed int64, want, got model.Analysis, src []byte
 	}
 
 	if checkLines {
-		// Enable once comment line mis-attribution + Lines off-by-one are fixed:
-		// compare want.Lines vs got.Lines and each issue's Lines slice.
+		// Total line count (LINE-01) and per-issue statement lines (LINE-02) must
+		// match the oracle. Per-issue lines are compared only for issues present
+		// in both sets (the (kind,name) set equality is asserted above).
+		if got.Lines != want.Lines {
+			fail("Lines = %d; want %d", got.Lines, want.Lines)
+		}
+		wantLines := map[string][]int{}
+		for _, is := range want.Issues {
+			wantLines[key(is)] = is.Lines
+		}
+		for _, is := range got.Issues {
+			k := key(is)
+			if wl, ok := wantLines[k]; ok && fmt.Sprint(is.Lines) != fmt.Sprint(wl) {
+				fail("issue %s lines = %v; want %v", k, is.Lines, wl)
+			}
+		}
 	}
 }
