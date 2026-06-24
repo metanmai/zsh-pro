@@ -64,13 +64,72 @@ func TestSeverityString(t *testing.T) {
 	}
 }
 
-func TestExitCode(t *testing.T) {
-	clean := Analysis{}
-	if clean.ExitCode() != ExitClean {
-		t.Errorf("clean analysis: got %d want 0", clean.ExitCode())
+func TestHasActionableIssues(t *testing.T) {
+	cases := []struct {
+		name string
+		a    Analysis
+		want bool
+	}{
+		{"empty", Analysis{}, false},
+		{
+			"advisory-only",
+			Analysis{Issues: []Issue{{Kind: IssueDuplicatePath, Name: "/scratch", Severity: SevAdvisory}}},
+			false,
+		},
+		{
+			"zero-value-severity is actionable",
+			Analysis{Issues: []Issue{{Kind: IssueDuplicateAlias, Name: "gs"}}},
+			true,
+		},
+		{
+			"mixed actionable + advisory",
+			Analysis{Issues: []Issue{
+				{Kind: IssueDuplicatePath, Name: "/scratch", Severity: SevAdvisory},
+				{Kind: IssueDuplicateAlias, Name: "gs"},
+			}},
+			true,
+		},
 	}
-	dirty := Analysis{Issues: []Issue{{Kind: IssueDuplicateAlias, Name: "gs"}}}
-	if dirty.ExitCode() != ExitActionable {
-		t.Errorf("analysis with issues: got %d want 3", dirty.ExitCode())
+	for _, tc := range cases {
+		if got := tc.a.HasActionableIssues(); got != tc.want {
+			t.Errorf("%s: HasActionableIssues() = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestExitCode(t *testing.T) {
+	cases := []struct {
+		name string
+		a    Analysis
+		want ExitCode
+	}{
+		{"clean", Analysis{}, ExitClean},
+		{
+			"actionable duplicate_alias (zero-value Severity)",
+			Analysis{Issues: []Issue{{Kind: IssueDuplicateAlias, Name: "gs"}}},
+			ExitActionable,
+		},
+		{
+			"advisory-only is clean",
+			Analysis{Issues: []Issue{{Kind: IssueDuplicatePath, Name: "/scratch", Severity: SevAdvisory}}},
+			ExitClean,
+		},
+		{
+			"mixed is actionable",
+			Analysis{Issues: []Issue{
+				{Kind: IssueDuplicatePath, Name: "/scratch", Severity: SevAdvisory},
+				{Kind: IssueDuplicateAlias, Name: "gs"},
+			}},
+			ExitActionable,
+		},
+	}
+	for _, tc := range cases {
+		if got := tc.a.ExitCode(); got != tc.want {
+			t.Errorf("%s: ExitCode() = %d, want %d", tc.name, got, tc.want)
+		}
+		// Invariant: ExitCode()==ExitActionable iff HasActionableIssues() (the two never disagree).
+		if (tc.a.ExitCode() == ExitActionable) != tc.a.HasActionableIssues() {
+			t.Errorf("%s: ExitCode()/HasActionableIssues() disagree", tc.name)
+		}
 	}
 }
