@@ -22,7 +22,7 @@ type Issue struct {
 	Name     string `json:"name"`
 	Lines    []int  `json:"lines,omitempty"`
 	Note     string `json:"note,omitempty"`
-	Severity string `json:"severity"` // always present (D-02): "actionable" | "advisory"
+	Severity string `json:"severity"` // always present (D-02); self-describing severity label, see model.Severity.String()
 }
 
 // CategorySummary is the wire shape of one per-category rollup.
