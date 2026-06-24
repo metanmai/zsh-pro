@@ -42,7 +42,10 @@ Decimal phases appear between their surrounding integers in numeric order.
   2. The four existing issue kinds (`duplicate_alias`, `reassigned_env`, `duplicate_path`, `shadowed`) are byte-identical in behavior — they remain `actionable` (the zero value) and still drive exit 3, with no edits to their construction sites.
   3. A config whose only finding is an advisory exits `0` with `issues_found: false`; a config with any actionable issue exits `3` with `issues_found: true`; the two fields never disagree.
   4. `analyze --json` still emits exactly one JSON object on stdout on both the success and `fail` paths (the agent contract holds with the new field threaded through `toDTO`).
-**Plans**: TBD
+**Plans**: 2 plans
+Plans:
+- [ ] 02-01-PLAN.md — Severity type + zero-value-actionable model foundation; HasActionableIssues() + actionable-only ExitCode() (SEV-01/SEV-02)
+- [ ] 02-02-PLAN.md — Thread severity onto the JSON wire (non-omitempty) + actionable-only issues_found; severity-aware human report marker & advisory tally (SEV-01/SEV-02)
 **UI hint**: no
 
 > **Open question to resolve in this phase (do NOT silently resolve):** Confirm with the user that redefining `issues_found` to mean "actionable issues present" is an acceptable `analyze --json` wire-contract change. An advisory-only envelope flips from `issues_found:true / exit_code:0` to `issues_found:false / exit_code:0`. Research recommends aligning the two (decision #4) but flags it as a user-confirm gate before this phase ships.
