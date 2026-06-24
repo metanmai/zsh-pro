@@ -48,7 +48,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 Plans:
 **Wave 1**
 
-- [ ] 02-01-PLAN.md — Severity type + zero-value-actionable model foundation; HasActionableIssues() + actionable-only ExitCode() (SEV-01/SEV-02)
+- [x] 02-01-PLAN.md — Severity type + zero-value-actionable model foundation; HasActionableIssues() + actionable-only ExitCode() (SEV-01/SEV-02)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -112,6 +112,6 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
 | 1. Trustworthy Line Numbers | v1.0 | 3/3 | Complete | 2026-06-24 |
-| 2. Issue Severity Tier | v1.1 | 0/TBD | Not started | - |
+| 2. Issue Severity Tier | v1.1 | 1/2 | In Progress|  |
 | 3. Trustworthy PATH Extraction & Detection | v1.1 | 0/TBD | Not started | - |
 | 4. PATH Coverage & Oracle Pin | v1.1 | 0/TBD | Not started | - |

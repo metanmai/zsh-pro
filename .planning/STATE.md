@@ -4,14 +4,14 @@ milestone: v1.1
 milestone_name: Trustworthy PATH Analysis
 status: executing
 stopped_at: Phase 2 context gathered
-last_updated: "2026-06-24T15:36:49.157Z"
-last_activity: 2026-06-24 -- Phase 2 planning complete
+last_updated: "2026-06-24T15:49:17.861Z"
+last_activity: 2026-06-24
 progress:
   total_phases: 3
   completed_phases: 0
   total_plans: 2
-  completed_plans: 0
-  percent: 0
+  completed_plans: 1
+  percent: 50
 ---
 
 # Project State
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-24)
 
 **Core value:** `analyze --json` reports output you can trust — every PATH entry is named exactly as written, genuine duplicates are caught across notations, and risky entries are flagged without polluting the exit-code signal.
-**Current focus:** Phase 2 — Issue Severity Tier
+**Current focus:** Phase 02 — issue-severity-tier
 
 ## Current Position
 
-Phase: 2 of 4 (Issue Severity Tier) — first phase of milestone v1.1
-Plan: — (not yet planned)
+Phase: 02 (issue-severity-tier) — EXECUTING
+Plan: 2 of 2
 Status: Ready to execute
-Last activity: 2026-06-24 -- Phase 2 planning complete
+Last activity: 2026-06-24
 
-Progress: [░░░░░░░░░░] 0%
+Progress: [█████░░░░░] 50%
 
 ## Performance Metrics
 
@@ -55,6 +55,7 @@ Progress: [░░░░░░░░░░] 0%
 - Trend: Stable
 
 *Updated after each plan completion*
+| Phase 02 P01 | 2 | 3 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -67,6 +68,8 @@ Recent decisions affecting current work:
 - [v1.1]: PATH dedup is semantic but **notation-only** (`~`/`$HOME`/`${HOME}` + slashes; no filesystem/env resolution).
 - [v1.1]: Relative-entry advisory is a new **informational severity**, not exit-3 — `SevActionable` is the zero value so the 4 existing kinds stay byte-identical.
 - [Roadmap]: Strict A→B→C order — Phase 2 (severity) MUST precede Phase 3 (PATH) so advisory-only configs never transiently exit 3.
+- [Phase ?]: [02-01]: SevActionable is the zero value (int+iota) so the 4 existing issue kinds keep exit-3 with zero construction-site edits (D-01).
+- [Phase ?]: [02-01]: ExitCode() consults Analysis.HasActionableIssues() (single actionable predicate); len(a.Issues) no longer drives the exit code (D-04).
 
 ### Pending Todos
 
@@ -89,9 +92,9 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-06-24T14:55:48.449Z
+Last session: 2026-06-24T15:49:11.955Z
 Stopped at: Phase 2 context gathered
-Resume file: .planning/phases/02-issue-severity-tier/02-CONTEXT.md
+Resume file: None
 
 ## Operator Next Steps
 

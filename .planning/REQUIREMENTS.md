@@ -16,8 +16,8 @@ Requirements for this milestone. Each maps to a roadmap phase.
 
 ### Issue Severity
 
-- [ ] **SEV-01**: Every issue carries a severity (`actionable` or `advisory`), surfaced in both the human report and the `--json` envelope as a self-describing string. `actionable` is the default (zero value) so the four existing issue kinds are unchanged.
-- [ ] **SEV-02**: The exit code and the `issues_found` flag reflect only actionable issues — a config whose only finding is an advisory exits `0` with `issues_found: false`. Advisories never bump the exit code; exit 3 stays reserved for genuine problems (duplicate alias/env/path, shadowed).
+- [x] **SEV-01**: Every issue carries a severity (`actionable` or `advisory`), surfaced in both the human report and the `--json` envelope as a self-describing string. `actionable` is the default (zero value) so the four existing issue kinds are unchanged.
+- [x] **SEV-02**: The exit code and the `issues_found` flag reflect only actionable issues — a config whose only finding is an advisory exits `0` with `issues_found: false`. Advisories never bump the exit code; exit 3 stays reserved for genuine problems (duplicate alias/env/path, shadowed).
 
 ### Test Coverage
 
@@ -60,8 +60,8 @@ Which phases cover which requirements. Populated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| SEV-01 | Phase 2 | Pending |
-| SEV-02 | Phase 2 | Pending |
+| SEV-01 | Phase 2 | Complete |
+| SEV-02 | Phase 2 | Complete |
 | PATH-01 | Phase 3 | Pending |
 | PATH-02 | Phase 3 | Pending |
 | PATH-03 | Phase 3 | Pending |
