@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 01-02-PLAN.md (LINE-02)
-last_updated: "2026-06-24T07:44:01.376Z"
-last_activity: 2026-06-24
+stopped_at: Completed 01-03-PLAN.md (PIN-01/PIN-02)
+last_updated: "2026-06-24T09:31:33.281Z"
+last_activity: 2026-06-24 -- Completed 01-03 (PIN-01/PIN-02)
 progress:
   total_phases: 1
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 3
-  completed_plans: 2
-  percent: 67
+  completed_plans: 3
+  percent: 100
 ---
 
 # Project State
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-24)
 
 **Core value:** `analyze --json` reports line numbers you can trust — every issue points at the real statement line, and the reported line count is accurate.
-**Current focus:** Phase 1 — trustworthy-line-numbers
+**Current focus:** Phase 01 — trustworthy-line-numbers
 
 ## Current Position
 
-Phase: 1 (trustworthy-line-numbers) — EXECUTING
-Plan: 3 of 3
-Status: Ready to execute
-Last activity: 2026-06-24
+Phase: 01 (trustworthy-line-numbers) — ALL PLANS COMPLETE
+Plan: 3 of 3 (complete)
+Status: Phase 01 execution complete — ready for verification
+Last activity: 2026-06-24 -- Completed 01-03 (PIN-01/PIN-02)
 
-Progress: [███████░░░] 67%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
@@ -54,6 +54,7 @@ Progress: [███████░░░] 67%
 *Updated after each plan completion*
 | Phase 1 P01-01 | 4 | 2 tasks | 2 files |
 | Phase 1 P01-02 | 1 min | 2 tasks | 2 files |
+| Phase 1 P01-03 | 9 min | 3 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -66,6 +67,7 @@ Recent decisions affecting current work:
 - Off-by-one fix (recommended): `len==0 ? 0 : Count("\n") + (lastByte!='\n' ? 1 : 0)` — confirm in plan.
 - [Phase 1]: LINE-02 (D-01/D-02) fixed: Block.StartLine redefined to the statement line by deleting the comment-line overwrite in parse.go's comment-pull-up loop — NO new Block field, reconciler.go untouched (inherits the fix). Supersedes the earlier "add a field" recommendation.
 - [Phase ?]: LINE-01 (D-03) fixed: Analysis.Lines now uses editor-style countLines — empty file is 0, trailing newline not over-counted (core/analyze/analyzer.go).
+- [Phase 1]: PIN-01/PIN-02 (D-04/D-05) done: checkLines flipped to true; the 10-seed oracle now asserts total Lines + per-issue line slices, sourced non-circularly from a new ConfigGraph.RenderedLines render counter (NOT the engine formula); dupAlias/dupEnv first nodes carry a leading comment so LINE-02 is exercised beyond shadows; golden corpus stays minimal with empty.zsh pinned at lines 0 (no issue_lines/issue_names).
 
 ### Pending Todos
 
@@ -73,7 +75,7 @@ None yet.
 
 ### Blockers/Concerns
 
-- Correcting line numbers is a deliberate `analyze --json` wire-contract change (accepted): emitted `Lines` and issue `lines` values change. The `testgen` oracle (10 seeds) is the primary regression pin; line assertions stay on after this work.
+- Correcting line numbers is a deliberate `analyze --json` wire-contract change (accepted): emitted `Lines` and issue `lines` values change. The `testgen` oracle (10 seeds) is now the primary regression pin with line assertions ON (`checkLines = true`) — both fixes are locked as of 01-03.
 
 ## Deferred Items
 
@@ -85,6 +87,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-06-24T07:44:01.371Z
-Stopped at: Completed 01-02-PLAN.md (LINE-02)
+Last session: 2026-06-24T09:31:33.276Z
+Stopped at: Completed 01-03-PLAN.md (PIN-01/PIN-02)
 Resume file: None

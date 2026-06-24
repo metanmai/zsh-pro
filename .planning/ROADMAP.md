@@ -13,7 +13,7 @@ A focused correctness pass on the shipped `analyze` engine: make every reported 
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Trustworthy Line Numbers** - Fix both line-number bugs and pin them with the oracle + golden corpus
+- [x] **Phase 1: Trustworthy Line Numbers** - Fix both line-number bugs and pin them with the oracle + golden corpus (completed 2026-06-24)
 
 ## Phase Details
 
@@ -41,7 +41,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 01-03-PLAN.md — Pin both fixes: add `ConfigGraph.RenderedLines` for a non-circular total, comment the dup-alias/reassigned-env pairs, flip `checkLines` to true in `property_test.go`, and make the golden corpus assert `empty.zsh` at 0 lines (PIN-01, PIN-02)
+- [x] 01-03-PLAN.md — Pin both fixes: add `ConfigGraph.RenderedLines` for a non-circular total, comment the dup-alias/reassigned-env pairs, flip `checkLines` to true in `property_test.go`, and make the golden corpus assert `empty.zsh` at 0 lines (PIN-01, PIN-02)
 
 ## Progress
 
@@ -50,4 +50,4 @@ Phases execute in numeric order: 1
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Trustworthy Line Numbers | 2/3 | In Progress|  |
+| 1. Trustworthy Line Numbers | 3/3 | Complete   | 2026-06-24 |

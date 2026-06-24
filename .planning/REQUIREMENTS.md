@@ -14,8 +14,8 @@ Requirements for this milestone (correct the two known analyzer line-number bugs
 
 ### Test Pinning
 
-- [ ] **PIN-01**: The `testgen` oracle property test asserts line numbers (`checkLines = true`) — total `Lines` and each issue's `lines` slice — across all seeds, and passes.
-- [ ] **PIN-02**: The existing golden corpus (`manifests.json` + `corpus_test.go`) passes against the corrected output, and the `empty.zsh` case reflects a `0`-line count.
+- [x] **PIN-01**: The `testgen` oracle property test asserts line numbers (`checkLines = true`) — total `Lines` and each issue's `lines` slice — across all seeds, and passes.
+- [x] **PIN-02**: The existing golden corpus (`manifests.json` + `corpus_test.go`) passes against the corrected output, and the `empty.zsh` case reflects a `0`-line count.
 
 ## v2 Requirements
 
@@ -58,8 +58,8 @@ Which phases cover which requirements. Populated during roadmap creation.
 |-------------|-------|--------|
 | LINE-01 | Phase 1 | Complete |
 | LINE-02 | Phase 1 | Complete |
-| PIN-01 | Phase 1 | Pending |
-| PIN-02 | Phase 1 | Pending |
+| PIN-01 | Phase 1 | Complete |
+| PIN-02 | Phase 1 | Complete |
 
 **Coverage:**
 - v1 requirements: 4 total
