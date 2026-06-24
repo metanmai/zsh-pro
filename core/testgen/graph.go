@@ -34,6 +34,11 @@ type Node struct {
 // no separate topological sort is needed when rendering.
 type ConfigGraph struct {
 	Nodes []*Node
+	// RenderedLines is the editor-style line total of the last RenderZsh output.
+	// It is a side-effect field: RenderZsh sets it from its own running line
+	// counter (non-circular — not the engine's formula), and Expected reads it
+	// to populate Analysis.Lines. Call RenderZsh before Expected.
+	RenderedLines int
 }
 
 // Add appends a node and returns its index.

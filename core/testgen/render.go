@@ -25,6 +25,10 @@ func (g *ConfigGraph) RenderZsh() []byte {
 		b.WriteByte('\n') // blank separator
 		line++
 	}
+	// line points one past the final blank separator, so line-1 is the rendered
+	// total. Source it from the counter here (NOT by re-counting the bytes with
+	// the engine's formula) so the oracle's total stays non-circular.
+	g.RenderedLines = line - 1
 	return []byte(b.String())
 }
 

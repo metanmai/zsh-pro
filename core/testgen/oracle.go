@@ -7,16 +7,19 @@ import (
 )
 
 // Expected derives the known-correct analysis from the graph. It requires
-// RenderZsh to have run (it reads Node.Line). The line numbers it records are
-// the CORRECT statement lines; the engine may differ on a first occurrence that
-// follows a comment (a known bug), so the property test compares issues by
-// (kind, name) and gates the line comparison.
+// RenderZsh to have run: it reads Node.Line for per-issue lines and
+// g.RenderedLines for the total. The line numbers it records are the CORRECT
+// statement lines; with LINE-01/LINE-02 fixed the engine now matches them, so
+// the property test asserts both the total Lines and each issue's line slice.
 //
 // Grouping mirrors the engine: reassigned_env spans env+secret nodes; a path
 // duplicate keys on the rooted directory; a shadow is a name defined as both an
 // alias and a function.
 func (g *ConfigGraph) Expected() model.Analysis {
 	var a model.Analysis
+	// Total Lines comes from RenderZsh's running counter (RenderedLines), not the
+	// engine's countLines formula — keeping the oracle's total non-circular.
+	a.Lines = g.RenderedLines
 	counts := map[model.Category]int{}
 	for _, n := range g.Nodes {
 		counts[n.Cat]++

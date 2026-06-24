@@ -88,13 +88,17 @@ func (gen *Generator) Build(p GenParams) *ConfigGraph {
 		g.Add(&Node{Kind: NodeSecret, Name: name, Value: "xxxxxxxx", Cat: model.CatSecrets})
 	}
 
-	// Planted defects (fresh names, distinct from base).
+	// Planted defects (fresh names, distinct from base). The first node of each
+	// dup pair carries a leading comment so the rendered source places a
+	// `# comment` line directly above the first occurrence — this exercises the
+	// LINE-02 statement-vs-comment line fix for duplicate_alias and
+	// reassigned_env, not only shadowed.
 	for _, name := range dupAlias {
-		g.Add(&Node{Kind: NodeAlias, Name: name, Value: "echo first", Cat: model.CatAliases})
+		g.Add(&Node{Kind: NodeAlias, Name: name, Value: "echo first", Cat: model.CatAliases, Comment: fmt.Sprintf("first %s", name)})
 		g.Add(&Node{Kind: NodeAlias, Name: name, Value: "echo second", Cat: model.CatAliases})
 	}
 	for _, name := range dupEnv {
-		g.Add(&Node{Kind: NodeEnvVar, Name: name, Value: "first", Cat: model.CatEnvironment})
+		g.Add(&Node{Kind: NodeEnvVar, Name: name, Value: "first", Cat: model.CatEnvironment, Comment: fmt.Sprintf("first %s", name)})
 		g.Add(&Node{Kind: NodeEnvVar, Name: name, Value: "second", Cat: model.CatEnvironment})
 	}
 	for _, dir := range dupPath {
