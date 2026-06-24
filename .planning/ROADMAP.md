@@ -37,7 +37,7 @@ Plans:
 **Wave 1**
 
 - [x] 01-01-PLAN.md — Fix off-by-one line count: `analyzer.go` editor-style `countLines` (empty → 0, trailing newline not over-counted) + update the `want 6` → `want 5` assertion (LINE-01)
-- [ ] 01-02-PLAN.md — Fix issue line mis-attribution: stop overwriting `startLine` in the `parse.go` comment-pull-up loop so `Block.StartLine` is the statement line (reconciler unchanged) + update the `want 1` → `want 2` assertion (LINE-02)
+- [x] 01-02-PLAN.md — Fix issue line mis-attribution: stop overwriting `startLine` in the `parse.go` comment-pull-up loop so `Block.StartLine` is the statement line (reconciler unchanged) + update the `want 1` → `want 2` assertion (LINE-02)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -50,4 +50,4 @@ Phases execute in numeric order: 1
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Trustworthy Line Numbers | 1/3 | In Progress|  |
+| 1. Trustworthy Line Numbers | 2/3 | In Progress|  |
