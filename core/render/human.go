@@ -36,8 +36,18 @@ func (HumanRenderer) Render(a model.Analysis) ([]byte, error) {
 		b.WriteString("   (none found — nice and clean)\n")
 		return []byte(b.String()), nil
 	}
+	actionable, advisory := 0, 0
 	for _, is := range a.Issues {
-		line := fmt.Sprintf("   ! %-16s %s", is.Kind, is.Name)
+		// Softer, non-blocking marker for advisories (D-05); they stay inline in
+		// this single ISSUES list rather than in a separate section.
+		marker := "!"
+		if is.Severity == model.SevAdvisory {
+			marker = "~"
+			advisory++
+		} else {
+			actionable++
+		}
+		line := fmt.Sprintf("   %s %-16s %s", marker, is.Kind, is.Name)
 		if len(is.Lines) > 0 {
 			line += fmt.Sprintf("  at lines %v", is.Lines)
 		}
@@ -46,5 +56,8 @@ func (HumanRenderer) Render(a model.Analysis) ([]byte, error) {
 		}
 		b.WriteString(line + "\n")
 	}
+	// Tally advisories separately from actionable issues so they are visible but
+	// clearly not counted as actionable "issues" (D-06).
+	fmt.Fprintf(&b, "   %d issues, %d advisories\n", actionable, advisory)
 	return []byte(b.String()), nil
 }

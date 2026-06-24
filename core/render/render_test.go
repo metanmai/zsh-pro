@@ -44,6 +44,69 @@ func TestHumanIncludesCategoriesAndIssues(t *testing.T) {
 	}
 }
 
+// TestHumanAdvisoryMarkerAndTally pins D-05 + D-06: an actionable issue uses
+// "!" and an advisory uses the softer "~" in the SINGLE ISSUES list (no second
+// section heading), and the summary tallies advisories distinctly from the
+// actionable issue count.
+func TestHumanAdvisoryMarkerAndTally(t *testing.T) {
+	a := model.Analysis{
+		Path:       "/home/u/.zshrc",
+		Lines:      20,
+		BlockCount: 5,
+		Issues: []model.Issue{
+			{Kind: model.IssueDuplicateAlias, Name: "gs", Lines: []int{1, 9}}, // zero-value ⇒ actionable
+			{Kind: model.IssueDuplicatePath, Name: "./bin", Lines: []int{4}, Severity: model.SevAdvisory},
+		},
+		Introspected: true,
+	}
+	b, _ := (HumanRenderer{}).Render(a)
+	out := string(b)
+
+	// The actionable issue's line carries "!" with its name.
+	actLine := findLine(out, "gs")
+	if !strings.Contains(actLine, "!") {
+		t.Errorf("actionable issue line missing %q marker: %q", "!", actLine)
+	}
+	if strings.Contains(actLine, "~") {
+		t.Errorf("actionable issue line must not carry the advisory marker: %q", actLine)
+	}
+
+	// The advisory issue's line carries the softer "~" and not "!".
+	advLine := findLine(out, "./bin")
+	if !strings.Contains(advLine, "~") {
+		t.Errorf("advisory issue line missing softer %q marker: %q", "~", advLine)
+	}
+	if strings.Contains(advLine, "!") {
+		t.Errorf("advisory issue line must not carry the actionable %q marker: %q", "!", advLine)
+	}
+
+	// Single ISSUES list — exactly one ISSUES header, no separate advisory section.
+	if n := strings.Count(out, "ISSUES"); n != 1 {
+		t.Errorf("expected exactly one ISSUES header, got %d\n---\n%s", n, out)
+	}
+
+	// Summary tallies advisories distinctly from actionable issues. There is one
+	// of each here, so the rendered output must show an advisory count of 1 that
+	// is presented separately from the actionable issue count (not folded in).
+	if !strings.Contains(out, "advisor") {
+		t.Errorf("summary missing a distinct advisory tally:\n%s", out)
+	}
+	tally := findLine(out, "advisor")
+	if !strings.Contains(tally, "1") {
+		t.Errorf("advisory tally line missing the advisory count: %q", tally)
+	}
+}
+
+// findLine returns the first line in s that contains sub (or "" if none).
+func findLine(s, sub string) string {
+	for _, ln := range strings.Split(s, "\n") {
+		if strings.Contains(ln, sub) {
+			return ln
+		}
+	}
+	return ""
+}
+
 func TestJSONIsOneObjectWithContract(t *testing.T) {
 	b, err := (JSONRenderer{}).Render(sampleAnalysis())
 	if err != nil {
