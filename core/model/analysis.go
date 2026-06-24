@@ -26,7 +26,7 @@ type Analysis struct {
 // issues_found:false), while any actionable issue makes it actionable.
 func (a Analysis) HasActionableIssues() bool {
 	for _, is := range a.Issues {
-		if is.Severity == SevActionable {
+		if is.Severity.IsActionable() {
 			return true
 		}
 	}

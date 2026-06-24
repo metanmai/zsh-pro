@@ -64,6 +64,30 @@ func TestSeverityString(t *testing.T) {
 	}
 }
 
+// TestSeverityIsActionable pins the single "actionable vs advisory" predicate
+// (WR-01). The cut is "not advisory", so SevActionable and the zero value are
+// actionable, SevAdvisory is not, and — critically — any future non-zero,
+// non-advisory value defaults to the safe, exit-bumping (actionable) side. This
+// keeps HasActionableIssues, the human marker/tally, and String() on one
+// polarity so they cannot diverge when the enum is extended.
+func TestSeverityIsActionable(t *testing.T) {
+	cases := []struct {
+		name string
+		s    Severity
+		want bool
+	}{
+		{"SevActionable", SevActionable, true},
+		{"SevAdvisory", SevAdvisory, false},
+		{"zero value", Severity(0), true},
+		{"future non-advisory value defaults to actionable", Severity(2), true},
+	}
+	for _, tc := range cases {
+		if got := tc.s.IsActionable(); got != tc.want {
+			t.Errorf("%s: Severity(%d).IsActionable() = %v, want %v", tc.name, int(tc.s), got, tc.want)
+		}
+	}
+}
+
 func TestHasActionableIssues(t *testing.T) {
 	cases := []struct {
 		name string

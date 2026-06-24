@@ -35,6 +35,18 @@ func (s Severity) String() string {
 	}
 }
 
+// IsActionable reports whether this severity should drive exit 3, issues_found,
+// and the actionable marker/tally. It is the single source of truth for the
+// "actionable vs advisory" cut: every severity except SevAdvisory is actionable.
+// Phrasing the predicate as "not advisory" (rather than "== SevActionable")
+// keeps every call site — HasActionableIssues, the human marker/tally, and the
+// String() default arm — on one polarity, so a future non-zero, non-advisory
+// value defaults to the same safe, exit-bumping side everywhere these comments
+// already promise.
+func (s Severity) IsActionable() bool {
+	return s != SevAdvisory
+}
+
 // Issue is one reported problem.
 type Issue struct {
 	Kind     IssueKind
