@@ -26,13 +26,13 @@ Decimal phases appear between their surrounding integers in numeric order.
   2. When a config statement has a leading `#` comment, every issue it generates (duplicate, reassigned, shadow) reports the statement's own line number, not the comment's line.
   3. The `testgen` oracle property test runs with `checkLines = true` and passes — asserting total `Lines` and each issue's `lines` slice across all 10 seeds.
   4. The existing golden corpus (`manifests.json` + `corpus_test.go`) passes against the corrected output, with the `empty.zsh` case reflecting a `0`-line count.
-**Plans**: 3 plans (LINE-01 and LINE-02 touch independent files and can run in parallel; pins applied once both fixes land)
+**Plans**: 3 plans (01-01 and 01-02 touch independent files and run in parallel in Wave 1; 01-03 pins both fixes in Wave 2 once they land)
 **UI hint**: no
 
 Plans:
-- [ ] 01-01: Fix off-by-one line count (`analyzer.go`) — empty → 0, trailing newline not over-counted (LINE-01)
-- [ ] 01-02: Fix issue line mis-attribution (`parse.go` / `block.go` → `reconciler.go`) — issues report statement line, not comment line (LINE-02)
-- [ ] 01-03: Pin both fixes — flip `checkLines` to true in `property_test.go`; keep golden corpus honest, `empty.zsh` at 0 lines (PIN-01, PIN-02)
+- [ ] 01-01-PLAN.md — Fix off-by-one line count: `analyzer.go` editor-style `countLines` (empty → 0, trailing newline not over-counted) + update the `want 6` → `want 5` assertion (LINE-01)
+- [ ] 01-02-PLAN.md — Fix issue line mis-attribution: stop overwriting `startLine` in the `parse.go` comment-pull-up loop so `Block.StartLine` is the statement line (reconciler unchanged) + update the `want 1` → `want 2` assertion (LINE-02)
+- [ ] 01-03-PLAN.md — Pin both fixes: add `ConfigGraph.RenderedLines` for a non-circular total, comment the dup-alias/reassigned-env pairs, flip `checkLines` to true in `property_test.go`, and make the golden corpus assert `empty.zsh` at 0 lines (PIN-01, PIN-02)
 
 ## Progress
 
