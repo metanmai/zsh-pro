@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"zsh-pro/core/buildinfo"
+	"zsh-pro/core/dto"
 	"zsh-pro/core/shell/zsh"
 )
 
@@ -42,16 +44,48 @@ func TestRunDuplicateExitsThree(t *testing.T) {
 	}
 }
 
+// TestRunJSONEmitsOneObject pins the agent contract on the SUCCESS path: in
+// --json mode, stdout MUST be exactly one parseable JSON envelope and nothing
+// else, stderr stays clean, and the envelope reports ok:true with the matching
+// exit code even when actionable issues are found. This is the guard a stray
+// log line or fmt.Print to stdout would trip.
 func TestRunJSONEmitsOneObject(t *testing.T) {
 	p := writeRC(t, "alias gs='git status'\nalias gs='git switch'\n")
 	var out, errBuf bytes.Buffer
 	code := New(zsh.Provider{}).Run([]string{"analyze", p, "--json"}, &out, &errBuf)
 	if code != 3 {
-		t.Fatalf("exit code = %d, want 3", code)
+		t.Fatalf("exit code = %d, want 3\nstdout: %s\nstderr: %s", code, out.String(), errBuf.String())
 	}
-	s := strings.TrimSpace(out.String())
-	if !strings.HasPrefix(s, "{") || !strings.HasSuffix(s, "}") {
-		t.Errorf("expected a single JSON object, got:\n%s", s)
+
+	// Nothing may leak to stderr on a successful --json run.
+	if errBuf.Len() != 0 {
+		t.Errorf("expected empty stderr on --json success, got:\n%s", errBuf.String())
+	}
+
+	// stdout must be exactly one parseable JSON envelope — no leading or trailing
+	// noise. A stray log/print would make Decode fail or leave trailing data.
+	dec := json.NewDecoder(bytes.NewReader(out.Bytes()))
+	var env dto.Envelope
+	if err := dec.Decode(&env); err != nil {
+		t.Fatalf("stdout is not a single parseable JSON envelope: %v\nstdout: %s", err, out.String())
+	}
+	if dec.More() {
+		t.Errorf("expected exactly one JSON object on stdout, found trailing data:\n%s", out.String())
+	}
+
+	// Envelope contract: a successful analysis (even with actionable issues) is
+	// ok:true, self-identifying, and carries the exit code the process returned.
+	if !env.OK {
+		t.Errorf("expected ok:true on a successful analysis, got ok:false\nstdout: %s", out.String())
+	}
+	if env.ExitCode != code {
+		t.Errorf("envelope exit_code = %d, want %d (must match the process exit code)", env.ExitCode, code)
+	}
+	if !env.IssuesFound {
+		t.Error("expected issues_found:true for a duplicate-alias config")
+	}
+	if env.Tool != buildinfo.Name || env.Command != buildinfo.Command {
+		t.Errorf("envelope identity mismatch: tool=%q command=%q", env.Tool, env.Command)
 	}
 }
 
