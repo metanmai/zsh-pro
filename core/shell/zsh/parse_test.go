@@ -50,9 +50,10 @@ fi
 			t.Errorf("block %d: names %v, want first=%q", c.idx, b.Names, c.name)
 		}
 	}
-	// leading comment is attached to the alias block.
-	if blocks[0].StartLine != 1 {
-		t.Errorf("alias block StartLine = %d, want 1 (leading comment)", blocks[0].StartLine)
+	// The leading comment is pulled into the alias block's Text for context, but
+	// StartLine is the statement's own line (line 2), not the comment line (1).
+	if blocks[0].StartLine != 2 {
+		t.Errorf("alias block StartLine = %d, want 2 (statement line, not leading-comment line)", blocks[0].StartLine)
 	}
 }
 
