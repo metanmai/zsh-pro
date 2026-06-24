@@ -38,14 +38,22 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Depends on**: Phase 1 (shipped)
 **Requirements**: SEV-01, SEV-02
 **Success Criteria** (what must be TRUE):
+
   1. Every issue in `--json` and the human report carries a self-describing severity string (`"actionable"` or `"advisory"`), present on every issue object.
   2. The four existing issue kinds (`duplicate_alias`, `reassigned_env`, `duplicate_path`, `shadowed`) are byte-identical in behavior — they remain `actionable` (the zero value) and still drive exit 3, with no edits to their construction sites.
   3. A config whose only finding is an advisory exits `0` with `issues_found: false`; a config with any actionable issue exits `3` with `issues_found: true`; the two fields never disagree.
   4. `analyze --json` still emits exactly one JSON object on stdout on both the success and `fail` paths (the agent contract holds with the new field threaded through `toDTO`).
+
 **Plans**: 2 plans
 Plans:
+**Wave 1**
+
 - [ ] 02-01-PLAN.md — Severity type + zero-value-actionable model foundation; HasActionableIssues() + actionable-only ExitCode() (SEV-01/SEV-02)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 02-02-PLAN.md — Thread severity onto the JSON wire (non-omitempty) + actionable-only issues_found; severity-aware human report marker & advisory tally (SEV-01/SEV-02)
+
 **UI hint**: no
 
 > **Open question to resolve in this phase (do NOT silently resolve):** Confirm with the user that redefining `issues_found` to mean "actionable issues present" is an acceptable `analyze --json` wire-contract change. An advisory-only envelope flips from `issues_found:true / exit_code:0` to `issues_found:false / exit_code:0`. Research recommends aligning the two (decision #4) but flags it as a user-confirm gate before this phase ships.
@@ -58,11 +66,13 @@ Plans:
 **Depends on**: Phase 2 (the `relativePaths` detector sets `SevAdvisory`; the new `IssueRelativePath` kind needs the `Severity` field to exist)
 **Requirements**: PATH-01, PATH-02, PATH-03
 **Success Criteria** (what must be TRUE):
+
   1. A relative entry is reported verbatim — `./scripts` is reported as `./scripts`, never `/scripts` — and an unrooted entry (`bin`, `scripts`) is detected; the `$PATH`/`${PATH}` self-reference is excluded and surrounding quotes trimmed.
   2. Notation-equivalent entries (`~` ≡ `$HOME` ≡ `${HOME}`, trailing/duplicate slashes normalized) collapse to a single `duplicate_path` whose `name` is verbatim and whose `lines` list every adding line — with no filesystem or live-`$HOME` access (analysis stays byte-identical across two `$HOME` values; `~user` stays distinct).
   3. Relative/unrooted entries — `./x`, `../x`, bare words, bare `.`, and empty entries (leading/trailing/`::` colon) — surface as a `relative_path_entry` advisory; the `.`/empty current-directory cases carry a CWE-427 security reference.
   4. The advisory never bumps the exit code: an advisory-only config exits 0, a genuine duplicate exits 3, and a mixed config exits 3 (the Phase 2 severity gate holds end-to-end).
   5. `pathSegRe` is deleted and no `regexp` runs over `Block.Text` for PATH extraction; entries come from parsed assignment structure.
+
 **Plans**: TBD
 **UI hint**: no
 
@@ -81,10 +91,12 @@ Plans:
 **Depends on**: Phase 2 (model symbols `Severity`/`IssueRelativePath`) and Phase 3 (the engine must actually produce the new/corrected issues to assert against)
 **Requirements**: COV-01, COV-02, COV-03
 **Success Criteria** (what must be TRUE):
+
   1. The golden corpus includes fixtures exercising the previously-uncovered `duplicate_path` and `shadowed` issue kinds.
   2. Each corpus fixture asserts `issue_names`, `issue_lines`, and `severity` — not just the issue `Kind`.
   3. The testgen oracle generates and independently predicts relative, unrooted, and notation-equivalent duplicate PATH entries plus the advisory, using a two-field path node (rendered notation vs. independent dedup key) and a testgen-local canonicalizer — `core/testgen` imports only `core/model`, never the engine's canonicalizer.
   4. The 10-seed property test passes and bites: a deliberately-broken canonicalizer fails the test, and the advisory is pinned as exit-code-neutral at the oracle level (proving the pin is non-circular).
+
 **Plans**: TBD
 **UI hint**: no
 
