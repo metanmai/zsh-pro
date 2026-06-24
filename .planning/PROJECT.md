@@ -2,7 +2,7 @@
 
 ## What This Is
 
-zsh-pro is a read-only zsh-config analyzer CLI. It parses a zsh config file (default `~/.zshrc`) with a real AST parser, classifies each entry (environment, aliases, functions, path, secrets, …), detects config issues (duplicate aliases, reassigned env vars, duplicate PATH entries, shadowed names), flags likely secrets, and emits either a human-readable report or a `--json` envelope for agents. This milestone makes the line numbers it reports **correct** — fixing the two documented line-number bugs in the engine.
+zsh-pro is a read-only zsh-config analyzer CLI. It parses a zsh config file (default `~/.zshrc`) with a real AST parser, classifies each entry (environment, aliases, functions, path, secrets, …), detects config issues (duplicate aliases, reassigned env vars, duplicate PATH entries, shadowed names), flags likely secrets, and emits either a human-readable report or a `--json` envelope for agents. As of milestone v1.0, the line numbers it reports are **correct** — the two documented line-number bugs are fixed and pinned by the testgen oracle.
 
 ## Core Value
 
@@ -24,15 +24,16 @@ zsh-pro is a read-only zsh-config analyzer CLI. It parses a zsh config file (def
 - ✓ Best-effort `zsh -f` liveness introspection that degrades gracefully when zsh is absent — existing
 - ✓ Shell-agnostic `shell.Provider` seam (ISP interfaces; single composition root) — existing
 - ✓ Graph-based test generator with a correctness oracle + mutation fuzz harness (`core/testgen` + `zsh-gen` CLI) — existing
+- ✓ **Line-count off-by-one fixed** — `Analysis.Lines` correct for every file shape (empty → 0; trailing `\n` not over-counted) — Phase 1 (LINE-01)
+- ✓ **Issue line attribution fixed** — issues report the statement's own line, not a leading comment's line — Phase 1 (LINE-02)
+- ✓ **Both fixes pinned by tests** — `checkLines = true`; the 10-seed oracle asserts total `Lines` + per-issue line slices (non-circular `RenderedLines`) — Phase 1 (PIN-01)
+- ✓ **Golden corpus kept honest** — corpus passes against corrected output; `empty.zsh` pinned at 0 lines — Phase 1 (PIN-02)
 
 ### Active
 
 <!-- This milestone. Both bugs live in CONCERNS.md → ## Known Bugs; the regression pin already waits in property_test.go. -->
 
-- [ ] **Line-count off-by-one** — `Analysis.Lines` is correct for every file shape: empty file → `0`; a file ending in `\n` is not over-counted by one (`analyzer.go:28`).
-- [ ] **Issue line mis-attribution** — when a statement has a leading `#` comment, its issue reports the **statement** line, not the comment's line (`parse.go:36–40` → `reconciler.go:46,67` via `Block.StartLine`).
-- [ ] **Pin the fix with tests** — flip `core/testgen/property_test.go` `checkLines` from `false` to `true` so the oracle property test asserts `Lines` and per-issue line slices across all 10 seeds.
-- [ ] **Golden corpus stays honest** — the existing `manifests.json` corpus passes against the corrected output; any manifest that encoded the buggy line behaviour is corrected.
+- *None — milestone v1.0 (trustworthy-line-numbers) is complete; all four requirements above are validated in Phase 1.*
 
 ### Out of Scope
 
@@ -66,10 +67,10 @@ zsh-pro is a read-only zsh-config analyzer CLI. It parses a zsh config file (def
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| Scope limited to the two line-number bugs | User chose the smallest, lowest-risk change; adjacent bugs (path mis-naming, corpus expansion) deferred | — Pending |
-| Fix is pinned by tests (`checkLines` → true) | The regression pin already exists in `property_test.go` awaiting exactly this fix | — Pending |
-| Off-by-one fix: `len==0 ? 0 : Count("\n") + (lastByte!='\n' ? 1 : 0)` | Empty → 0; trailing-newline files counted correctly; `Lines` stays consistent with 1-based statement line numbers | — Pending (recommended; confirm in plan) |
-| Mis-attribution fix: add a precise statement-line field on `Block` | Keeps `Block.StartLine` (the block's true start, incl. comments) intact; issues emit the exact statement line | — Pending (recommended; confirm in plan) |
+| Scope limited to the two line-number bugs | User chose the smallest, lowest-risk change; adjacent bugs (path mis-naming, corpus expansion) deferred | ✓ Done (Phase 1) — held to scope |
+| Fix is pinned by tests (`checkLines` → true) | The regression pin already exists in `property_test.go` awaiting exactly this fix | ✓ Done (Phase 1, PIN-01/02) — oracle asserts total + per-issue lines across 10 seeds; golden corpus pins `empty.zsh` at 0 |
+| Off-by-one fix: `len==0 ? 0 : Count("\n") + (lastByte!='\n' ? 1 : 0)` | Empty → 0; trailing-newline files counted correctly; `Lines` stays consistent with 1-based statement line numbers | ✓ Done (Phase 1, LINE-01) — implemented as recommended (editor-style `countLines`) |
+| Mis-attribution fix: add a precise statement-line field on `Block` | Keeps `Block.StartLine` (the block's true start, incl. comments) intact; issues emit the exact statement line | ✓ Done (Phase 1, LINE-02) — **superseded**: no `Block` field added; instead deleted the comment-line overwrite in `parse.go` so `Block.StartLine` stays the statement line (reconciler untouched) |
 | **Classifier: precision over recall.** Below high confidence, flag an explicit "uncertain" bucket (never a confident category), surface confidence in output, and tighten over-capturing PATH/secret rules. A silent false positive is worse than an honest "unsure." | User design principle (2026-06-24). NOTE — today's classifier does the *opposite*: it always assigns a category (`misc` fallback), `Block.Conf` is computed (`analyzer.go:38`) but read nowhere, and PATH (`classify.go:39` substring) / secret (`:34` substring) rules over-capture at Medium/High confidence. | — Pending (own future phase; **NOT** Phase 1) |
 
 ## Evolution
@@ -90,4 +91,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-06-24 after initialization*
+*Last updated: 2026-06-24 — milestone v1.0 (trustworthy-line-numbers) complete: LINE-01/02 fixed and pinned (PIN-01/02), verified 4/4.*
