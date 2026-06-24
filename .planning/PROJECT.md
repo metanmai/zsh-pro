@@ -39,6 +39,7 @@ zsh-pro is a read-only zsh-config analyzer CLI. It parses a zsh config file (def
 - ✓ **Issue line attribution fixed** — issues report the statement's own line, not a leading comment's line — Phase 1 (LINE-02)
 - ✓ **Both fixes pinned by tests** — `checkLines = true`; the 10-seed oracle asserts total `Lines` + per-issue line slices (non-circular `RenderedLines`) — Phase 1 (PIN-01)
 - ✓ **Golden corpus kept honest** — corpus passes against corrected output; `empty.zsh` pinned at 0 lines — Phase 1 (PIN-02)
+- ✓ **Issue severity tier** — every issue carries a non-omitempty `actionable`/`advisory` severity; only actionable issues drive `exit_code` and `issues_found` (both via `HasActionableIssues()`, so they cannot disagree); the 4 existing kinds stay byte-identical (`SevActionable` is the zero value) — Phase 2 (SEV-01, SEV-02)
 
 ### Active
 
@@ -47,7 +48,6 @@ zsh-pro is a read-only zsh-config analyzer CLI. It parses a zsh config file (def
 - [ ] PATH entries are extracted by splitting the assignment value on `:`, so relative entries are named correctly (`./scripts`, not `/scripts`) and unrooted entries are detected
 - [ ] Notation-equivalent entries (`~`/`$HOME`/`${HOME}`, trailing/duplicate slashes) are treated as the same entry for duplicate detection (notation-only; no filesystem/env resolution)
 - [ ] Relative/unrooted PATH entries — including bare `.` and empty entries — are surfaced as a new advisory
-- [ ] Issues carry a severity so advisories surface without bumping the exit code (exit 3 stays reserved for duplicates/shadows)
 - [ ] Golden fixtures cover `duplicate_path` and `shadowed`, the corpus asserts `issue_names`/`issue_lines`, and the testgen oracle pins relative/unrooted dup paths
 
 ### Out of Scope
@@ -109,4 +109,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-06-24 — milestone v1.1 (Trustworthy PATH Analysis) started: PATH extraction fix + semantic dedup + relative-entry advisory (new severity tier) + duplicate_path/shadowed coverage.*
+*Last updated: 2026-06-24 — milestone v1.1 (Trustworthy PATH Analysis): Phase 2 (Issue Severity Tier) complete — every issue carries an actionable/advisory severity; only actionable issues drive exit_code/issues_found. Next: Phase 3 (Trustworthy PATH Extraction & Detection).*
