@@ -17,12 +17,16 @@ import (
 	"zsh-pro/core/shell/zsh"
 )
 
-// manifest is the ground-truth expectation for one fixture.
+// manifest is the ground-truth expectation for one fixture. Lines is an OPTIONAL
+// pointer: a fixture that omits "lines" leaves it nil and is not asserted, so
+// existing fixtures (whose counts shift with the LINE-01 fix) stay green while
+// opt-in fixtures pin an exact line count.
 type manifest struct {
 	MinBlocks        int      `json:"min_blocks"`
 	IssueKinds       []string `json:"issue_kinds"`
 	HasSecrets       bool     `json:"has_secrets"`
 	ExpectCategories []string `json:"expect_categories"`
+	Lines            *int     `json:"lines"`
 }
 
 func TestCorpusGolden(t *testing.T) {
@@ -49,6 +53,10 @@ func TestCorpusGolden(t *testing.T) {
 			}
 			if a.HasSecrets != m.HasSecrets {
 				t.Errorf("has_secrets = %v, want %v", a.HasSecrets, m.HasSecrets)
+			}
+			// Lines is asserted only for fixtures that opt in (non-nil pointer).
+			if m.Lines != nil && a.Lines != *m.Lines {
+				t.Errorf("lines = %d, want %d", a.Lines, *m.Lines)
 			}
 			if a.OpaqueBlocks > 0 {
 				t.Errorf("unexpected opaque blocks: %d (parser failed to understand real-world input)", a.OpaqueBlocks)

@@ -33,6 +33,7 @@
     "min_blocks": 0,
     "issue_kinds": [],
     "has_secrets": false,
-    "expect_categories": []
+    "expect_categories": [],
+    "lines": 0
   }
 }
