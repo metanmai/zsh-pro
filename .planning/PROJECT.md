@@ -20,7 +20,7 @@ The parse → classify → introspect engine (shipped across v1.0–v1.1 as a re
 - **Git-backed profiles** — store the representation as a git-style repo; branches are switchable environment profiles.
 - **Activate/deactivate manifest** — switching a live terminal deactivates the prior branch's managed state (unalias, `unset -f`, restore env, rebuild PATH from a captured base) then activates the new one, via a sourced shell integration (no parent-process mutation).
 - **Declarative vs imperative split** — only declarative state is switchable; imperative run-once code stays in a thin bootstrapping `.zshrc` "master block".
-- **(Frontier) zero-residue live hot-switch** — switching in an already-open terminal leaves no leftover aliases / PATH growth / stale env; de-risked by a spike before committing.
+- **(Frontier) zero-residue live hot-switch** — switching in an already-open terminal leaves no leftover aliases / PATH growth / stale env. **De-risked: the Phase 1 spike returned GO** — a live `zsh -f` `activate → switch → switch-back` is byte-identical across all six state classes; the validated `Manifest` shape is captured as Phase 4's input.
 
 **Foundational note:** v1.1 (Trustworthy PATH Analysis) was parked partway (Phase 2 shipped) when the product identity was corrected from "analyzer" to "environment manager" — see [MILESTONES.md](MILESTONES.md). Its PATH parsing/canonicalization work is re-scoped under this milestone's ingest layer.
 
@@ -45,6 +45,7 @@ The parse → classify → introspect engine (shipped across v1.0–v1.1 as a re
 - ✓ **Both fixes pinned by tests** — `checkLines = true`; the 10-seed oracle asserts total `Lines` + per-issue line slices (non-circular `RenderedLines`) — Phase 1 (PIN-01)
 - ✓ **Golden corpus kept honest** — corpus passes against corrected output; `empty.zsh` pinned at 0 lines — Phase 1 (PIN-02)
 - ✓ **Issue severity tier** — every issue carries a non-omitempty `actionable`/`advisory` severity; only actionable issues drive `exit_code` and `issues_found` (both via `HasActionableIssues()`, so they cannot disagree); the 4 existing kinds stay byte-identical (`SevActionable` is the zero value) — Phase 2 (SEV-01, SEV-02)
+- ✓ **Zero-residue live hot-switch proven feasible (GO)** — Phase 1 spike asserts `$aliases`/`$functions`/`$PATH`/`$path`/exported-env/`$options` byte-identical after `activate → switch → switch-back`; no PATH accumulation across cycles; the conditional drift guard holds; `compinit` excluded to the master block (the `fpath` array itself is reversible). Durable outputs: `01-FINDINGS.md` + `01-MANIFEST-SHAPE.md` — v2.0 Phase 1 (SW-03)
 
 ### Active
 
@@ -97,6 +98,7 @@ The parse → classify → introspect engine (shipped across v1.0–v1.1 as a re
 | **v1.1 scope (broad):** fix PATH extraction + semantic dedup + relative-entry advisory + severity tier + close `duplicate_path`/`shadowed` coverage | User chose the broad option across all three v1.1 scope questions (2026-06-24): fix it, catch notational duplicates, flag risky entries, and pin with real fixtures | — Pending (Milestone v1.1) |
 | **PATH dedup is semantic but notation-only** (`~`/`$HOME`/`${HOME}` + slashes canonicalized; no filesystem/env resolution) | Catches real notational duplicates of the same dir while staying deterministic and read-only-pure; avoids the "`$HOME` reassigned mid-file" false positive | — Pending (Milestone v1.1) |
 | **Relative-entry advisory is a new informational severity, not exit-3** | A relative/unrooted entry may be intentional; conflating it with genuine duplicates/shadows at exit 3 would degrade the agent signal. Introduces the first `Issue` severity tier (also seeds future classifier-precision work). Covers bare `.`/empty (cwd) entries — the classic PATH foot-gun | — Pending (Milestone v1.1) |
+| **v2.0 Phase 1 spike → GO**: zero-residue live hot-switch is feasible | Byte-identical six-class round-trip proven in a live `zsh -f`; core classes (aliases/env/PATH) + functions/options admitted MANAGED; `compinit` excluded to the master block. Carry-forwards for Phase 4: loaders must trust the *live prior* value (not a static `original` key), and measure *value*-delta (not env name-set) under `zsh -f` env inheritance. | ✓ Done (v2.0 Phase 1, SW-03) — `01-FINDINGS.md` + `01-MANIFEST-SHAPE.md` are the durable deliverables; the validated Manifest shape is Phase 4's literal input |
 
 ## Evolution
 
@@ -116,4 +118,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-06-25 — pivoted to v2.0 (Branchable Shell Environments): corrected the project identity from "read-only analyzer" to a git-versioned, branchable shell-environment manager (the analyzer is now its ingest component). v1.1 parked partway (Phase 2 shipped) — see MILESTONES.md.*
+*Last updated: 2026-06-25 — pivoted to v2.0 (Branchable Shell Environments): corrected the project identity from "read-only analyzer" to a git-versioned, branchable shell-environment manager (the analyzer is now its ingest component). v1.1 parked partway (Phase 2 shipped) — see MILESTONES.md. · v2.0 Phase 1 (SPIKE) complete 2026-06-25 — zero-residue live hot-switch validated **GO**; proceeding to Phase 2 (IR + Partial Evaluation).*
