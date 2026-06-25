@@ -2,9 +2,9 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Branchable Shell Environments
-status: executing
-stopped_at: Session resumed — Phase 1 planned (01-01 + 01-02, both waves); ready to execute. No incomplete execution, no checkpoints.
-last_updated: "2026-06-25T15:54:10.113Z"
+status: ready_to_plan
+stopped_at: Phase 01 complete (2/2) — ready to discuss Phase 2
+last_updated: 2026-06-25T16:04:10.430Z
 last_activity: 2026-06-25
 progress:
   total_phases: 6
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-25)
 
 **Core value:** `checkout <branch>` gives you a different, trustworthy shell environment — declarative state (aliases/env/PATH/functions/options) applies and reverses cleanly with zero residue, while portability is preserved (dynamic values like `$HOME`/`$(...)` stay late-bound, never frozen to one machine).
-**Current focus:** Phase 01 — spike-zero-residue-live-hot-switch
+**Current focus:** Phase 2 — ir + partial evaluation
 
 ## Current Position
 
-Phase: 01 (spike-zero-residue-live-hot-switch) — COMPLETE (both plans done)
-Plan: 2 of 2 complete — Phase 01 done; ready to transition to Phase 02 (IR spine)
-Status: Phase 01 complete
-Last activity: 2026-06-25 -- 01-02 complete (failure-mode hardening + go/no-go GO + validated Manifest shape)
+Phase: 2
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-06-25
 
 Progress: [██████████] 100% (phase 1)
 
@@ -36,7 +36,7 @@ Progress: [██████████] 100% (phase 1)
 
 **Velocity:**
 
-- Total plans completed: 0
+- Total plans completed: 2
 - Average duration: — min
 - Total execution time: 0 hours
 
@@ -44,7 +44,7 @@ Progress: [██████████] 100% (phase 1)
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| - | - | - | - |
+| 01 | 2 | - | - |
 
 **Recent Trend:**
 
@@ -66,8 +66,8 @@ Recent decisions affecting current work:
 - [Roadmap]: IR is the spine — store, manifest, and regeneration all serialize `model.Profile`, so it lands right after the spike (store-before-IR rejected: `Store.Read`/`Commit` are typed in terms of the IR).
 - [Constraint]: No new dependencies — git via the `git` binary (mirrors the existing `zsh -f` subprocess); `go-git` explicitly rejected (new module + weak porcelain).
 - [Constraint]: Only `core/shell/zsh/emit.go` ever writes zsh syntax; `core/profile`/`core/store`/`core/activate` stay shell-agnostic and never import the concrete provider (single composition root preserved).
-- [Phase ?]: [Phase 1 spike] Overall verdict GO (D-03): core classes aliases/env/PATH reverse byte-identical; functions+options admitted; completion's compinit excluded to master block (fpath array admittable).
-- [Phase ?]: [Phase 1 spike] Reality-check measures the slice's declared-name VALUE delta, not a live env name-set diff — the honest measure under zsh -f env inheritance (Pitfall 5); Phase 4 emitter must follow.
+- [Phase 1 spike]: Overall verdict GO (D-03): core classes aliases/env/PATH reverse byte-identical; functions+options admitted; completion's compinit excluded to master block (fpath array admittable).
+- [Phase 1 spike]: Reality-check measures the slice's declared-name VALUE delta, not a live env name-set diff — the honest measure under zsh -f env inheritance (Pitfall 5); Phase 4 emitter must follow.
 
 ### Pending Todos
 
@@ -96,6 +96,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-06-25T15:53:42.579Z
-Stopped at: Session resumed — Phase 1 planned (01-01 + 01-02, both waves); ready to execute. No incomplete execution, no checkpoints.
+Last session: 2026-06-25 (Phase 1 executed)
+Stopped at: Phase 1 SPIKE complete (2/2) — verdict GO, verified 4/4 SC. SW-03 done. Next: discuss/plan Phase 2 (IR + Partial Evaluation).
 Resume file: None
