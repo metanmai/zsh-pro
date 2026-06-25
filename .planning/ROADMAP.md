@@ -60,7 +60,7 @@ Previous-milestone phases are archived. Full detail in [milestones/](milestones/
 Plans:
 **Wave 1**
 
-- [ ] 01-01: TBD (hand-written loader + two fixture manifests; live `activate → switch → switch-back` round-trip)
+- [x] 01-01: TBD (hand-written loader + two fixture manifests; live `activate → switch → switch-back` round-trip)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -168,7 +168,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. SPIKE — Zero-Residue Live Hot-Switch | 0/2 | Not started | - |
+| 1. SPIKE — Zero-Residue Live Hot-Switch | 1/2 | In Progress|  |
 | 2. IR + Partial Evaluation | 0/2 | Not started | - |
 | 3. Git-Backed Store | 0/2 | Not started | - |
 | 4. Manifest Builder + Emit | 0/2 | Not started | - |

@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-06-25)
 ## Current Position
 
 Phase: 01 (spike-zero-residue-live-hot-switch) — EXECUTING
-Plan: 1 of 2
+Plan: 1 of 2 complete — 01-02 next (Wave 2)
 Status: Executing Phase 01
-Last activity: 2026-06-25 -- Phase 01 execution started
+Last activity: 2026-06-25 -- 01-01 complete (spike instrument + round-trip → GO)
 
-Progress: [░░░░░░░░░░] 0%
+Progress: [█████░░░░░] 50% (phase 1)
 
 ## Performance Metrics
 
