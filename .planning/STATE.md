@@ -3,9 +3,9 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Branchable Shell Environments
 status: executing
-stopped_at: Session resumed — proceeding to plan Phase 1 (SPIKE — Zero-Residue Live Hot-Switch)
-last_updated: "2026-06-25T14:33:00.803Z"
-last_activity: 2026-06-25 -- Phase 1 planning complete
+stopped_at: Session resumed — Phase 1 planned (01-01 + 01-02, both waves); ready to execute. No incomplete execution, no checkpoints.
+last_updated: "2026-06-25T15:03:40.219Z"
+last_activity: 2026-06-25 -- Phase 01 execution started
 progress:
   total_phases: 6
   completed_phases: 0
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-25)
 
 **Core value:** `checkout <branch>` gives you a different, trustworthy shell environment — declarative state (aliases/env/PATH/functions/options) applies and reverses cleanly with zero residue, while portability is preserved (dynamic values like `$HOME`/`$(...)` stay late-bound, never frozen to one machine).
-**Current focus:** Phase 1 — SPIKE: Zero-Residue Live Hot-Switch
+**Current focus:** Phase 01 — spike-zero-residue-live-hot-switch
 
 ## Current Position
 
-Phase: 1 of 6 (SPIKE — Zero-Residue Live Hot-Switch)
-Plan: 0 of TBD in current phase
-Status: Ready to execute
-Last activity: 2026-06-25 -- Phase 1 planning complete
+Phase: 01 (spike-zero-residue-live-hot-switch) — EXECUTING
+Plan: 1 of 2
+Status: Executing Phase 01
+Last activity: 2026-06-25 -- Phase 01 execution started
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -94,5 +94,5 @@ Items acknowledged and carried forward from previous milestone close:
 ## Session Continuity
 
 Last session: 2026-06-25 (resumed)
-Stopped at: Session resumed — proceeding to plan Phase 1 (SPIKE — Zero-Residue Live Hot-Switch)
-Resume file: .planning/phases/01-spike-zero-residue-live-hot-switch/01-CONTEXT.md
+Stopped at: Session resumed — Phase 1 planned (01-01 + 01-02, both waves); ready to execute. No incomplete execution, no checkpoints.
+Resume file: none (clean phase boundary — next step is `/gsd:execute-phase 1`)
