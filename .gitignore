@@ -1,2 +1,5 @@
 /zsh-pro
 *.test
+
+# Throwaway de-risk spike artifacts (Phase 01, D-08) — never committed as product code.
+/scratch/
