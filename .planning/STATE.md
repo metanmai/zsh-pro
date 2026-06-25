@@ -3,10 +3,10 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Branchable Shell Environments
 status: planning
-last_updated: "2026-06-25T05:32:32.099Z"
+last_updated: "2026-06-25T12:00:00.000Z"
 last_activity: 2026-06-25
 progress:
-  total_phases: 0
+  total_phases: 6
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -17,44 +17,38 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-06-24)
+See: .planning/PROJECT.md (updated 2026-06-25)
 
-**Core value:** `analyze --json` reports output you can trust — every PATH entry is named exactly as written, genuine duplicates are caught across notations, and risky entries are flagged without polluting the exit-code signal.
-**Current focus:** Phase 3 — trustworthy path extraction & detection
+**Core value:** `checkout <branch>` gives you a different, trustworthy shell environment — declarative state (aliases/env/PATH/functions/options) applies and reverses cleanly with zero residue, while portability is preserved (dynamic values like `$HOME`/`$(...)` stay late-bound, never frozen to one machine).
+**Current focus:** Phase 1 — SPIKE: Zero-Residue Live Hot-Switch
 
 ## Current Position
 
-Phase: Not started (defining requirements)
-Plan: —
-Status: Defining requirements
-Last activity: 2026-06-25 — Milestone v2.0 started
+Phase: 1 of 6 (SPIKE — Zero-Residue Live Hot-Switch)
+Plan: 0 of TBD in current phase
+Status: Ready to plan
+Last activity: 2026-06-25 — v2.0 roadmap created (6 phases, 11/11 requirements mapped); phase numbering reset to 1
+
+Progress: [░░░░░░░░░░] 0%
 
 ## Performance Metrics
 
 **Velocity:**
-
-- Total plans completed: 5 (all in v1.0 / Phase 1)
-- Average duration: ~5 min
-- Total execution time: ~0.2 hours
+- Total plans completed: 0
+- Average duration: — min
+- Total execution time: 0 hours
 
 **By Phase:**
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| 1 (v1.0) | 3 | ~14 min | ~5 min |
-| 2 (v1.1) | 0 | - | - |
-| 3 (v1.1) | 0 | - | - |
-| 4 (v1.1) | 0 | - | - |
-| 02 | 2 | - | - |
+| - | - | - | - |
 
 **Recent Trend:**
-
-- Last 5 plans: 01-01 (4 min) · 01-02 (1 min) · 01-03 (9 min)
-- Trend: Stable
+- Last 5 plans: —
+- Trend: —
 
 *Updated after each plan completion*
-| Phase 02 P01 | 2 | 3 tasks | 3 files |
-| Phase 02 P02 | 3min | 3 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -63,26 +57,25 @@ Last activity: 2026-06-25 — Milestone v2.0 started
 Decisions are logged in PROJECT.md Key Decisions table.
 Recent decisions affecting current work:
 
-- [v1.1 scope]: Broad option — fix PATH extraction + semantic dedup + relative-entry advisory + severity tier + close `duplicate_path`/`shadowed` coverage.
-- [v1.1]: PATH dedup is semantic but **notation-only** (`~`/`$HOME`/`${HOME}` + slashes; no filesystem/env resolution).
-- [v1.1]: Relative-entry advisory is a new **informational severity**, not exit-3 — `SevActionable` is the zero value so the 4 existing kinds stay byte-identical.
-- [Roadmap]: Strict A→B→C order — Phase 2 (severity) MUST precede Phase 3 (PATH) so advisory-only configs never transiently exit 3.
-- [Phase ?]: [02-01]: SevActionable is the zero value (int+iota) so the 4 existing issue kinds keep exit-3 with zero construction-site edits (D-01).
-- [Phase ?]: [02-01]: ExitCode() consults Analysis.HasActionableIssues() (single actionable predicate); len(a.Issues) no longer drives the exit code (D-04).
-- [Phase ?]: [02-02]: --json issues carry a non-omitempty 'severity' string (mapped via Severity.String()); dto stays string-only (D-02).
-- [Phase ?]: [02-02]: envelope issues_found now derives from HasActionableIssues() so it can never disagree with exit_code; advisory-only is clean (false/0) — SEV-02 (D-04).
-- [Phase ?]: [02-02]: human report uses softer '~' for advisories in the single ISSUES list + a separate advisory tally (D-05/D-06).
+- [v2.0 pivot]: Identity corrected from "read-only analyzer" to git-versioned branchable shell-environment manager; the parse → classify → introspect engine is now the ingest component, reused via the `Provider` seam.
+- [Roadmap]: Spike-first — Phase 1 de-risks zero-residue *live* hot-switch (reversing aliases/functions/**options**, not just env) before any IR/store/CLI is built; it can reshape scope and fixes the `Manifest` shape.
+- [Roadmap]: IR is the spine — store, manifest, and regeneration all serialize `model.Profile`, so it lands right after the spike (store-before-IR rejected: `Store.Read`/`Commit` are typed in terms of the IR).
+- [Constraint]: No new dependencies — git via the `git` binary (mirrors the existing `zsh -f` subprocess); `go-git` explicitly rejected (new module + weak porcelain).
+- [Constraint]: Only `core/shell/zsh/emit.go` ever writes zsh syntax; `core/profile`/`core/store`/`core/activate` stay shell-agnostic and never import the concrete provider (single composition root preserved).
 
 ### Pending Todos
+
+[From .planning/todos/pending/ — ideas captured during sessions]
 
 None yet.
 
 ### Blockers/Concerns
 
-- **[Phase 2 gate]** Confirm with the user that `issues_found` redefined as "actionable-only" is an acceptable `analyze --json` wire-contract change (advisory-only envelope flips `issues_found:true→false`, `exit_code` stays 0).
-- **[Phase 3 design prerequisite → Phase 4]** The oracle's two-field path-node split (rendered notation vs. independent dedup key) MUST be designed before the Phase 3 canonicalizer is written — retrofitting oracle independence is the highest recovery cost in the research (Pitfall #8, HIGH).
-- **[Phase 3 open questions]** Extraction location (provider vs. reconciler-local), intra-statement duplicate policy (`PATH="/a:/a:$PATH"`), and the `CatPath` array-form classification seam check are unresolved — carry into Phase 3 planning, do not silently resolve.
-- Correcting PATH `name`/`lines` and adding the `severity` field + `relative_path_entry` kind is a deliberate, accepted `analyze --json` wire-contract change.
+[Issues that affect future work]
+
+- [Phase 1 gate]: Zero-residue feasibility for the alias/function/option (and any completion/keybinding/hook) delta is the single material unknown. The spike must define kill-criteria up front; if some state class is un-cleanly-reversible, narrow the managed set before the manifest is designed.
+- [Phase 3 decision]: Secret-handling default in the synced tree (exclude `CatSecrets` by default vs `--include-secrets` gate) — confirm with user during planning (no encryption dependency allowed).
+- [Phase 5 / deferred]: Trust model for shared/`git pull`'d profiles (SHARE-01) is out of scope for v2.0 (single-user local); revisit if a team/shared store enters scope.
 
 ## Deferred Items
 
@@ -90,14 +83,13 @@ Items acknowledged and carried forward from previous milestone close:
 
 | Category | Item | Status | Deferred At |
 |----------|------|--------|-------------|
-| *(none)* | | | |
+| Analyzer | v1.1 Phase 3 — Trustworthy PATH Extraction & Detection (AST split + notation dedup + relative advisory) | Re-scoped into v2.0 ingest (ING-01) | 2026-06-25 (v2.0 pivot) |
+| Analyzer | v1.1 Phase 4 — PATH Coverage & Oracle Pin (COV-01/02/03) | Parked | 2026-06-25 (v2.0 pivot) |
+| Ergonomics | AUTO-01 — auto-activate on `cd` (direnv-style hook) | Future | 2026-06-25 |
+| Sharing | SHARE-01 — pull/push profiles from a remote with a trust gate | Future | 2026-06-25 |
 
 ## Session Continuity
 
-Last session: 2026-06-24T15:56:41.633Z
-Stopped at: Phase 2 context gathered
+Last session: 2026-06-25 12:00
+Stopped at: v2.0 ROADMAP.md + STATE.md written; REQUIREMENTS.md traceability populated (11/11 mapped)
 Resume file: None
-
-## Operator Next Steps
-
-- Plan the first phase with `/gsd:plan-phase 2`
