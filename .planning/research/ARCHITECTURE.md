@@ -1,395 +1,650 @@
 # Architecture Research
 
-**Domain:** Read-only zsh-config analyzer CLI (Go) — integrating PATH-correctness changes into an existing, reviewed-clean single-pass pipeline
-**Researched:** 2026-06-24
-**Confidence:** HIGH (all claims grounded in the current source tree; extraction failures empirically reproduced; testgen import boundary verified via `go list -deps`)
+**Domain:** Branchable, git-versioned shell-environment manager (zsh) — integrating a new environment-manager surface onto an existing read-only analyze engine
+**Researched:** 2026-06-25
+**Confidence:** HIGH (existing engine read directly from source; runtime mechanics verified against shadowenv/direnv/chezmoi source and the zsh manual)
 
-> Scope note: This is **integration research for milestone v1.1**, not greenfield architecture. The job is to map *where each change lands* in the existing layered pipeline and *in what order* to build them without violating the documented layering. The generic "scaling / external services" sections of the template do not apply to a single-binary read-only analyzer and are reframed as **layering boundaries** and **wire-contract** sections, which is what the roadmap author actually needs.
+> Scope note: This is **integration research for milestone v2.0**, not greenfield architecture. The job is to design how the new environment-manager components (IR, git store, activation manifest, sourced runtime, partial evaluation) compose with the existing single-pass, dependency-injected engine **without bypassing the `Provider` seam**, and to recommend a build order with a clear spike-first risk. The generic "scaling to millions of users" sections of the template do not apply to a single-user CLI and are reframed accordingly.
 
 ---
 
-## Standard Architecture (existing — study, don't re-derive)
+## TL;DR for the Roadmap
+
+- **Six new components, four touched, nothing rewritten.** The activation runtime and git storage are *new*; the parser/classifier are *reused as-is* via the existing `Provider` seam; `model.Analysis` is *left alone* (it stays the reporting view) while a new richer IR is added beside it.
+- **The IR is additive, not a replacement.** Today's `model.Analysis` is a lossy *report* (category → `[]string` of names). The new `model.Profile` is a near-lossless *store* (per-entry verbatim text + structured fields + a static/dynamic portability tag). They coexist; `analyze` keeps emitting `Analysis`.
+- **The activation manifest is a solved problem — copy shadowenv's `undo::Data`.** Record env vars as `{name, original, applied, no_clobber}` scalars and PATH-like vars as `{name, additions, deletions}` list-deltas; carry the whole undo blob per-terminal inside one env var. Deactivate = reverse the recorded deltas, *guarded by* "only restore if the current value still equals what we applied."
+- **Shell out to `git` and `zsh`, do not add a library.** The hard constraint is "no new dependencies beyond `mvdan.cc/sh/v3`." A `git`-backed store via the `git` binary mirrors the *existing* `zsh -f` subprocess pattern exactly. Adding `go-git` would violate the constraint and the established composition-root discipline.
+- **SPIKE the zero-residue switch loop FIRST**, with a hand-written manifest and a hard-coded two-profile fixture — before building the IR, the git store, or the CLI. The frontier risk (`activate → switch → reactivate` leaving zero residue in a *live* terminal) is the one thing that can invalidate the whole product, and it is independent of all the Go plumbing.
+
+---
+
+## Standard Architecture
+
+This is a brownfield integration. The existing engine is a clean, single-pass, dependency-injected analyzer. The environment-manager surface bolts onto it at three seams — **the parser output** (reused for the IR front-end), **a new IR domain type** (beside `model.Analysis`), and **new subprocess providers** (`git` store + an extended `zsh -f` introspect, both siblings of the existing `Introspector`).
 
 ### System Overview
 
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│  COMPOSITION ROOT      core/cmd/zsh-pro/main.go   (only zsh.Provider   │
-│                                                    importer in prod)   │
-├──────────────────────────────────────────────────────────────────────┤
-│  CLI                   core/cli/cli.go  — flags, I/O, exit-code,       │
-│                        --json agent contract                          │
-├──────────────────────────────────────────────────────────────────────┤
-│  ENGINE (shell-free)   core/analyze/                                   │
-│   Analyzer.Analyze ──► Parse ─► Classify ─► Introspect ─► Reconcile    │
-│   reconciler{}  (pure): duplicateNames · duplicatePaths · shadows      │
-│         depends ONLY on  core/model  +  shell.Provider (interface)     │
-├──────────────────────────────────────────────────────────────────────┤
-│  RENDER                core/render/  human.go · json.go                │
-│         model.Analysis ──(toDTO)──► dto.Envelope ──► bytes             │
-├──────────────────────────────────────────────────────────────────────┤
-│  SEAM                  core/shell/provider.go  (Parser/Classifier/     │
-│                        Introspector ISP interfaces)                    │
-│  ZSH IMPL              core/shell/zsh/  (parse·classify·introspect)    │
-├──────────────────────────────────────────────────────────────────────┤
-│  LEAVES (no internal deps except model)                                │
-│   core/model (domain)   core/dto (wire)   core/buildinfo   core/util   │
-├──────────────────────────────────────────────────────────────────────┤
-│  TEST INFRA (imports ONLY core/model — verified)                       │
-│   core/testgen/  graph · generator · render · oracle · mutate          │
-└──────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│  SHELL-INTEGRATION RUNTIME  (sourced; lives in the user's live terminal)   │
+│  ┌────────────────────┐         ┌──────────────────────────────────────┐  │
+│  │ thin ~/.zshrc       │ source  │ loader (zsh fn library, generated)   │  │
+│  │  • imperative        │────────▶│  • checkout/activate/deactivate fns  │  │
+│  │    "master block"    │         │  • holds per-terminal active-state   │  │
+│  │  • bootstraps loader │         │    in ONE env var (the undo blob)    │  │
+│  └────────────────────┘         └───────────────┬──────────────────────┘  │
+│   the loader runs the binary and `eval`s/sources the emitted shell code     │
+└──────────────────────────────────────────────────┼─────────────────────────┘
+                                                    │ exec + capture stdout
+┌───────────────────────────────────────────────────▼─────────────────────────┐
+│  zsh-pro BINARY  (Go; the composition root wires concrete providers)          │
+│  ┌─────────────┐   ┌───────────────────────────────────────────────────────┐ │
+│  │  core/cli    │──▶│  NEW: env-manager command group                       │ │
+│  │ (flags, I/O, │   │   ingest / checkout / activate / deactivate / list /   │ │
+│  │  exit codes) │   │   hook                                                 │ │
+│  └─────────────┘   └───────┬──────────────────┬───────────────┬───────────┘ │
+│            ┌────────────────▼──────┐ ┌─────────▼────────┐ ┌────▼──────────┐  │
+│            │ NEW: core/profile      │ │ NEW: core/store  │ │ NEW: core/    │  │
+│            │  • build IR from blocks│ │  (git-as-db, via │ │ activate      │  │
+│            │  • partial-eval pass   │ │  `git` binary)   │ │ • Manifest    │  │
+│            │  • regenerate .zsh     │ │  • branch=profile│ │ • diff/plan   │  │
+│            └───────┬────────────────┘ └──────────────────┘ │ • un-apply    │  │
+│                    │ uses (interface)                        └───────────────┘  │
+│            ┌────────▼─────────────────────────────────────────────────────┐  │
+│            │  core/shell  (interface seam — UNCHANGED contract)            │  │
+│            │   Parser │ Classifier │ Introspector │ NEW: Activator?(opt)   │  │
+│            └────────┬─────────────────────────────────────────────────────┘  │
+│            ┌────────▼─────────────────────────────────────────────────────┐  │
+│            │  core/shell/zsh  (concrete; composition-root-only import)     │  │
+│            │   Parse │ Classify │ Introspect │ NEW: Emit/Apply shell code  │  │
+│            └────────┬─────────────────────────────────────────────────────┘  │
+│            ┌────────▼─────────────┐  ┌──────────────────────────────────┐    │
+│            │ core/model (domain)  │  │ core/dto (wire)  ── unchanged    │    │
+│            │  Block, Analysis,    │  │  + NEW manifest/profile DTOs     │    │
+│            │  + NEW Profile/Entry │  └──────────────────────────────────┘    │
+│            │  + NEW Manifest      │                                           │
+│            └──────────────────────┘                                           │
+└───────────────────────────────────────────────────────────────────────────┘
+                    │ subprocess (mirrors existing `zsh -f` introspect)
+        ┌───────────▼───────────┐   ┌─────────────────────────────┐
+        │  git  binary (store)   │   │  zsh -f  binary (resolve/    │
+        │  branches = profiles   │   │  introspect end-state)      │
+        └────────────────────────┘   └─────────────────────────────┘
 
-Dependency direction (strictly inward):
-  cmd → cli/testgen → analyze/render → shell(interface) → model/dto
+Dependency direction (strictly inward, UNCHANGED discipline):
+  cmd → cli → {profile, store, activate} → shell(interface) → model/dto
+  (core/shell/zsh imported only at the composition root, as today)
 ```
 
-### Component Responsibilities (only the ones v1.1 touches)
+### Component Responsibilities
 
-| Component | What it owns | v1.1 change |
-|-----------|--------------|-------------|
-| `core/model/issue.go` | `IssueKind` enum, `Issue` struct | **MODIFY** — add `IssueRelativePath` constant + `Severity` field + `Severity` enum |
-| `core/model/analysis.go` | `Analysis`, `Analysis.ExitCode()` | **MODIFY** — `ExitCode()` must ignore advisory-severity issues |
-| `core/analyze/reconciler.go` | pure static detectors (`duplicatePaths`, `pathSegRe`) | **MODIFY** — correct PATH extraction + canonicalization + new relative-path detector |
-| `core/analyze/analyzer.go` | pipeline orchestration | **MODIFY (small)** — wire the new detector's issues into `a.Issues` |
-| `core/dto/analysis.go` | wire `Issue` struct | **MODIFY** — add `severity` JSON field |
-| `core/render/json.go` | `model.Analysis → dto.Envelope` map | **MODIFY** — map `Severity`; decide `issues_found` semantics |
-| `core/render/human.go` | terminal report | **MODIFY** — surface severity in the ISSUES block |
-| `core/testgen/graph.go` | `Node`, `NodeKind`, `ConfigGraph` | **MODIFY** — let a path node carry a "relative/unrooted" shape |
-| `core/testgen/generator.go` | `GenParams`, `Build` | **MODIFY** — `RelativePaths` knob + planting logic + relative-dup pool |
-| `core/testgen/render.go` | `Node.render()` (emits `.zsh`) | **MODIFY** — render relative entries verbatim (no `/` prefix) |
-| `core/testgen/oracle.go` | `Expected()` (known-correct `Analysis`) | **MODIFY** — emit `IssueRelativePath` + canonicalized dup keys + severities |
-| `core/testdata/fixtures/` + `manifests.json` | golden corpus | **ADD** — `duplicate_path.zsh`, `shadowed.zsh`, `relative_path.zsh`; corpus runner gains `issue_names`/`issue_lines` assertions |
-
-**Nothing new is created as a package.** Every change is an edit to an existing file (plus new fixture data). This is the strongest signal that the layering already accommodates the feature.
+| Component | Responsibility | New / Modified | Typical Implementation |
+|-----------|----------------|----------------|------------------------|
+| `core/profile` (**NEW**) | Build the regenerable IR from parsed `Block`s; run the partial-evaluation pass; regenerate `.zsh` per category | NEW package | Pure Go; depends on `core/model` + `Parser`/`Classifier` interfaces (+ `mvdan.cc/sh` AST); no shell exec |
+| `core/store` (**NEW**) | git-as-database: init repo, list branches (profiles), `checkout`, commit categorized files, read a profile's tree | NEW package | Shells out to the `git` binary via `os/exec` — mirrors the existing `zsh -f` subprocess pattern |
+| `core/activate` (**NEW**) | Build a `Manifest` from a target profile; diff against the active manifest; produce a deactivate-then-activate plan | NEW package | Pure Go orchestration over `model.Manifest`; emits an apply-plan, never shell text |
+| `core/model` IR types (**NEW**) | `Profile`, `Entry`, `Manifest` (+ `Scalar`/`ListDelta`/`NameSet`) — the lossless store + the reversible undo record | MODIFIED (additive) | New value types beside `Block`/`Analysis`; `Analysis` untouched |
+| `core/shell/zsh` emit/apply (**MODIFIED**) | Render a `Manifest` into zsh apply/deactivate **shell code** (the only place that knows `unalias`/`unset -f`/`unsetopt` syntax); extend introspect to resolve bodies | MODIFIED | New methods on `zsh.Provider{}`; reuses `zmodload zsh/parameter` |
+| `core/cli` command group (**MODIFIED**) | New subcommands: `ingest`, `checkout`, `activate`, `deactivate`, `list`, `hook` | MODIFIED | New `case`s in `CLI.Run`; same exit-code + JSON-envelope contract |
+| shell loader (**NEW**) | Sourced zsh function library; bootstraps from thin `.zshrc`; holds per-terminal active state; calls the binary and `eval`s its output | NEW (embedded `.zsh`) | Embedded string constant (like the existing `introspectScript`) emitted by `zsh-pro hook` |
+| `core/shell.Activator` (**OPTIONAL NEW interface**) | ISP interface for "render manifest → shell code," if you want the seam symmetric | OPTIONAL | Only add if a second shell is ever planned; v2.0 is zsh-only, so this is a judgment call — see note in (d) |
 
 ---
 
-## The five changes — where each lands (file-by-file)
+## Recommended Project Structure
 
-### (a) New `Issue` severity field — full vertical slice
+```
+core/
+├── cmd/zsh-pro/main.go      # composition root — wires zsh.Provider + git store (MODIFIED: ~1-3 lines)
+├── cli/cli.go               # MODIFIED: add ingest/checkout/activate/deactivate/list/hook commands
+├── analyze/                 # UNCHANGED — read-only analyzer stays exactly as is
+├── profile/                 # NEW — the IR
+│   ├── profile.go           #   builds model.Profile from []model.Block
+│   ├── parteval.go          #   partial-evaluation pass (static vs dynamic tagging)
+│   └── regenerate.go        #   model.Profile → per-category .zsh source
+├── store/                   # NEW — git-as-database
+│   ├── store.go             #   Store{repoDir}; Init/Branches/Checkout/Commit/Read
+│   └── git.go               #   thin os/exec wrapper around the `git` binary
+├── activate/                # NEW — the switch loop
+│   ├── manifest.go          #   build model.Manifest from a profile (resolved end-state)
+│   └── plan.go              #   diff(active, target) → deactivate-then-activate plan
+├── shell/
+│   ├── provider.go          #   UNCHANGED interfaces (+ OPTIONAL Activator)
+│   └── zsh/
+│       ├── parse.go         #   UNCHANGED (already the IR front-end)
+│       ├── classify.go      #   UNCHANGED (Cat* taxonomy reused)
+│       ├── introspect.go    #   MODIFIED: optionally dump alias/func BODIES, not just names
+│       ├── emit.go          #   NEW: model.Manifest → zsh apply/deactivate shell code
+│       └── loader.zsh       #   NEW: embedded sourced loader (emitted by `hook`)
+├── model/
+│   ├── block.go             #   UNCHANGED
+│   ├── analysis.go          #   UNCHANGED (the lossy report stays)
+│   ├── profile.go           #   NEW: Profile, Entry, Portability
+│   └── manifest.go          #   NEW: Manifest, Scalar, ListDelta, NameSet, OptionSet
+├── dto/                     # NEW DTOs for profile/manifest wire shapes (leaf, no core imports)
+└── testgen/                 # UNCHANGED (oracle stays the ingest-engine regression pin)
+```
 
-This is the **only change that cuts through every layer** (model → dto → both renderers → exit-code). Build it as one vertical slice so the wire contract is never half-applied.
+### Structure Rationale
 
-**1. `core/model/issue.go` (MODIFY)** — add the severity type + field. Recommended shape (mirrors the existing `Confidence` iota enum in `block.go` for consistency):
+- **`core/profile`, `core/store`, `core/activate` are three separate packages** because they have three different dependency footprints and three different test strategies: `profile` is pure-Go-over-AST (unit-testable, deterministic, a natural new oracle target); `store` is subprocess-over-`git` (integration-tested against a temp repo); `activate` is pure orchestration over `Manifest` (round-trip-testable: apply then deactivate must restore byte-identical env). Splitting them keeps each one's tests honest, exactly as the existing engine splits `analyze` (orchestration) from `shell/zsh` (subprocess).
+- **The IR types live in `core/model`, not in `core/profile`**, so they stay leaves with no internal deps — the same discipline that keeps `Block`/`Analysis` shell-agnostic. The *building* of the IR lives in `core/profile`; the *types* live in `core/model`.
+- **All zsh-specific shell-code emission lives in `core/shell/zsh/emit.go`** — never in `core/activate`. `core/activate` must stay shell-agnostic (it operates on `Manifest`), mirroring how `core/analyze` stays shell-free and only touches the `Provider` interface. This is the single most important boundary to hold: *the orchestration layer never writes `unalias` strings.*
+- **The loader is an embedded `.zsh` emitted by a `hook` subcommand**, precisely mirroring `introspectScript` (an embedded zsh string the Go code ships and runs). Users add one line to `.zshrc`: `eval "$(zsh-pro hook)"` — identical to direnv/shadowenv/chezmoi init.
+
+---
+
+## (a) The Regenerable, Near-Lossless IR
+
+### Why today's `model.Analysis` cannot be the store
+
+`model.Analysis` is a **report**, and it is lossy by design:
 
 ```go
-// Severity ranks an issue. Only SevActionable bumps the exit code; advisories
-// surface in output but leave the exit-code signal clean.
-type Severity int
+// core/model/analysis.go — the lossy summary
+type CategorySummary struct {
+    Category Category
+    Count    int
+    Items    []string   // ← just the NAMES. The alias body, the env value,
+}                        //    the function source, export-vs-typeset, original
+                         //    ordering, comments — all GONE.
+```
 
+You cannot regenerate `~/.zshrc` from `Analysis`. `Items` is a `[]string` of primary names produced by `reconciler.primaryName(b)` (`analyzer.go:53`). The value half, the function body, quoting, and original ordering are discarded.
+
+### The good news: the parser already captures (almost) everything
+
+`model.Block` already carries the **verbatim source text** of every statement plus its structural shape:
+
+```go
+// core/model/block.go — already near-lossless per statement
+type Block struct {
+    Text      string     // ← VERBATIM original source (incl. leading comments)
+    StartLine int
+    Kind      BlockKind  // assignment / alias / func / command / compound
+    CmdName   string
+    Names     []string
+    Exported  bool       // export vs plain assignment preserved
+    Category  Category
+    Conf      Confidence
+}
+```
+
+`Block.Text` is the round-trip anchor. The IR's regeneration story is therefore *not* "reconstruct zsh from structured fields" (lossy, fragile, would have to reproduce quoting) — it is **"keep the verbatim text per entry, grouped and ordered by category, with structured fields layered on top for diffing and partial evaluation."** This is the chezmoi lesson: *source state is the source of truth, and apply makes the minimum change* — you store the real thing, you don't try to re-derive it.
+
+### The new IR: `model.Profile` / `model.Entry`
+
+```go
+// core/model/profile.go  (NEW — beside Analysis, not replacing it)
+
+// Profile is the regenerable representation of one environment: every managed
+// entry, grouped by category, in original order. It round-trips to .zsh.
+type Profile struct {
+    Name    string   // == git branch name
+    Entries []Entry  // original order preserved
+}
+
+// Entry is one managed construct, near-losslessly captured.
+type Entry struct {
+    Raw         string         // VERBATIM source text (from Block.Text) — the
+                              //   round-trip anchor; regeneration emits this
+    Category    Category
+    Kind        BlockKind
+    Names       []string       // for diff / dedup / shadow detection
+    Exported    bool
+    Portability Portability    // STATIC | DYNAMIC | MIXED  (see partial eval)
+    // structured values extracted for STATIC entries, for diff + manifest:
+    Value       string         // resolved literal for a static scalar; "" otherwise
+    PathDelta   []string       // for PATH-like entries: the segments this adds
+    Comment     string         // leading comment, kept for regeneration fidelity
+}
+
+type Portability int
 const (
-    SevAdvisory Severity = iota // informational; does NOT affect exit code
-    SevActionable               // a genuine problem; drives exit 3
+    PortStatic  Portability = iota // fully constant; safe to resolve/snapshot
+    PortDynamic                     // contains $VAR / $(...) / conditional; late-bound
+    PortMixed                       // partly constant, partly dynamic
 )
+```
 
-type Issue struct {
-    Kind     IssueKind
+**Lossless-enough, not byte-perfect.** True byte-for-byte round-trip of arbitrary zsh is a non-goal (and impossible without re-emitting the parser's input). The contract is: **regenerating from `Profile.Entries[].Raw` reproduces a *semantically equivalent and human-faithful* `.zshrc`** — same statements, same order, same comments, grouped by category. Anything the parser flagged `Opaque` (`parse.go:22-27`) is carried as a verbatim `Raw` entry in an `unmanaged` bucket and emitted untouched. This is the only safe stance for a tool that round-trips a user's real config.
+
+**Where it's built:** `core/profile/profile.go` consumes the `[]model.Block` that `Provider.Parse` already returns (reused unchanged), runs each through `Provider.Classify` (reused unchanged), then the partial-eval pass, then assembles `Profile`. It depends only on `core/model` and the `Parser`/`Classifier` interfaces — **it does not bypass the seam**, it consumes the same two interface methods `core/analyze` already uses (`analyzer.go:25,36`).
+
+**Regeneration** (`core/profile/regenerate.go`): emit a category header comment, then each `Entry.Raw` for that category in order. Per-category output is what enables "branches store categorized files" (item b) — each category becomes its own file (`aliases.zsh`, `env.zsh`, `path.zsh`, `functions.zsh`, `options.zsh`) in the git tree. There is precedent in-repo for model→zsh emission: `core/testgen/render.go` already renders structured nodes to `.zsh` source — the IR's regenerator is the production analogue, but anchored on verbatim `Raw` rather than reconstructed text.
+
+---
+
+## (b) The Git-Backed Storage Layer
+
+### Decision: shell out to the `git` binary — do NOT add `go-git`
+
+The constraint is explicit and hard: **"single external dependency (`mvdan.cc/sh/v3`) — no new dependencies."** `go-git` is a new module dependency and is out.
+
+This is not a compromise — it is the *architecturally consistent* choice. The codebase already establishes the pattern of **shelling out to an external binary as a runtime dependency** (`zsh -f` in `core/shell/zsh/introspect.go:42-53`, with graceful degradation when the binary is absent). `git` becomes a second runtime dependency of the same shape: a `Store` that runs `git` via `os/exec` with a context timeout, exactly like `Introspect` runs `zsh`. Users of a *shell environment manager* already have `git` (it is the product's premise).
+
+```go
+// core/store/store.go  (NEW)
+type Store struct{ repoDir string } // e.g. ~/.config/zsh-pro/profiles
+func New(repoDir string) *Store
+
+func (s *Store) Init() error                     // git init if absent
+func (s *Store) Branches() ([]string, error)     // git branch --list  → profile names
+func (s *Store) Current() (string, error)        // git rev-parse --abbrev-ref HEAD
+func (s *Store) Checkout(profile string) error   // git checkout <branch>
+func (s *Store) Read(profile string) (model.Profile, error)  // read tree → Profile
+func (s *Store) Commit(p model.Profile, msg string) error    // write files + git commit
+```
+
+### Repo layout: branch = profile, files = categories
+
+```
+~/.config/zsh-pro/profiles/   (a git repo; one branch per environment profile)
+  ├── aliases.zsh        # regenerated from Profile entries, category-grouped
+  ├── env.zsh
+  ├── path.zsh
+  ├── functions.zsh
+  ├── options.zsh
+  ├── unmanaged.zsh      # opaque / imperative blocks carried verbatim, NOT switched
+  └── manifest.json      # OPTIONAL: cached resolved Manifest for fast activate
+```
+
+- **`main`/`base` branch = the captured baseline** (the user's original `~/.zshrc` ingested). Each new environment is a branch off it. `checkout <branch>` is literally `git checkout` plus a re-activate.
+- **What gets committed:** the regenerated per-category `.zsh` files (the IR, serialized). NOT the live `~/.zshrc`. The thin `~/.zshrc` itself is *not* in the repo — it is a fixed bootstrapping shim (item d).
+- **Secrets:** the existing classifier already flags `CatSecrets` (`classify.go:33-35`) and surfaces `HasSecrets` (`analysis.go:18`). The store should treat secret entries specially — keep them out of the committed tree (write to a git-ignored sidecar) or gate on `--include-secrets`. This reuses detection that already ships. chezmoi solves the analogous problem with age-encrypted blobs, but encryption needs a dependency that "no new deps" forbids — so the safe v2.0 default is **exclude secrets from the synced tree** and document it. (Mark as a roadmap decision.)
+
+### Why git (not a bespoke format)
+
+The user explicitly chose "git-style repo, branches are profiles." Git gives branching, diff, history, and `checkout` for free — the exact primitives the product's verbs map onto (`checkout <branch>` ⇒ switch profile). Reimplementing branch/diff/history in a custom store would be strictly worse and is unnecessary given `git` is already a runtime expectation.
+
+---
+
+## (c) The Activate/Deactivate Manifest Format
+
+This is the heart of "zero residue," and it is a **solved problem** — Shopify's **shadowenv** and **direnv** both implement exactly this (reversible, scoped env changes), and their data structures are the reference design. zsh-pro's manifest is shadowenv's `undo::Data` adapted to also cover aliases/functions/options (which direnv/shadowenv don't manage, but the zsh primitives make trivial).
+
+### The reference: shadowenv's `undo::Data` (verified from source)
+
+shadowenv stores, per active environment, a serialized record of *exactly what it changed and the prior value*, so it can reverse it:
+
+```rust
+// shadowenv src/undo.rs (the reference design)
+struct Scalar { name: String, original: Option<String>, current: Option<String>, no_clobber: bool }
+struct List   { name: String, additions: Vec<String>, deletions: Vec<String> }
+struct Data   { scalars: Vec<Scalar>, lists: Vec<List>, prev_dirs: HashSet<PathBuf> }
+```
+
+The genius detail — the **no-clobber / drift guard** (`src/shadowenv.rs::unshadow`): on deactivate, restore `original` **only if the variable's *current* live value still equals what was set (`current`)**. If the user changed it by hand after activation, shadowenv refuses to clobber their change. This is what makes it safe in a *live, already-open* terminal (the frontier requirement), not just a fresh subshell.
+
+### zsh-pro's `model.Manifest`
+
+```go
+// core/model/manifest.go  (NEW)
+
+// Manifest is the reversible record of one profile's applied declarative state.
+// It is serialized into the per-terminal state var so a later deactivate can
+// cleanly un-apply WITHOUT re-reading the profile.
+type Manifest struct {
+    Profile string       // which profile produced this (== branch)
+    Schema  string       // version tag, e.g. "v1" — forward-compat (shadowenv does this)
+    Env     []Scalar     // environment variables
+    Lists   []ListDelta  // PATH / FPATH / MANPATH / CDPATH — delta vs captured base
+    Aliases NameSet      // alias names this profile added (→ unalias on deactivate)
+    Funcs   NameSet      // function names this profile added (→ unset -f on deactivate)
+    Options []OptionSet  // setopt/unsetopt changes, with prior state
+}
+
+// Scalar: an env var, reversibly. Original==nil ⇒ "was unset, so unset on deactivate".
+type Scalar struct {
     Name     string
-    Lines    []int
-    Note     string
-    Severity Severity // NEW
+    Original *string  // value before activation (nil = was absent)
+    Applied  string   // value we set (drift-guard: only restore if live == Applied)
+}
+
+// ListDelta: a PATH-like var as add/remove deltas vs the captured base, so
+// deactivate removes what we added and re-adds what we removed — never a blunt
+// overwrite (which would clobber session-local PATH the user added).
+type ListDelta struct {
+    Name      string   // "PATH"
+    Additions []string // segments this profile prepended/appended
+    Deletions []string // segments this profile removed from the base
+}
+
+// NameSet: names this profile defined. To restore a SHADOWED prior alias/func,
+// keep its prior body so deactivate can re-establish it.
+type NameSet struct {
+    Added    []string
+    Shadowed map[string]string // name → prior definition body, re-established on deactivate
+}
+
+type OptionSet struct {
+    Name    string // e.g. "AUTO_CD"
+    Enabled bool   // what this profile set it to
+    WasOn   bool   // prior state (restore on deactivate)
 }
 ```
 
-> Design call for the roadmap: **`SevAdvisory` should be the zero value, OR `SevActionable` should be.** Recommendation: make `SevActionable` the zero value (`SevActionable Severity = iota` first). Rationale: every existing `model.Issue{...}` literal in the reconciler (`duplicateNames`, `duplicatePaths`, `shadows`) and in the **oracle** omits `Severity`; if the zero value is `SevActionable`, those four existing kinds keep exit-3 behavior with **zero edits to their construction sites**, and only the new relative-path detector sets `Severity: SevAdvisory` explicitly. This minimizes churn and keeps the diff legible. (If `SevAdvisory` were zero instead, every existing `Issue{}` literal would need `Severity: SevActionable` appended — more churn, more chance of a missed site silently going advisory and breaking exit-3.)
+### How each category un-applies cleanly
 
-**2. `core/model/analysis.go` (MODIFY)** — `ExitCode()` must stop counting advisories:
+| State | Activate | Deactivate (zero-residue) |
+|-------|----------|---------------------------|
+| **Env scalar** | record `Original` (current live value or nil), set new, store `Applied` | if live value `== Applied`: restore `Original` (or `unset` if nil); else leave (user drifted) |
+| **PATH / lists** | compute `Additions`/`Deletions` vs the **captured base** PATH; apply | remove each `Addition`; re-add each `Deletion`. Never overwrite PATH wholesale → session-added entries survive |
+| **Alias** | record name in `Added`; if a prior alias existed, stash body in `Shadowed`; define | `unalias` each `Added`; re-define each `Shadowed` from stashed body |
+| **Function** | record name in `Added`; stash prior body if any; define | `unset -f` each `Added`; re-define each `Shadowed` |
+| **Option** | record `WasOn`; apply `setopt`/`unsetopt` | restore to `WasOn` |
 
-```go
-func (a Analysis) ExitCode() ExitCode {
-    for _, is := range a.Issues {
-        if is.Severity == SevActionable {
-            return ExitActionable
-        }
-    }
-    return ExitClean
+**The "captured base" for PATH** is the key concept the question asks about. The base is the PATH **as it existed at the moment of first activation in this terminal** (or the baseline-branch's resolved PATH). The manifest stores PATH as a *delta against that base*, never as an absolute list. That is precisely why hot-switching does not cause "PATH growth" — deactivate subtracts exactly the segments activate added, regardless of what else touched PATH meanwhile. (shadowenv documents one honest caveat: re-insertion *ordering* of a removed-then-readded entry is best-effort — acceptable, since exact position is rarely load-bearing.)
+
+**Resolving the manifest's values reuses the existing introspection mechanism.** `core/shell/zsh/introspect.go` already runs `zsh -f`, sources a config, and dumps resolved aliases, functions, exported env, **resolved `$path` in order**, and on-options (`introspectScript`, lines 23-38). Building a `Manifest` for a profile = source that profile's regenerated files under `zsh -f` and capture the end-state — *the introspect script is 90% of the manifest builder already.* The one extension needed: dump alias/function **bodies** (via `${aliases[name]}` and the `functions` associative array) not just names, so `Shadowed` restoration works. (Verified against the zsh manual: `${aliases[name]}` yields the body; the `functions` associative array maps names→definitions; both come from the `zsh/parameter` module the script already loads.)
+
+### Serialization
+
+`Manifest` serializes to compact JSON (a `core/dto` shape — leaf, no core imports, same pattern as `dto.Envelope`). The serialized blob is what the runtime carries per-terminal (item d). shadowenv prefixes a hash (`{hash}:{json}`) for change-detection; zsh-pro can prefix the profile name + schema version for the same purpose.
+
+---
+
+## (d) The Sourced Shell-Integration Runtime
+
+### The model: loader bootstrapped from a thin `.zshrc` (direnv/shadowenv/chezmoi pattern)
+
+The binary **cannot mutate its parent shell** (a child process can't change the parent's env/aliases/functions). Every tool in this space solves it the same way: the binary *emits shell code* and the shell *sources/evals* it. zsh-pro follows suit.
+
+**Thin `~/.zshrc`** (the only thing the user hand-edits):
+
+```zsh
+# ── zsh-pro master block (imperative, run-once, UNMANAGED) ──
+#   daemons, eval-init, anything side-effecting goes here. NOT switchable.
+# ...whatever the user wants...
+
+# ── zsh-pro loader (bootstraps the manager) ──
+eval "$(zsh-pro hook)"     # installs checkout()/activate()/deactivate()
+```
+
+**`zsh-pro hook`** prints the embedded loader (`loader.zsh`, shipped as a Go string constant exactly like `introspectScript`). The loader defines shell functions. This is the shadowenv pattern verbatim:
+
+```zsh
+# shadowenv's actual zsh integration (the reference, sh/shadowenv.zsh.in)
+__shadowenv_hook() {
+  "@SELF@" hook "${flags[@]}" | source /dev/stdin   # ← run binary, source its stdout
 }
 ```
-Current code is `if len(a.Issues) > 0 { return ExitActionable }` — that would wrongly return exit 3 for an advisory-only file. This is the load-bearing edit of the whole milestone.
 
-**3. `core/dto/analysis.go` (MODIFY)** — add the wire field on `dto.Issue`:
+### Declarative apply vs. the imperative "master block"
 
-```go
-type Issue struct {
-    Kind     string `json:"kind"`
-    Name     string `json:"name"`
-    Lines    []int  `json:"lines,omitempty"`
-    Note     string `json:"note,omitempty"`
-    Severity string `json:"severity"` // NEW — "actionable" | "advisory"
-}
+This split is a **hard product boundary** (PROJECT.md "Out of Scope: Owning the imperative startup surface"):
+
+- **Declarative state** (aliases, env, PATH, functions, options) → lives in the git store as the IR → switched by `checkout`/`activate`/`deactivate`. Reversible.
+- **Imperative run-once code** (daemons, `eval "$(rbenv init -)"`, side-effecting init) → stays in the unmanaged `.zshrc` master block → never switched, never reversed.
+
+The classifier's existing taxonomy *is* the splitter: `CatAliases`/`CatEnvironment`/`CatPath`/`CatFunctions`/`CatOptions` are declarative-switchable; `CatPlugins`/`CatMisc`/opaque/`eval`-init are imperative → master block. The ingest step uses classification (already shipped) to route each block to one side of the line. **Reuse, not rebuild.**
+
+**Declarative-apply over imperative replay.** When switching, the runtime does **not** re-source the new profile's raw `.zsh` (that would be imperative and irreversible — the old "master block" anti-pattern). It applies a **computed declarative diff**: `deactivate(active_manifest)` then `activate(target_manifest)`, where both are reversible `Manifest`s. This is what makes zero-residue *possible* — you can only cleanly reverse a recorded, structured set of changes, never an arbitrary script.
+
+### Per-terminal vs. global active-branch state
+
+**Per-terminal, full stop** — and the mechanism is free: **carry the active state in an environment variable**, because env vars are per-process and inherited only by children. shadowenv does exactly this with `__shadowenv_data`:
+
 ```
-Emit a **string** ("actionable"/"advisory"), not the int, so the agent contract is self-describing and stable. Recommend **non-omitempty** (always present) so consumers can rely on the field existing on every issue. (See wire-contract delta below for the exact decision.)
-
-**4. `core/render/json.go` (MODIFY)** — map it in `toDTO`. Needs a `model.Severity → string` mapping (put a `String()` method on `Severity` in `core/model` so both renderers share it and `core/dto` stays string-only with no import of `core/model`):
-
-```go
-out.Issues[i] = dto.Issue{
-    Kind:     string(is.Kind),
-    Name:     is.Name,
-    Lines:    is.Lines,
-    Note:     is.Note,
-    Severity: is.Severity.String(), // NEW
-}
-```
-**Critical second decision in this file:** `IssuesFound: len(a.Issues) > 0` (json.go:59). With advisories now living in `a.Issues`, an advisory-only file flips `issues_found` to `true` while `exit_code` stays `0`. **Recommend aligning `issues_found` with the exit-code signal** — i.e. `issues_found` should reflect *actionable* issues only, so `issues_found:false, exit_code:0` for an advisory-only file and the two fields never disagree. Suggested: add `Analysis.HasActionableIssues()` (or reuse `ExitCode() == ExitActionable`) and set `IssuesFound` from it. (Leaving it as `len > 0` is defensible but creates a confusing `issues_found:true / exit_code:0` envelope — flag for the user.)
-
-**5. `core/render/human.go` (MODIFY)** — the ISSUES loop (lines 39–48) should mark advisories distinctly (e.g. a different glyph or a trailing `(advisory)` tag) so a human sees that a relative-path note is informational, not a hard problem. Low-risk, presentation-only.
-
-### (b) New advisory issue kind — relative/unrooted PATH entries
-
-**1. `core/model/issue.go` (MODIFY)** — add the constant alongside the other four:
-```go
-IssueRelativePath IssueKind = "relative_path"
+__ZSHPRO_STATE="<profile>:<schema>:<base64-json-manifest>"
 ```
 
-**2. `core/analyze/reconciler.go` (MODIFY)** — this is where it's **detected**. The PATH entries come from the **same source** the (corrected) `duplicatePaths` uses: the `CatPath`-bucketed blocks, extracted from `Block.Text` by the new extractor (see (c)). Add a sibling pure method:
-```go
-func (reconciler) relativePaths(blocks []model.Block) []model.Issue
-```
-It walks the same extracted entries, flags any that are **not absolute** — i.e. does NOT begin with `/`, `$HOME`/`${HOME}`, or `~` after canonicalization — including **bare `.`** and **empty** (current-directory) entries, and emits `Issue{Kind: IssueRelativePath, Severity: SevAdvisory, ...}`. One issue per offending entry (with its line(s)); note text like `"relative PATH entry — resolves against the current directory"`.
+- Each terminal has its own `__ZSHPRO_STATE`; switching in terminal A does not touch terminal B. This is automatic — no lockfile, no global "current profile" file, no IPC.
+- `deactivate` reads `__ZSHPRO_STATE`, reverses the embedded manifest, unsets the var. `activate` sets it. `checkout` = deactivate-then-activate, then update the var.
+- The loader emits `export __ZSHPRO_STATE=...` as part of the shell code it asks the parent to `eval` — that's how the per-terminal var gets updated *in the parent*.
 
-**3. `core/analyze/analyzer.go` (MODIFY, ~1 line)** — append the new detector's output in the static-issue block (after `duplicatePaths`, line 70):
-```go
-a.Issues = append(a.Issues, az.rec.relativePaths(buckets[model.CatPath])...)
-```
-The existing `sort.SliceStable` at lines 91–96 already orders by `(Kind, Name)` and will fold the new kind in deterministically — **no sort change needed**.
+A *global* "default profile for new terminals" is a separate, optional concept (a file the loader reads at startup to auto-activate) — fine to add, but the *live* active state must be per-terminal. Do not invert this: a global mutable "current branch" file shared across terminals is the classic footgun (terminal A's `checkout` silently changes what terminal B will deactivate next).
 
-> Layering note: both (a) and (b) stay entirely inside `core/analyze` + `core/model` + render. **`core/analyze` remains shell-free** — the new detector reads `model.Block.Text`/`.Category`, never anything from `core/shell/zsh`. No temptation to violate the seam here.
+### chpwd vs. explicit-command activation
 
-### (c) Corrected / canonicalizing PATH extraction — `core/analyze/reconciler.go`
+direnv/shadowenv hook `chpwd`/`precmd` to auto-switch on `cd` (directory-scoped). zsh-pro is **branch-scoped, not directory-scoped** — the user runs `checkout <branch>` explicitly. So the loader's primary surface is **explicit functions** (`checkout`, `activate`, `deactivate`), and a `precmd` hook is *optional* (only needed if you later want "re-assert my profile every prompt" hardening). Start with explicit commands; the hook is a later robustness layer.
 
-This is the **root of the milestone** and the highest-care edit. Today `pathSegRe` (`reconciler.go:17`) does **regex segment-scraping over `Block.Text`**, which is empirically broken. Reproduced against the live regex:
+### The optional `Activator` interface
 
-| Input RHS | Current extraction | Bug |
-|-----------|--------------------|-----|
-| `export PATH="./scripts:$PATH"` | `["/scripts"]` | mis-named — leading `.` dropped |
-| `export PATH="$PATH:.:$HOME/bin"` | `["$HOME/bin"]` | bare `.` blind spot |
-| `export PATH=~/bin:${HOME}/bin:$PATH` | `["~/bin","/bin"]` | `${HOME}` not matched → `/bin`; `~` vs `${HOME}` not deduped |
-| `export PATH="/usr/local/bin//:$PATH"` | `["/usr/local/bin//"]` | trailing slashes not normalized |
-| `PATH=bin:$PATH` | `[]` | unrooted entry never seen |
-
-**Recommended approach — replace regex scraping with split-based extraction:**
-
-1. **Extract the RHS** of the PATH-family assignment from `Block.Text` (strip the `export PATH=` / `PATH=` prefix and surrounding quotes). The block is already classified `CatPath`, so the family membership is settled; the extractor only needs the value.
-2. **Split on `:`** → ordered raw entries (verbatim, including `.`, empty strings, and relative names).
-3. **Drop the `$PATH` / `${PATH}` self-reference** entry (and only that token) so the prepend/append idiom doesn't register as an "entry."
-4. Keep the **verbatim** entry as `Issue.Name` (so `./scripts` reports as `./scripts`), but compute a separate **canonical key** for dedup.
-
-**Canonicalization (notation-only, deterministic, NO filesystem/env):** a pure helper, e.g.
-```go
-func canonPathEntry(s string) string // ~ ⇒ $HOME ; ${HOME} ⇒ $HOME ; collapse // ; trim trailing /
-```
-- `~` ≡ `$HOME` ≡ `${HOME}` → fold to one token (string-level only; never read the real `$HOME`).
-- collapse duplicate slashes, trim a trailing slash (but keep root `/`).
-- Per PROJECT.md Out-of-Scope: **no** `..`/symlink/disk resolution, **no** live-`$HOME` lookup — keeps analysis read-only-pure and deterministic, and avoids the "`$HOME` reassigned mid-file" false positive.
-
-`duplicatePaths` then keys on `canonPathEntry(entry)` (not the raw string), so `~/bin` and `${HOME}/bin` collide, and `/usr/local/bin` == `/usr/local/bin//`. `relativePaths` keys on the same extracted entries.
-
-**Shared extraction:** both `duplicatePaths` and `relativePaths` need the same `[]entry` list. Extract once into a small unexported helper on `reconciler` (e.g. `pathEntries(b model.Block) []string`) so the two detectors agree by construction and there's a single place the split/self-ref logic lives. `pathSegRe` is **deleted**.
-
-> Risk flag — existing test churn: `core/analyze/analyze_test.go:176–208` asserts the dup key is `"$HOME/bin"` for `export PATH="$HOME/bin:$PATH"`. After canonicalization the **reported `Name`** is still `$HOME/bin` (verbatim survives), but if `$HOME` canonicalizes to a different token the assertion may need updating. Decide the canonical form's *display*: recommend **reporting the verbatim entry** as `Name` and keeping the canonical form internal — that keeps this existing test green and the human output faithful to what the user wrote.
-
-### (d) Testgen changes — `core/testgen` (imports ONLY `core/model` — verified)
-
-`go list -deps ./core/testgen` returns exactly `zsh-pro/core/model` (+ itself). **This boundary is sacred and easy to break**: the temptation will be to reuse the reconciler's `canonPathEntry` helper from `core/analyze`. **Do not import it.** The oracle must compute expected canonicalization **independently** (re-implement the tiny notation-fold inside `testgen`) — that independence is what makes the property test a real oracle rather than a tautology. (If testgen called the engine's canonicalizer, a bug in that canonicalizer would be invisible to the test.)
-
-**1. `core/testgen/graph.go` (MODIFY)** — give a path node a way to be relative/unrooted. Two options:
-   - **(preferred)** add a bool field `Relative bool` on `Node` (only meaningful for `NodePathEntry`), so `Name` stays the directory and `render()`/oracle branch on it; **or**
-   - reuse `Name` to already hold a relative string (e.g. `./scripts`, `.`, ``) and detect relativity in render/oracle by inspecting the string.
-
-   The bool is cleaner and keeps the oracle's relativity test trivial and explicit.
-
-**2. `core/testgen/generator.go` (MODIFY)** —
-   - Add a **relative path pool** disjoint from `pathDirs`, e.g. `relPathDirs = []string{"./scripts", "bin", "../tools", ".", ""}` (covers relative, unrooted, parent-relative, bare-cwd, empty).
-   - Add a `GenParams` knob: `RelativePaths int` (clean relative entries to plant) and optionally `DupRelativePaths int` for **relative duplicates** (the milestone explicitly wants "relative/unrooted dup paths" as the regression pin).
-   - In `Build`, plant relative entries as `NodePathEntry` nodes with `Relative:true` from `relPathDirs`, partitioned out of the pool the same way base/dup names are partitioned today (so they never overlap).
-   - To exercise **notation-equivalent dedup** in the oracle, also add a path-notation pair to the dup pool (e.g. plant `~/x` and `${HOME}/x` as a duplicate pair) so the oracle and engine must both canonicalize to agree.
-
-**3. `core/testgen/render.go` (MODIFY)** — `Node.render()` case `NodePathEntry` currently always does `export PATH=%q` with `n.Name+":$PATH"`. For a relative node it must emit the entry **verbatim with no `/` root** (e.g. `export PATH="./scripts:$PATH"`, `export PATH=".:$PATH"`, `export PATH=":$PATH"` for empty). Branch on `Relative` (or the string shape). This is what produces the `.zsh` the engine then mis-handled pre-fix.
-
-**4. `core/testgen/oracle.go` (MODIFY)** — `Expected()` must now:
-   - Emit `IssueRelativePath` (Severity `SevAdvisory`) for each planted relative/unrooted/`.`/empty entry, with the correct `Node.Line`(s). Add a `relativePathIssues()` method mirroring `dupNameIssues`/`shadowIssues`.
-   - For duplicate paths, key on the **testgen-local canonicalizer** (re-implemented, not imported) so notation-equivalent pairs (`~/x` vs `${HOME}/x`) register as one `IssueDuplicatePath`.
-   - Set `Severity` on the four existing issue kinds. **If `SevActionable` is the zero value (recommended in (a)), no edit is needed here** — the existing `model.Issue{...}` literals in `dupNameIssues`/`shadowIssues` stay correct. Only the new `relativePathIssues` sets `Severity: SevAdvisory`.
-
-**5. `core/testgen/property_test.go` (MODIFY)** — `propParams()` gains the new knob(s) (e.g. `RelativePaths: 1, DupRelativePaths: 1`). `assertStrict` already compares the full **issue (kind,name) set** and per-issue **lines** across 10 seeds; once the oracle emits the advisory and the engine detects it, this pins the new behavior for free. Optionally extend `assertStrict` to compare `Severity` per issue (cheap, and locks the exit-code-neutrality of advisories at the oracle level). `checkLines` is already `true`.
-
-> The property test (`property_test.go`, 10 seeds) is the **primary regression pin** per the Constraints. It already exercises `duplicate_path`/`shadowed` line slices; extending it to relative/dup-relative paths is the milestone's success gate.
-
-### Golden-fixture coverage (corpus) — `core/testdata/fixtures/` + `core/analyze/corpus_test.go`
-
-PROJECT.md's fifth Active requirement: close the `duplicate_path` and `shadowed` golden gaps and assert `issue_names`/`issue_lines`.
-
-- **ADD fixtures:** `duplicate_path.zsh`, `shadowed.zsh`, `relative_path.zsh` (the last covers the new advisory: a relative entry, a bare `.`, an empty entry).
-- **ADD manifest entries** in `manifests.json` for each. The corpus runner (`corpus_test.go`) currently asserts `min_blocks`, `issue_kinds` (set equality), `has_secrets`, `expect_categories`, optional `lines`. To satisfy "asserts `issue_names`/`issue_lines`," **extend the `manifest` struct + runner** with optional `issue_names []string` and `issue_lines map[string][]int` (mirroring the optional-`Lines` pointer pattern already there) so the two formerly-untested kinds get name+line assertions. This is a **test-only** change in the external `analyze_test` package — no production touch.
-- `relative_path.zsh`'s manifest is the place to assert that an advisory-only fixture yields the advisory issue kind but (if the runner also checks exit code) **exit 0** — a clean end-to-end proof of the severity tier.
+The seam today is `Parser`/`Classifier`/`Introspector` composed into `Provider`. Adding manifest-emission could be a fourth ISP interface (`Activator { Emit(Manifest) ([]byte, error) }`). **Recommendation: defer it.** v2.0 is zsh-only (PROJECT.md Out-of-Scope: other shells), so a single concrete `emit.go` method on `zsh.Provider` is enough; introducing the interface now is speculative generality. Add it only when a second shell is actually planned — the refactor is mechanical and the YAGNI cost of waiting is near-zero.
 
 ---
 
-## Data Flow — what changes
+## (e) Where Partial Evaluation Lives
 
-### Analysis request flow (PATH entries, post-fix)
+**A dedicated pass in `core/profile/parteval.go`, between classification and IR assembly — pure Go over the parsed AST, shell-free.**
+
+### What it does
+
+For each entry, decide `Portability` and, for static entries, extract the resolved literal value:
+
+- **`PortStatic`** — value is a constant literal (`alias gs='git status'`, `export EDITOR=vim`). The AST word has no `*ParamExp`, `*CmdSubst`, `*ArithmExp`, or backticks. Safe to resolve to a literal and snapshot into the `Manifest` for fast/exact apply.
+- **`PortDynamic`** — value references `$HOME`, `$(...)`, `${VAR}`, or sits inside a conditional. **Keep the raw text; never resolve.** This is the portability guarantee: `export PATH="$HOME/bin:$PATH"` stays `$HOME/bin:$PATH`, so the profile works on any machine. At *activate* time the live shell expands it.
+- **`PortMixed`** — partly literal, partly dynamic (e.g. `export FOO="static-prefix-$DYN"`). Treat as dynamic for safety (keep raw, expand at activate time).
+
+### Why a separate pass, and where exactly
+
+- **It is shell-agnostic logic** (walking `mvdan.cc/sh` AST nodes), so it belongs beside the other Go-side analysis, not in `core/shell/zsh`. But it needs richer AST access than the current `Provider.Parse` exposes (today `Block` only keeps `Text` + names, not the word-part tree). Two options:
+  1. **Extend the parser output** minimally — compute a "has dynamic parts" determination in `core/shell/zsh/parse.go` (where the AST is in scope, inside `describe`) and surface it as a `bool`/enum on `Block`. Keeps AST handling in the one package that already imports `syntax`.
+  2. **Re-parse in `core/profile`** — `mvdan.cc/sh` is already a dependency and `core/profile` may import it (it is not the shell-specific *provider*, just an AST consumer). Re-parsing each entry's `Raw` to inspect word parts keeps `Block` untouched.
+- **Recommendation: option 1 for the static/dynamic *flag* (the AST is right there in `describe`), option 2 only if deeper structural extraction is needed.** Either way the *decision* ("is this portable?") is the partial-eval pass's job and lives logically in `core/profile`.
+
+### The hard rule (from PROJECT.md "Out of Scope")
+
+Partial evaluation **must never resolve `~`/`$HOME`/`$(...)` against the current machine's disk or live env.** Resolving them would freeze the profile to one machine and destroy branch portability. "Static" means *syntactically constant*, not *evaluated-on-this-box*. This is a correctness boundary, not a nicety — the test suite should assert that a profile containing `$HOME` round-trips with `$HOME` intact. (Note: `core/util/path.go::ExpandHome` resolves `~` against the real home — it is used by the *analyzer's* file-open path and must **not** be reused inside the IR/partial-eval; resolving there is exactly the forbidden freeze.)
+
+---
+
+## (f) Suggested Build Order — and What to SPIKE First
+
+### SPIKE FIRST (before any IR/git/CLI work): the zero-residue switch loop
+
+**This is the de-risking the PROJECT.md frontier feature explicitly calls for** ("de-risked by a spike before committing"). It is independent of all the Go plumbing and it is the one thing that can invalidate the entire product.
+
+**Spike scope (throwaway, hand-built):**
+1. Two hand-written `Manifest` JSON files for two fake profiles (no IR, no git, no parser).
+2. A hand-written loader (`activate`/`deactivate`/`checkout` zsh functions) + the per-terminal `__ZSHPRO_STATE` var.
+3. Prove the loop in a *live, already-open* terminal: `activate A → activate B (auto-deactivates A) → deactivate B`.
+4. **Assert zero residue** by snapshotting `$aliases`, `$functions`, `$PATH`, `$path`, exported env, and `$options` (via `zmodload zsh/parameter`) before activate and after the final deactivate — they must be **byte-identical**.
+5. Specifically stress the three known failure modes: (a) **PATH growth** across repeated switch cycles; (b) **stale aliases/functions** after deactivate; (c) **drifted env** (user changes a var mid-session — deactivate must NOT clobber it).
+
+**Why first:** if zero-residue hot-switch turns out to be infeasible in a live terminal (e.g. some option, completion, or hook state can't be cleanly reversed), the product scope must change *before* you've built an IR and a git store on top of it. Everything downstream assumes this loop works. The spike costs ~1 phase and saves a possible full rewrite. The verified shadowenv/direnv precedent says it *is* feasible — but their scope is env-only; zsh-pro adds aliases/functions/options, which is the unproven delta worth spiking.
+
+### Then, in dependency order
+
+| Order | Phase (topic) | Depends on | Why this position |
+|-------|---------------|------------|-------------------|
+| **0** | **SPIKE: zero-residue activate→switch→reactivate** (hand-built manifest + loader) | nothing | De-risks the frontier; can invalidate scope; informs the `Manifest` shape |
+| **1** | **IR + partial evaluation** (`core/profile`, `model.Profile/Entry`, `parteval`) | parser/classifier (shipped) | The store and manifest both need a profile to serialize; reuses the seam; new oracle target |
+| **2** | **git-backed store** (`core/store`, branch=profile, per-category files) | IR (must serialize *something*) | `checkout` needs profiles to switch between; isolated subprocess-over-`git` |
+| **3** | **Manifest builder + emit** (`core/activate`, `core/shell/zsh/emit.go`, extended introspect) | spike (proved the design), IR (resolves a profile) | Turns a profile into the reversible record the runtime applies |
+| **4** | **Runtime loader + CLI commands** (`hook`, `checkout`, `activate`, `deactivate`, `list`, `__ZSHPRO_STATE`) | manifest+emit, store | Wires the live terminal to the binary; the user-facing verb surface |
+| **5** | **Ingest end-to-end** (`zshrc` → IR → baseline branch committed) | IR, store | The on-ramp: turn a real `~/.zshrc` into the baseline profile |
+
+**Sequencing rationale:** the IR is the spine — store, manifest, and regeneration all serialize it, so it lands right after the spike validates *what the manifest must contain*. Store before manifest-emit because `checkout` is meaningless without profiles to switch between. Runtime last because it composes everything; by then the manifest design is proven (spike) and profiles exist (store). Ingest can technically come earlier but is best last: it is the polished on-ramp, and doing it last means it targets the *final* IR shape rather than chasing a moving target.
+
+> Alternative ordering considered: store (2) before IR (1). Rejected — the store's `Read`/`Commit` are typed in terms of `model.Profile`; building the git plumbing before the IR exists means designing `Store` against a placeholder and reworking it. IR-first gives the store a stable type to serialize.
+
+---
+
+## Architectural Patterns
+
+### Pattern 1: Emit-and-source (binary cannot mutate its parent shell)
+
+**What:** The Go binary never changes the live shell directly; it prints shell code to stdout, and a sourced shell function `eval`s/sources it. The parent shell applies the change to itself.
+**When to use:** Any time activation must affect the *calling* interactive shell (all of activate/deactivate/checkout).
+**Trade-offs:** (+) The only correct way to mutate a parent shell; per-terminal by construction. (−) The emitted code is shell-specific and must be escaped carefully (quoting bugs become shell-injection bugs). Keep all emission in `core/shell/zsh/emit.go` and unit-test the escaping.
+
+```zsh
+# the loader (emitted by `zsh-pro hook`), shadowenv-style
+checkout() { eval "$(zsh-pro checkout "$1")"; }   # binary prints the apply-plan; shell evals it
+```
+
+### Pattern 2: Reversible diff with a drift guard (shadowenv `undo::Data`)
+
+**What:** Record both the prior value and the value you applied. On reverse, restore the prior value **only if the live value still equals what you applied**.
+**When to use:** Every reversible mutation in a live terminal — the core of zero-residue.
+**Trade-offs:** (+) Safe in already-open terminals; respects the user's mid-session changes. (−) Requires storing more state (both values) and a per-terminal blob. Non-negotiable for the frontier feature.
+
+```go
+// deactivate a scalar, guarded
+if liveValue(s.Name) == s.Applied {       // we still own it
+    if s.Original == nil { unset(s.Name) } else { set(s.Name, *s.Original) }
+} // else: user changed it after we set it — leave it alone
+```
+
+### Pattern 3: PATH as a delta vs a captured base (never a wholesale overwrite)
+
+**What:** Store PATH changes as `{additions, deletions}` against the PATH captured at first-activation, not as an absolute list. Reverse by subtracting additions / re-adding deletions.
+**When to use:** All ordered-list env vars (PATH, FPATH, MANPATH, CDPATH).
+**Trade-offs:** (+) No PATH growth across switch cycles; session-added entries survive a switch. (−) Approximate ordering on restore (shadowenv documents this exact caveat). Acceptable — exact ordering of removed-then-readded entries is rarely load-bearing.
+
+### Pattern 4: Subprocess provider with graceful degradation (existing — extend, don't reinvent)
+
+**What:** Run an external binary (`zsh -f`, `git`) under a context timeout; on any failure return an "unavailable" sentinel and let the caller degrade. Already established in `Introspect` (`introspect.go:42-53`).
+**When to use:** The new `git` store; the extended introspect for manifest-building.
+**Trade-offs:** (+) Consistent with the codebase; no new deps; honest failure modes. (−) Subprocess latency per call (fine for an interactive tool).
+
+---
+
+## Data Flow
+
+### Ingest flow (one-time, on-ramp)
 
 ```
-src bytes
-  └► Provider.Parse  → []Block (Block.Text holds `export PATH="...:$PATH"`)
-       └► Provider.Classify → Block.Category = CatPath          (UNCHANGED)
-            └► Analyzer.Analyze buckets[CatPath]                (UNCHANGED)
-                 └► reconciler.pathEntries(block)               (NEW helper)
-                      split RHS on ':' · drop $PATH · verbatim entries
-                       ├► duplicatePaths   keys on canonPathEntry  → IssueDuplicatePath (SevActionable)
-                       └► relativePaths    flags non-absolute      → IssueRelativePath  (SevAdvisory)  [NEW]
-                 └► a.Issues (sorted by Kind,Name)               (sort UNCHANGED)
-                      └► Analysis.ExitCode()  counts SevActionable only   [CHANGED]
-                           └► render: human (severity glyph) · json (severity field + issues_found align)
+~/.zshrc bytes
+   ↓  Provider.Parse        (REUSED — already returns []Block with verbatim Text)
+[]model.Block
+   ↓  Provider.Classify     (REUSED — Cat* taxonomy routes declarative vs imperative)
+classified blocks
+   ↓  core/profile partial-eval pass   (NEW — tag Static/Dynamic, keep dynamics raw)
+model.Profile
+   ↓  core/profile regenerate          (NEW — per-category .zsh)
+   ↓  core/store Commit                (NEW — write files, git commit to baseline branch)
+git repo (baseline branch = the profile)
 ```
 
-### Oracle flow (testgen, independent)
+### Checkout / live-switch flow (the product's core verb)
 
 ```
-Generator.Build(params incl. RelativePaths/DupRelativePaths)
-  └► ConfigGraph with NodePathEntry{Relative:true/false}        [NEW field]
-       └► RenderZsh → .zsh source (relative entries verbatim)   [render branch NEW]
-            └► Expected() :
-                 dup paths keyed on testgen-LOCAL canon          [NEW, must NOT import analyze]
-                 relativePathIssues → IssueRelativePath/SevAdvisory  [NEW]
-                 (4 existing kinds: Severity = zero = SevActionable)
+user runs:  checkout work     (a loader fn)
+   ↓  shell fn: eval "$(zsh-pro checkout work)"
+   ↓  binary reads __ZSHPRO_STATE  (active manifest, from this terminal's env)
+   ↓  core/store Read("work")  →  model.Profile
+   ↓  core/activate build Manifest (resolve via extended `zsh -f` introspect)
+   ↓  core/activate plan = deactivate(active) THEN activate(target)
+   ↓  core/shell/zsh/emit → shell code (unalias/unset -f/export/setopt/PATH delta + new __ZSHPRO_STATE)
+   ↓  binary prints shell code to stdout
+shell `eval`s it → live terminal now in profile "work", state var updated, ZERO residue from prior
+```
+
+### State management (per-terminal, env-var-carried)
+
+```
+terminal A env:  __ZSHPRO_STATE = "work:v1:<json manifest>"
+terminal B env:  __ZSHPRO_STATE = "personal:v1:<json manifest>"   ← independent
+
+activate:   reads/sets __ZSHPRO_STATE  (no global file, no lock)
+deactivate: reads __ZSHPRO_STATE → reverses embedded manifest → unsets the var
 ```
 
 ---
 
-## --json wire-contract delta (spell it out exactly)
+## Scaling Considerations
 
-The milestone is an **accepted breaking change** to `analyze --json` (PROJECT.md Constraints). Exact deltas:
+Scale here is **config size and switch frequency**, not users (it's a single-user CLI).
 
-**1. New issue kind value.** `analysis.issues[].kind` gains a sixth enumerated value:
-```
-"relative_path"   (joins duplicate_alias, reassigned_env, duplicate_path, shadowed)
-```
+| Scale | Architecture Adjustments |
+|-------|--------------------------|
+| Typical `.zshrc` (100s of lines, <20 profiles) | None — parse + `git checkout` + emit are all sub-100ms; introspect's existing 5s timeout is ample |
+| Large config (1000s of lines, heavy plugins) | Cache the resolved `Manifest` per profile (`manifest.json` in the tree) so `activate` skips re-introspecting `zsh -f` every switch; invalidate on commit |
+| Very frequent switching / prompt-hook re-assert | Add a hash-skip (shadowenv's `prev_hash` trick): if the target profile's hash matches the active state, emit nothing and return immediately |
 
-**2. New field on every issue object** — `analysis.issues[].severity`:
-```json
-{
-  "kind": "relative_path",
-  "name": "./scripts",
-  "lines": [12],
-  "note": "relative PATH entry — resolves against the current directory",
-  "severity": "advisory"
-}
-```
-Values: `"actionable"` | `"advisory"`. **Recommendation: emit it on every issue (no `omitempty`)** so agents can switch on it unconditionally. The four pre-existing kinds carry `"severity":"actionable"`.
+### Scaling Priorities
 
-**3. Corrected `name` / `lines` values for PATH issues.** Same field shapes, but **different data**:
-   - `duplicate_path` entries that were mis-named (`/scripts`) now report verbatim (`./scripts`); notation-equivalent dups (`~/x` + `${HOME}/x`) now collapse to a **single** `duplicate_path` issue instead of two/none.
-   - Previously-missed unrooted/`.`/empty entries now appear (as `relative_path`).
-
-**4. Exit-code / `issues_found` semantics.**
-   - `exit_code`: an advisory-only file now returns **0** (was: would have been 3 under the old `len>0` rule had the advisory existed). Genuine dups/shadows still return **3**.
-   - `issues_found` (`dto.Envelope`): **recommend** redefining as "actionable issues present" so it agrees with `exit_code` (advisory-only ⇒ `issues_found:false, exit_code:0`). If left as `len(issues)>0`, an advisory-only envelope is `issues_found:true, exit_code:0` — internally inconsistent; **flag this decision for the user.**
-
-**5. Unchanged:** envelope shape (`tool/version/command/ok/issues_found/exit_code/analysis`), category rollups, `has_secrets`, `introspected`, `notes`, `lines`/`blocks`. No field is removed or renamed.
-
-**Tests asserting the snapshot that will move:** `core/render/render_test.go` (`exit_code==3`, `issues_found==true` for a dup-alias sample — still valid, dup-alias stays actionable), `core/cli/cli_test.go` (envelope `exit_code` must equal process code — still valid). New tests should cover the **advisory-only** envelope (`exit_code:0`, `severity:"advisory"`).
+1. **First bottleneck:** re-running `zsh -f` introspection on every `activate`. Fix: cache the built `Manifest` in the git tree; rebuild only on `commit`/`ingest`. The manifest is pure-derived from the profile, so caching is safe.
+2. **Second bottleneck:** large PATH delta diffs on every switch. Fix: precompute the `ListDelta` at commit time and store it; switch just applies the stored delta.
 
 ---
 
-## Recommended phase build order
+## Anti-Patterns
 
-Order is driven by **dependency direction** (leaves first) and by keeping each phase independently testable. Three phases, each a coherent vertical or horizontal slice.
+### Anti-Pattern 1: Re-sourcing the new profile's raw `.zsh` to "switch" (the imperative master-block trap)
 
-```
-Phase A — Severity tier (vertical slice through every layer)
-  model.Issue.Severity + Severity enum  →  Analysis.ExitCode() (count actionable)
-  →  dto.Issue.severity  →  render/json (map + issues_found decision)  →  render/human (glyph)
-  Tests: ExitCode unit test (advisory ⇒ 0; actionable ⇒ 3); render_test advisory-only envelope.
-  WHY FIRST: introduces the Severity type the other phases reference. With SevActionable as
-  the zero value, this phase leaves all FOUR existing kinds' exit-3 behavior byte-identical —
-  pure additive, lowest blast radius. No reconciler change yet.
+**What people do:** `checkout` = `source ~/.config/.../work/*.zsh`.
+**Why it's wrong:** Sourcing is imperative and **irreversible** — there is no clean `un-source`. You get PATH growth, leftover aliases, stale functions. It is exactly the "master block" the product is replacing.
+**Do this instead:** Compute a reversible declarative `Manifest`; apply `deactivate(old)` then `activate(new)` as recorded diffs. Only structured, recorded changes can be cleanly reversed.
 
-Phase B — PATH extraction + dedup + relative-path detector (engine, shell-free)
-  reconciler.pathEntries() (split-on-':' + drop $PATH)  →  canonPathEntry() (notation-only)
-  →  duplicatePaths keys on canon  →  relativePaths() emits IssueRelativePath/SevAdvisory
-  →  analyzer.go: append relativePaths(buckets[CatPath]); delete pathSegRe
-  Tests: reconciler unit tests for the empirically-broken cases above; update analyze_test.go
-         dup-path assertion if the canonical display shifts.
-  DEPENDS ON: Phase A (relativePaths sets Severity: SevAdvisory; IssueRelativePath kind).
-  STAYS shell-free — reads model.Block only.
+### Anti-Pattern 2: Storing the active profile in a global file shared across terminals
 
-Phase C — Oracle + golden coverage (test infra, model-only)
-  testgen: Node.Relative + relPathDirs pool + GenParams.RelativePaths/DupRelativePaths
-  →  render.go relative-entry branch  →  oracle relativePathIssues() + LOCAL canon for dup keys
-  →  property_test propParams + (optional) Severity comparison
-  →  fixtures: duplicate_path.zsh, shadowed.zsh, relative_path.zsh + manifest issue_names/issue_lines
-  DEPENDS ON: Phase B (engine must actually produce the new/ corrected issues for the property
-             test to pass) and Phase A (IssueRelativePath/Severity exist in model).
-  CRITICAL: testgen re-implements canonicalization locally — MUST NOT import core/analyze.
-```
+**What people do:** Write `~/.config/zsh-pro/current` and have every terminal read it.
+**Why it's wrong:** Terminal A's `checkout` silently changes what terminal B will deactivate next — cross-terminal corruption, the opposite of zero-residue.
+**Do this instead:** Carry active state in a **per-process env var** (`__ZSHPRO_STATE`), shadowenv-style. Per-terminal isolation is then automatic. A global file may *only* hold the "default profile for brand-new terminals," never the live active state.
 
-**Dependency graph:** `A → B → C` (strict). A is self-contained; B needs A's `Severity`/`IssueRelativePath`; C needs B's runtime behavior to assert against and A's model symbols. C is also the regression pin that proves A+B end-to-end.
+### Anti-Pattern 3: Resolving `$HOME`/`$(...)` at ingest to "simplify" the manifest
 
-> Alternative ordering considered: doing extraction (B) before severity (A). Rejected — B's `relativePaths` detector needs `SevAdvisory` to exist, and wiring an advisory kind into `a.Issues` *before* `ExitCode()` is severity-aware would transiently make advisory-only configs exit 3 (a wrong intermediate state). A-first avoids that window.
+**What people do:** Expand dynamic values to literals during partial evaluation so apply is "just set the value."
+**Why it's wrong:** Freezes the profile to the machine it was ingested on; `$HOME/bin` becomes `/Users/alice/bin` and breaks on every other box. Destroys the portability that is the product's stated core value.
+**Do this instead:** "Static" = *syntactically constant only*. Keep every `$VAR`/`$(...)`/conditional as raw text; let the live shell expand it at activate time. Assert this with a round-trip test. (And do **not** reuse `util.ExpandHome` inside the IR — it does exactly the forbidden resolution.)
 
----
+### Anti-Pattern 4: Overwriting PATH wholesale on activate/deactivate
 
-## Anti-Patterns to avoid (layering traps specific to this milestone)
+**What people do:** Save the full PATH string, restore the full PATH string.
+**Why it's wrong:** Clobbers anything the user (or another tool) added to PATH during the session; and re-applying a saved absolute PATH causes growth when composed across switches.
+**Do this instead:** Store PATH as a **delta vs the captured base** (`additions`/`deletions`); reverse by subtracting/re-adding exactly those segments.
 
-### Trap 1: testgen importing the engine's canonicalizer
-**What people do:** reuse `analyze.canonPathEntry` from `core/testgen/oracle.go` to avoid duplicating the notation-fold.
-**Why it's wrong:** breaks the verified `testgen → core/model only` boundary, AND turns the property test into a tautology (a canon bug becomes invisible).
-**Do instead:** re-implement the tiny notation-fold inside `testgen`. The duplication is the point — two independent implementations agreeing is the oracle's value.
+### Anti-Pattern 5: Adding `go-git` (or any new dependency) for the store
 
-### Trap 2: doing PATH family-detection in the reconciler instead of using the classifier
-**What people do:** re-inspect `Block.Text` for `PATH=`/`fpath` inside `reconciler.duplicatePaths` to decide which blocks are PATH manipulations.
-**Why it's wrong:** duplicates the classifier's job and risks the engine reaching toward shell-specifics.
-**Do instead:** trust `buckets[model.CatPath]` (already classified). The reconciler only **extracts entries** from text it's already been told is PATH-family. (Note: classifier PATH over-capture is explicitly **out of scope** — PROJECT.md — so don't "fix" it here.)
+**What people do:** Reach for `go-git` because "it's the Go way."
+**Why it's wrong:** Violates the hard "no new dependencies beyond `mvdan.cc/sh`" constraint, and breaks the established pattern (the codebase already shells out to an external binary, `zsh`, with graceful degradation).
+**Do this instead:** Shell out to the `git` binary via `os/exec` with a context timeout — a direct sibling of the existing `Introspect` subprocess. `git` is already a runtime premise of a *shell environment manager*.
 
-### Trap 3: filesystem/env resolution sneaking into canonicalization
-**What people do:** resolve `~`/`$HOME` against the real environment, or `..`/symlinks against disk, to "really" dedup.
-**Why it's wrong:** makes a read-only static analyzer env-dependent and non-deterministic; reintroduces the "`$HOME` reassigned mid-file" false positive. Explicitly Out-of-Scope.
-**Do instead:** string-level notation fold only. `~` ≡ `$HOME` ≡ `${HOME}` as **tokens**, slash normalization — nothing more.
+### Anti-Pattern 6: Emitting `unalias`/`unset -f`/`setopt` strings from `core/activate`
 
-### Trap 4: advisories bumping the exit code
-**What people do:** leave `ExitCode()` as `len(a.Issues) > 0` after adding advisories to `a.Issues`.
-**Why it's wrong:** defeats the entire severity tier — relative-path notes would return exit 3 and pollute the agent signal.
-**Do instead:** `ExitCode()` (and ideally `issues_found`) gate on `Severity == SevActionable`.
+**What people do:** Build the shell code in the orchestration layer because it's convenient.
+**Why it's wrong:** Leaks zsh syntax into the shell-agnostic layer, breaking the seam that keeps `core/analyze` shell-free and makes the engine testable/portable.
+**Do this instead:** `core/activate` produces a shell-agnostic `Manifest`/plan; **only `core/shell/zsh/emit.go`** turns it into zsh text. Same discipline as `core/analyze` → `Provider` interface.
 
-### Trap 5: forgetting `issues_found` when only fixing `ExitCode()`
-**What people do:** make `ExitCode()` severity-aware but leave `IssuesFound: len(a.Issues) > 0` in json.go.
-**Why it's wrong:** emits a self-contradictory envelope (`issues_found:true, exit_code:0`).
-**Do instead:** derive both from the same actionable-issue check. Flag the precise semantics to the user before implementing.
+### Anti-Pattern 7: Making `core/profile` import `core/shell/zsh`
+
+**What people do:** Import the concrete provider for convenience when building the IR.
+**Why it's wrong:** Breaks the single-composition-root rule (`core/shell/zsh` imported only at `cmd/zsh-pro/main.go`) that the whole architecture rests on.
+**Do this instead:** `core/profile` depends on the `Parser`/`Classifier` *interfaces* (injected), exactly as `core/analyze` does. The concrete `zsh.Provider` is wired in only at `main.go`.
 
 ---
 
-## Integration Points (summary table for the roadmap author)
+## Integration Points
 
-| File | New / Modified | Integration point | Layer |
-|------|----------------|-------------------|-------|
-| `core/model/issue.go` | MODIFY | `Severity` enum + field; `IssueRelativePath` const; `Severity.String()` | leaf (domain) |
-| `core/model/analysis.go` | MODIFY | `ExitCode()` counts `SevActionable` only | leaf (domain) |
-| `core/analyze/reconciler.go` | MODIFY | `pathEntries()` (split/`$PATH`-drop), `canonPathEntry()`, `relativePaths()`; delete `pathSegRe`; `duplicatePaths` re-keys | engine (shell-free) |
-| `core/analyze/analyzer.go` | MODIFY (~1 line) | append `relativePaths(buckets[CatPath])` | engine (shell-free) |
-| `core/dto/analysis.go` | MODIFY | `Issue.Severity string` + json tag | leaf (wire) |
-| `core/render/json.go` | MODIFY | map `Severity`; align `IssuesFound` with actionable | render |
-| `core/render/human.go` | MODIFY | severity marker in ISSUES block | render |
-| `core/testgen/graph.go` | MODIFY | `Node.Relative bool` | test infra (model-only) |
-| `core/testgen/generator.go` | MODIFY | `relPathDirs` pool; `GenParams.RelativePaths`/`DupRelativePaths`; planting | test infra (model-only) |
-| `core/testgen/render.go` | MODIFY | relative-entry render branch | test infra (model-only) |
-| `core/testgen/oracle.go` | MODIFY | `relativePathIssues()`; LOCAL canon for dup keys; severities | test infra (model-only) |
-| `core/testgen/property_test.go` | MODIFY | `propParams()` knobs; optional `Severity` compare | test infra |
-| `core/analyze/analyze_test.go` | MODIFY | dup-path assertion may shift; add broken-case unit tests | external test |
-| `core/analyze/corpus_test.go` | MODIFY | extend `manifest` + runner with `issue_names`/`issue_lines` | external test |
-| `core/testdata/fixtures/*.zsh` + `manifests.json` | ADD | `duplicate_path.zsh`, `shadowed.zsh`, `relative_path.zsh` | test data |
-| `core/render/render_test.go` | MODIFY/ADD | advisory-only envelope (`exit_code:0`, `severity`) | test |
+### External Services (subprocess runtime deps — same shape as the existing `zsh -f`)
 
-**No new packages. No new dependencies.** Every layering constraint in PROJECT.md is honored by edits inside existing boundaries: `core/analyze` reads only `model`/interface; `core/testgen` keeps its `model`-only dependency (verified via `go list -deps`); `core/model` (domain) and `core/dto` (wire) stay separate and mapped solely in `core/render/json.go`.
+| Service | Integration Pattern | Notes |
+|---------|---------------------|-------|
+| `git` binary | `os/exec` + `context.WithTimeout`, in `core/store/git.go` | New runtime dep; degrade with a clear error if absent (mirror `Introspect`'s Available:false). Do NOT add `go-git`. |
+| `zsh -f` binary | **REUSE** `core/shell/zsh/introspect.go`; extend the embedded script to also dump alias/function **bodies** (`${aliases[k]}`, `functions` assoc array) for manifest-building | Already established, already degrades gracefully; bodies needed for `Shadowed` restore |
+
+### Internal Boundaries
+
+| Boundary | Communication | Notes |
+|----------|---------------|-------|
+| `core/profile` ↔ `core/shell` | depends on `Parser`/`Classifier` **interfaces** (not `zsh` concrete) | Same seam `core/analyze` uses — do not bypass it; `core/profile` may import `mvdan.cc/sh` as a pure AST consumer |
+| `core/activate` ↔ `core/shell/zsh` | via a render method (`emit`) — optionally behind a new `Activator` interface (deferred) | `core/activate` stays shell-agnostic (operates on `Manifest`); zsh syntax lives only in `emit.go` |
+| `core/store` ↔ `core/profile` | `Store.Read` returns `model.Profile`; `Store.Commit` takes `model.Profile` | Store serializes/deserializes the IR; it does not understand zsh |
+| `core/cli` ↔ new packages | new `case`s in `CLI.Run`; same exit-code + JSON-envelope contract | Reuse `fail()` and the `dto.Envelope` discipline for any `--json` output |
+| composition root ↔ everything | `cmd/zsh-pro/main.go` wires `zsh.Provider{}` **and** `store.New(dir)` | Still the only place importing `core/shell/zsh`; now also constructs the `Store`. ~1-3 added lines. |
+
+### The seam, restated (the quality gate)
+
+- **Reused unchanged:** `Provider.Parse`, `Provider.Classify`, `Provider.Categories`, the `Cat*` taxonomy, `model.Block`'s verbatim `Text`, the `zsh -f` introspect subprocess, the `dto.Envelope`/exit-code contract, the `testgen` oracle (as the ingest regression pin).
+- **Modified (additive):** `core/model` (+`Profile`/`Entry`/`Manifest`), `core/shell/zsh` (+`emit.go`, +body-dumping in `introspect.go`), `core/cli` (+commands), `cmd/zsh-pro/main.go` (+store wiring).
+- **New:** `core/profile`, `core/store`, `core/activate`, the embedded loader, optionally a deferred `shell.Activator` interface.
+- **Never bypassed:** the orchestration layer (`profile`/`activate`) never imports `core/shell/zsh` and never writes zsh syntax; only the concrete provider does. Single composition root preserved.
+
+---
 
 ## Sources
 
-- Live source tree (HIGH): `core/analyze/{reconciler,analyzer}.go`, `core/model/{issue,block,analysis,exitcode,category}.go`, `core/dto/{analysis,envelope}.go`, `core/render/{json,human}.go`, `core/testgen/{graph,generator,render,oracle,property_test}.go`, `core/analyze/{analyze_test,corpus_test}.go`, `core/shell/zsh/{parse,classify}.go`, `core/testdata/fixtures/manifests.json`
-- `.planning/PROJECT.md` — v1.1 milestone scope, Key Decisions, Out-of-Scope (HIGH)
-- `go list -deps ./core/testgen` — empirically confirms testgen depends only on `zsh-pro/core/model` (HIGH)
-- Empirical reproduction of `pathSegRe` extraction failures via a throwaway Go program (HIGH) — confirms `./scripts→/scripts`, bare `.`/unrooted blind spots, `${HOME}` miss, trailing-slash non-normalization
+- Existing codebase (read directly): `core/shell/zsh/parse.go`, `classify.go`, `introspect.go`; `core/model/{block,analysis,identityset,category}.go`; `core/analyze/analyzer.go`; `core/cli/cli.go`; `core/shell/provider.go`; `core/dto/*`; `core/render/json.go`; `core/testgen/render.go`; `core/util/path.go`; `core/cmd/zsh-pro/main.go` — HIGH confidence (primary source).
+- Shopify **shadowenv** source — the reference reversible-manifest design: `src/undo.rs` (`Scalar`/`List`/`Data`), `src/shadowenv.rs` (`unshadow`/`shadowenv_data`/drift guard), `sh/shadowenv.zsh.in` (emit-and-source hook), `src/hook.rs` (`Modifications`, schema versioning), `src/loader.rs` — HIGH confidence (read from source). https://github.com/Shopify/shadowenv
+- **direnv** — independent confirmation of capture-diff-restore + per-shell hook + export-diff (sub-process diff) model. https://direnv.net/ , https://github.com/direnv/direnv — MEDIUM-HIGH (docs + widely-known mechanism).
+- **chezmoi** — source-state→target-state→apply-minimum-diff, and "templates (dynamic values) eliminate per-machine branching" — validates keeping dynamics late-bound for portability. https://www.chezmoi.io/ — MEDIUM-HIGH (official docs).
+- **zsh** — `zmodload zsh/parameter` exposes `$aliases`/`$functions`/`$options` associative arrays (read + mutate); `${aliases[name]}` yields the alias body; the `functions` array maps names→definitions; `unalias`/`unset -f`/`unsetopt` are the reversal primitives. zsh manual (Options, zshmodules). https://zsh.sourceforge.io/Doc/Release/Options.html — HIGH (official manual + corroborated).
+- **go-git vs shelling out** — confirms `go-git` is a new module dependency (ruled out by no-new-deps); shelling out to `git` keeps deps minimal. https://github.com/go-git/go-git — MEDIUM.
 
 ---
-*Architecture research for: zsh-pro v1.1 (Trustworthy PATH Analysis) — integration mapping*
-*Researched: 2026-06-24*
+*Architecture research for: branchable git-versioned zsh environment manager (v2.0 pivot, brownfield integration)*
+*Researched: 2026-06-25*

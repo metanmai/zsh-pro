@@ -1,18 +1,83 @@
 # Feature Research
 
-**Domain:** PATH-hygiene findings for a read-only zsh-config analyzer (zsh-pro v1.1 "Trustworthy PATH Analysis")
-**Researched:** 2026-06-24
-**Confidence:** HIGH (terminology + severity grounded in ShellCheck wiki, CWE 4.20, CIS Benchmarks, Lynis source, and Go stdlib security policy)
+**Domain:** Git-versioned, branchable shell-environment manager (each git branch = a live-switchable zsh environment profile; zero-residue hot-switch)
+**Researched:** 2026-06-25
+**Confidence:** HIGH (prior-art mechanics verified against official docs + source for direnv, conda, Lmod, chezmoi, home-manager, mise)
+
+> Supersedes the prior v1.1 "PATH-hygiene" feature research. The PATH extraction/dedup work from v1.1 is re-scoped here as a prerequisite of the ingest layer (see dependencies), not as the product.
 
 ---
 
-## TL;DR for Requirements/Roadmap Authors
+## Prior-Art Mechanics (what we can borrow)
 
-- **Recommended advisory name:** `relative_path_entry` (issue kind / `--json` name) — surfaced to humans as **"relative PATH entry"**, with the cwd special-case (`.`, empty, leading/trailing/double colon) called out as **"current directory in PATH"**. This matches Lynis ("relative path in PATH"), CIS ("Ensure root PATH Integrity"), and CWE-427 ("current working directory ... untrusted search element"). It is **not invented** — see citations below.
-- **Recommended severity:** **`warning`** (advisory tier — does NOT bump exit code), with a **structured `security` reference field** carrying `CWE-427` for the cwd/empty/relative case. This is the milestone's first sub-actionable severity. Duplicates/shadows stay **actionable** (exit 3).
-- **Why warning, not error:** every authoritative tool treats relative/cwd-in-PATH as an *audit finding* a user may have chosen deliberately (Lynis = warning/suggestion, CIS = L1 with "correct or justify", Go = opt-in policy). It is real but not unconditionally wrong → degrading exit-3 would corrupt the agent signal. This is exactly the stance already recorded in PROJECT.md Key Decisions.
-- **Duplicate PATH** stays an actionable issue and keeps its existing name `duplicate_path`. The convention precedent is zsh's own `typeset -U path` (dedup keeps first occurrence) — so our canonicalization should **report the later/duplicate occurrence** and treat notation-equivalents as the same entry.
-- **Critical anti-features:** do NOT resolve `~`/`$HOME`/`..`/symlinks against the live environment or filesystem (breaks determinism + read-only purity); do NOT flag relative entries as *errors*; do NOT try to judge directory permissions/ownership/existence (that is Lynis/CIS territory and needs a live filesystem we deliberately don't touch); do NOT re-implement ShellCheck SC2123 (accidental-clobber heuristic — different problem, false-positive prone here).
+This section is the evidence base. Every table-stakes / differentiator / anti-feature decision below traces to one of these concrete mechanisms. The recurring problem in all of them is the same one our v2.0 must solve: **apply declarative state to a live shell, then reverse it with zero residue.**
+
+### direnv — the canonical zero-residue reversal (MOST RELEVANT) — HIGH
+
+direnv is the closest mechanical analog to our switch loop, even though its trigger is `cd` rather than `checkout`.
+
+- **Activation:** Hooks into the shell via `eval "$(direnv hook zsh)"`, which registers functions in zsh's `precmd_functions` and `chpwd_functions`. Before every prompt it runs `direnv export zsh`, which loads `.envrc` **in a bash sub-process**, captures the exported-variable diff, and prints `export`/`unset` statements the parent shell `eval`s. Crucially, *the parent process is mutated only via `eval` of generated code* — direnv itself never mutates the parent. (This is exactly our "sourced manifest, no parent-process mutation" stance.)
+- **State tracking:** Three bookkeeping env vars live in the shell:
+  - `DIRENV_DIR` — the directory currently loaded.
+  - `DIRENV_WATCHES` — file mtimes, so it knows when `.envrc` changed and must reload.
+  - `DIRENV_DIFF` — a **base64-encoded, gzip-compressed JSON** snapshot of the environment *before and after* loading. Verified decode: `(printf '\x1f\x8b\x08\x00\x00\x00\x00\x00'; echo "$DIRENV_DIFF" | base64 -d) | gzip -dc | python -m json.tool`. The JSON holds prev/next environment maps.
+- **Deactivation / restore (the key mechanic):** On leaving, direnv loads `DIRENV_DIFF` and computes `diff.Reverse().Patch(env)` — it *inverts the recorded diff* and re-applies it. This restores modified vars to their old values, removes vars it added, and re-adds vars it removed. This is materially smarter than conda's snapshot-restore (below): it is a **per-variable reverse-diff**, not a blanket PATH overwrite.
+- **PATH helper:** `PATH_add bin` (and `source_up`) instead of raw `PATH=...`, so subdir profiles can layer on a parent without clobbering. (`DIRENV_BACKUP` was the old name for `DIRENV_DIFF`; renamed when the format changed.)
+
+**Borrow:** the serialized before/after diff + reverse-and-patch model. This *is* our zero-residue deactivate, generalized beyond PATH to all managed env/aliases/functions.
+
+### conda — snapshot-and-restore, and its documented failure mode — HIGH
+
+- **Activation:** A shell **function wrapper** (`conda`) intercepts `conda activate`/`conda deactivate`, calls Python to generate shell code, and `eval`s it. Activation prepends the env's `bin` to `PATH` and sources `$CONDA_PREFIX/etc/conda/activate.d/*`.
+- **State tracking:** `CONDA_PREFIX` (active env path), `CONDA_DEFAULT_ENV` (name), `CONDA_SHLVL` (nesting depth), `CONDA_PREFIX_1` / `CONDA_PREFIX_2` … (the activation **stack** for nested envs), and `CONDA_PATH_BACKUP` (the snapshot of `PATH` taken at activate time).
+- **Deactivation / restore:** Sources `deactivate.d/*`, then **restores `PATH` wholesale from `CONDA_PATH_BACKUP`**.
+- **Documented failure mode (anti-pattern for us):** Because restore is a *blanket overwrite from a snapshot*, any `PATH` change made by *another* tool **after** activate but **before** deactivate is silently lost on deactivate (conda issues #8070, #2914, #3915). Also `CONDA_*` vars notoriously leak after deactivate (#13439). This is precisely the residue we promise to avoid — and the reason to prefer direnv-style reverse-diff over conda-style snapshot-overwrite.
+
+**Borrow:** the explicit active-state vars (`*_PREFIX`, `*_SHLVL`, a numbered stack). **Avoid:** blanket snapshot-overwrite of PATH; leaking bookkeeping vars.
+
+### environment-modules / Lmod — reference-counted PATH + a real env stack — HIGH
+
+The HPC `module load` / `module unload` model is the most rigorous treatment of "two sources touched the same variable."
+
+- **Activation:** `module load X` runs a modulefile whose `prepend_path("PATH", "/X/bin")` / `append_path(...)` / `setenv(...)` mutate the environment. `module unload X` **reverses each operation**: the entry prepended on load is removed on unload; `setenv` vars are unset.
+- **State tracking + reference counting:** With the default `LMOD_DUPLICATE_PATHS=no`, Lmod keeps a **reference count per PATH entry**. If modules A and B both add `/A/bin`, it's stored once with refcount 2; unloading A drops it to 1 and the entry **stays** until B also unloads (refcount 0). This prevents both duplicate growth *and* premature removal of a still-needed entry. The module table + counts are serialized into the environment so they survive subshell/load cycles.
+- **Env stack:** `pushenv(VAR, val)` maintains a **stack** of prior values, so nested loads restore the exact previous value on unload, not just "unset."
+- **Collections:** `module save <name>` / `module restore <name>` persist a named set of loaded modules (≈ a profile). Caveat learned: a restored collection loads exactly the recorded list and **ignores the modulefiles' own `load()` dependencies** — it trusts the captured snapshot, not re-derivation.
+
+**Borrow:** reference-counting / "who put this here" accounting for PATH, and a `pushenv`-style value stack for env vars. This is the principled answer to "the user (or their master block) already had `/usr/local/bin` on PATH — don't remove it just because a profile also added it."
+
+### chezmoi — three-state model, diff/apply preview UX, imperative escape hatch — HIGH
+
+chezmoi manages *files* not a live shell, but its **state model and UX are the template** for our declarative/imperative split and our reviewability.
+
+- **Three states:** *source state* (the git repo, `~/.local/share/chezmoi`) → rendered into *target state* → reconciled against *destination state* (actual `~`). `chezmoi apply` computes the **minimum changes** to make destination match target.
+- **UX commands:** `add`, `edit`, `diff` (preview target-vs-destination before touching anything), `status` (porcelain summary), `apply`, `update` (`git pull --autostash --rebase` then `apply`), `cd`, `managed`, `forget`, `re-add`. The **diff-before-apply** loop is the headline ergonomic.
+- **Imperative escape hatch (directly maps to our master block):** declarative file management is the default; *scripts* are the explicit exception. Prefixes encode intent + ordering: `run_once_` (run only if this script's SHA256 hasn't succeeded before — stored in a `scriptState` bucket), `run_onchange_` (run when contents change), `before_`/`after_` (ordering relative to file application). chezmoi's own docs say *"Scripts break chezmoi's declarative approach and should be used sparingly"* and *"all scripts should be idempotent."*
+
+**Borrow:** the three-state vocabulary, the `diff`/`status`/`apply` preview loop, and run-once-by-content-hash for the imperative bootstrap.
+
+### Nix home-manager — generations, atomic switch, rollback, ordered activation — HIGH
+
+home-manager is the reference for the **generation model** and **safe atomic switching**.
+
+- **Generations as a symlink chain:** Each successful `home-manager switch` builds a new generation (numbered 1, 2, 3 …) and **atomically** repoints the `home-manager` profile symlink (via `nix-env`) to it, keeping the `home-manager-N-link` history.
+- **Rollback:** `home-manager switch --rollback` runs `nix-env --rollback` then re-runs the generation's activation script. `home-manager generations` lists them with timestamps. GC roots (`~/.local/state/home-manager/gcroots/{current-home,new-home}`) pin the live + in-flight generation.
+- **Ordered, safe activation:** the activation script is a **DAG** of named blocks (`hm.dag.entriesAfter`, …). A special `writeBoundary` block separates *verify-only* steps from *mutating* steps: `checkLinkTargets` runs **before** the boundary and **aborts the switch** if a managed target collides with an unmanaged file. Mutating blocks run after the boundary. A `clobber`/force option governs whether an existing target is unconditionally replaced.
+
+**Borrow:** atomic switch with retained history, one-command rollback, and the **verify-before-mutate** guard (refuse to switch if it would stomp something unmanaged / dirty).
+
+### asdf / mise — shims vs. activation (confirms our architecture) — HIGH
+
+- **asdf:** routes commands through **shims** (`~/.asdf/shims/ruby` resolves the version at call time). No live env mutation; the cost is per-invocation shim overhead and a non-real `PATH`.
+- **mise:** supports both shims and a **direnv-style activation** (`mise activate`, `MISE_USE_SHIMS=false`) that injects/withdraws env on `cd`. mise docs explicitly note that only the activation path gives *"real-time reflection of environment variable changes in the interactive shell"* — shims alone cannot. mise also manages per-directory env vars that are removed when you leave.
+
+**Borrow:** confirms our architectural choice — *live activation (sourced manifest), not shims*, is required for a true env profile (aliases, functions, options can't be shimmed). Shims are an anti-feature for us.
+
+### Cross-cutting zsh mechanics (for zero-residue) — HIGH
+
+- **`typeset -U path`** ties the `$path` array to `$PATH` and **auto-dedupes**, so re-sourcing never grows PATH. The single most important zsh primitive for our "no PATH growth" promise, and the simplest backstop against re-activation residue.
+- **PATH-growth-on-re-source is a known, classic zsh footgun** — sourcing a config twice appends duplicates unless guarded by `typeset -U` or an idempotent `add_to_path` helper. Our hot-switch re-enters this hazard *every* switch, so it must be designed against from line one.
+- **zsh removal primitives we depend on:** `unalias`, `unset -f <fn>`, `unset <var>`, and option restore via `setopt`/`unsetopt` (snapshot `$options` from `zmodload zsh/parameter`). These are the deactivate verbs; our existing introspection already loads `zsh/parameter`, so the live tables are in reach.
 
 ---
 
@@ -20,153 +85,136 @@
 
 ### Table Stakes (Users Expect These)
 
-Features any "PATH analyzer" is assumed to have. Missing these = the tool looks broken or naive.
+Features users assume exist. Missing these = the product feels broken or untrustworthy.
 
-| Feature | Why Expected | Complexity | Notes |
+| Feature | Why Expected | Complexity | Notes / Prior art / Ingest-engine dependency |
 |---------|--------------|------------|-------|
-| **Correct per-entry extraction** (split assignment value on `:`, drop the `$PATH`/`$path` self-reference, keep entries verbatim) | Every PATH tool that reports entries must name them correctly. Today's bug (`./scripts` → `/scripts`) makes the tool actively wrong, which is worse than silent. | LOW–MEDIUM | The fix the milestone is built around. Splitting on `:` is the universal model (POSIX colon-separated list). Empty fields between colons are *real entries* (= cwd), so do **not** drop empties during split — they are findings. |
-| **Duplicate-entry detection across notations** | Users expect "duplicate" to mean "same directory," not "byte-identical string." zsh ships `typeset -U path` precisely because duplicate PATH entries are a recognized nuisance. | MEDIUM | Canonicalize notation only: `~` ≡ `$HOME` ≡ `${HOME}`; collapse `//` → `/`; strip trailing `/` (except root `/`). Compare canonical forms. Precedent: `typeset -U` keeps the **first** occurrence → report the **second+** as the duplicate. Already partially built (buggy); this is a correctness + dedup-key upgrade, not a new feature category. |
-| **Flag current-directory-in-PATH** (`.`, empty field, leading/trailing/double colon) | This is THE canonical PATH foot-gun, documented since Grampp & Morris (1984). CWE-427, CIS, Lynis, UPenn CETS, and Go's stdlib all single it out. A PATH tool that misses it looks unserious. | MEDIUM | Empty PATH field is *equivalent to* `.` — confirmed by CWE-427, UPenn CETS, and POSIX semantics. So leading colon (`:/bin`), trailing colon (`/bin:`), and double colon (`/bin::/sbin`) all = cwd entries and must be detected. This is the highest-value finding in the milestone. |
-| **Human + `--json` parity for the new finding** | The product's core value is a trustworthy `--json` envelope. A finding only in human output would break the agent contract. | LOW | New issue kind must flow through `model.Issue` → `dto`. Reuse existing issue plumbing; just add the `Kind` + severity field. |
-| **A severity that does not bump exit code** | Agents rely on exit 3 = "actionable problem." A deliberate `.`-in-PATH or relative entry must surface without poisoning that signal. | MEDIUM | New `Issue.Severity` field. Exit code derives only from actionable-tier issues. This is the first severity tier and also seeds the deferred classifier-precision work (PROJECT.md). |
+| **`checkout <branch>` switches the active profile** | The entire pitch. Every tool here has a one-verb activate (`direnv` auto, `conda activate`, `module load`, `home-manager switch`). | HIGH | Drives a generated activate/deactivate manifest. **Depends on** ingest (must know the managed set) + git-backed profiles. |
+| **Sourced shell integration; parent never mutated directly** | Universal pattern: direnv/conda generate shell code the parent `eval`s/sources. A binary can't mutate its parent's env. | MEDIUM | `eval "$(zsh-pro shell-init zsh)"` in `.zshrc` + a sourced function that `eval`s emitted `export`/`unalias`/`unset -f`. Mirrors `direnv hook zsh`. |
+| **Deactivate-then-activate ordering on switch** | Switching B→C must remove B's state *before* applying C's, or residue accumulates (the conda-leak complaint, #13439). | MEDIUM | Manifest = `deactivate(prev) ; activate(next)`. Matches PROJECT.md's committed model. |
+| **Restore PATH to a captured base, deduped** | Naïve append grows PATH on every switch — the #1 zsh footgun. Users expect PATH to look identical after a round-trip. | MEDIUM | Capture base PATH at hook-init; rebuild from base + profile additions each switch; `typeset -U path`. Borrows conda's `*_BACKUP` idea but **rebuild, don't blanket-overwrite**. **Depends on** PATH ingest (re-scoped v1.1 extraction/canonicalization). |
+| **Reverse env/alias/function changes cleanly (zero residue)** | The core promise. direnv reverses a recorded diff; Lmod reverses each op; users will diff their env before/after and expect equality. | HIGH | Record what the profile set; on deactivate `unset`/`unalias`/`unset -f` exactly those, restoring prior values where they existed (direnv reverse-diff > conda snapshot). **Depends on** ingest categories (env/aliases/functions). |
+| **Declarative/imperative split + thin bootstrap `.zshrc`** | Run-once/side-effecting init (daemons, `eval "$(starship init)"`) isn't safely reversible; every tool fences it off (chezmoi `run_once_`, conda activate.d). | MEDIUM | A minimal master block (hook + loader) stays unmanaged; only declarative state (env/alias/fn/PATH/options) is switchable. Already in PROJECT.md scope. **Depends on** ingest's declarative-vs-imperative classification. |
+| **Ingest `~/.zshrc` into a categorized, regenerable representation** | Can't manage what you can't model. The existing engine's job, now the front door. | MEDIUM | **Reuses** existing parser + `Cat*` classifier directly. The manager's substrate. |
+| **`status` / `current` — show active profile + what it manages** | conda shows `(envname)`; modules has `module list`; chezmoi has `status`. Users must see active state + managed set. | LOW | Read the bookkeeping env vars (active branch, managed keys) the hook sets. Cheap once state-tracking exists. |
+| **`list` / `branch` — enumerate available profiles** | `conda env list`, `home-manager generations`, `module avail`. Discovery is assumed. | LOW | Thin wrapper over git branches. |
+| **`diff` — preview what a switch would change before applying** | chezmoi's headline UX; switching a live shell blind is scary. Users expect "show me what this does first." | MEDIUM | Compare current managed state vs target profile's manifest. Strong trust signal; pairs with the engine's existing structured output. |
+| **Graceful, reversible failure on switch (never half-applied)** | A switch dying mid-way, leaving a Frankenstein shell, is worse than not switching. home-manager verifies before `writeBoundary`. | HIGH | Either complete or roll back to prior profile; verify-before-mutate. Hard in a live shell (no transactions) → spike candidate. |
+| **Portability: dynamic values stay late-bound** | A profile frozen with one machine's `$HOME`/`$(...)` is useless elsewhere. The Core Value and a stated boundary. | MEDIUM | Partial eval: resolve constants, leave `$HOME`/`$(...)`/conditionals unevaluated in the manifest. **Depends on** ingest partial-eval. |
 
 ### Differentiators (Competitive Advantage)
 
-Where zsh-pro can beat the existing ecosystem. The ecosystem is bifurcated: **shell linters (ShellCheck/shfmt)** lint *script syntax* and have **no relative/cwd-PATH check at all**; **security auditors (Lynis/CIS)** check the *live system root PATH* against the *real filesystem*. Nobody does **static, deterministic, per-statement PATH-hygiene on a config file with trustworthy line numbers and a machine envelope.** That gap is the differentiator.
+Features that set us apart. Aligned to the Core Value: *git-branch-as-live-profile with zero-residue hot-switch.*
 
-| Feature | Value Proposition | Complexity | Notes |
+| Feature | Value Proposition | Complexity | Notes / Prior art |
 |---------|-------------------|------------|-------|
-| **Static config-file PATH hygiene (no live env/FS)** | ShellCheck won't tell you `.` is in your PATH; Lynis only checks the *running* root PATH against disk. zsh-pro flags it from the `~/.zshrc` source itself, deterministically, before it ever runs. | MEDIUM | This is the whole niche. Determinism (no `$HOME`/FS resolution) is the feature, not a limitation — see anti-features. |
-| **Notation-equivalent dedup as a first-class finding** | `typeset -U` silently fixes dupes at runtime; ShellCheck ignores them. Reporting `~/bin` and `$HOME/bin` as the *same* duplicate entry is genuinely more than either tool offers. | MEDIUM | The notation-canonicalization (string-level) is the differentiating cleverness. Keep it conservative (see anti-features) to stay false-positive-free. |
-| **CWE-tagged security reference on the cwd finding** | Emitting `CWE-427` in `--json` lets downstream agents/security tooling map the finding to a known weakness taxonomy. Lynis does this conceptually; almost no shell-config tool does. | LOW | Just a string field (`"security": "CWE-427"`). Cheap, high-credibility. Cite CWE-427 (cwd/empty/relative) — NOT CWE-426 (that is *attacker-controlled* paths, the wrong fit; see §Severity). |
-| **Trustworthy line attribution for each PATH finding** | Built directly on the v1.0 line-number guarantee. "`.` in PATH at line 42" is actionable; "somewhere in your PATH" is not. | LOW | Inherits from v1.0; the new finding just needs to carry the statement line like existing issues. |
+| **Git branch *is* the profile (not a parallel config format)** | No tool here uses real git branches as the profile axis. conda/modules use named dirs; chezmoi/home-manager use git only as *backing store* for a single linear target. We get branch/merge/diff/history/PR-review of environments for free. | HIGH | The defining bet. Each branch = a categorized store; `checkout` = switch. Git becomes the generation model (vs home-manager's hand-rolled symlink chain). |
+| **Zero-residue *hot*-switch in an already-open terminal** | conda leaks `CONDA_*`; direnv only fires on `cd`; modules is HPC-batch. Live, mid-session, reversible switching with provable no-residue is the frontier none of them nail. | HIGH | PROJECT.md "frontier"; de-risk with a spike. Borrow direnv reverse-diff + Lmod refcounting + `typeset -U`. **The single most defensible feature.** |
+| **Reference-counted / ownership-aware restore** | "I (or my master block) already had `/usr/local/bin`; don't yank it when I leave a profile that also added it." Only Lmod does this; direnv/conda don't. Makes zero-residue *correct*, not just *aggressive*. | HIGH | Track who-added-what (base vs profile). Reverse-diff gets most of this; refcounting handles overlap. Borrows Lmod. |
+| **Ingest an *existing, real* `~/.zshrc` into branchable profiles** | direnv/chezmoi/home-manager make you *rewrite* config into their format. We adopt the messy file you already have via a real AST parser + classifier. Near-zero onboarding. | MEDIUM | **The existing engine is the moat.** Parser + classifier + secret detection already shipped & oracle-tested. |
+| **Structured `diff`/`status` as an agent contract (`--json`)** | The engine already emits a typed `--json` envelope with exit codes. Extending switch/diff/status to JSON makes profiles scriptable/agent-drivable — unique here. | LOW–MEDIUM | Reuses `dto.Envelope` + exit-code contract. Cheap differentiator on existing rails. |
+| **Honest classification of unsafe-to-switch entries** | "This line is imperative/side-effecting; it stays in your master block, not the profile." Surfacing *why* something isn't switchable builds trust no competitor offers. | MEDIUM | Leans on the committed classifier-precision stance (precision over recall; explicit "uncertain"). **Depends on** classifier work. |
+| **One-command rollback / `checkout -` to previous profile** | home-manager has `--rollback`; for a live shell, "put it back the way it was" is gold after a bad switch. | MEDIUM | Git's own previous-ref + the deactivate manifest. Natural once switch + state-tracking exist. |
+| **Secret-aware profiles** | Engine already flags `has_secrets`. Warn before committing a secret into a branch / leaking across profiles — a real footgun direnv has (people commit `.envrc` secrets). | LOW | Reuses existing secret detection at commit/ingest time. |
 
 ### Anti-Features (Commonly Requested, Often Problematic)
 
+Features that seem good but create disproportionate problems. Documented to prevent scope creep.
+
 | Feature | Why Requested | Why Problematic | Alternative |
 |---------|---------------|-----------------|-------------|
-| **Resolve `~`/`$HOME`/`$VAR` against the live environment** | "Catch the dupe even when one side uses a literal `/Users/me`." | Makes a read-only static analyzer **env-dependent and non-deterministic**; same config yields different findings per machine/user. Directly violates PROJECT.md Out-of-Scope. Also creates the "`$HOME` reassigned mid-file" false positive. | **Notation-only** canonicalization (string-level `~`≡`$HOME`≡`${HOME}`). Never read the actual env. |
-| **Resolve `..`, symlinks, or check the dir exists / is writable / ownership / mode** | "Lynis/CIS flag world-writable + non-existent PATH dirs — do that too." | Requires a **live filesystem** the tool deliberately doesn't touch; results vary by machine; this is OS-audit scope (Lynis/CIS), not config-static scope. High false-positive rate (dirs created later, per-host dirs). | Stay string-static. If desired later, that's a separate *system-audit* mode, explicitly out of this milestone. Cite the boundary: CIS "Ensure root PATH Integrity" needs `stat`; we intentionally don't. |
-| **Flag relative/cwd entries as an ERROR (exit 3)** | "It's a security risk, make it loud." | Relative/cwd-in-PATH is frequently **intentional** (dev tooling, `node_modules/.bin` patterns, sandboxes). Every authority treats it as audit/advisory, not a hard failure (Lynis=warning, CIS=L1 "correct or justify", Go=opt-in). Exit-3 conflation corrupts the agent signal. | **Advisory severity (`warning`)** that does not bump exit code. Loud in output, neutral in exit code. (This is the milestone's design decision.) |
-| **Re-implement ShellCheck SC2123 (accidental PATH clobber)** | "ShellCheck warns about `PATH=...`, we should too." | SC2123 is a *different* check — it heuristically guesses you meant a lowercase var when you assign a **single, separator-less** value to `PATH`. In a `.zshrc`, deliberately *setting* `PATH=...:$PATH` is normal and correct; porting SC2123 here would fire constantly. False-positive magnet. | Out of scope. zsh-pro's job is entry-level hygiene (dupes, relative/cwd), not "did you mean a different variable name." |
-| **Heuristically guess "intent" / suppress `.` at end-of-PATH as safe** | "`.` at the end is 'slightly safer,' so don't flag it." | "Slightly safer" still executes attacker code on a typo (UPenn CETS, Go blog both say end-placement does **not** eliminate risk). Position-based suppression adds complexity and gives false reassurance. | Flag **all** cwd entries uniformly; optionally note position in the message ("at end of PATH" is informational, not exculpatory). Keep the rule simple and honest. |
-| **PATH ordering / precedence ("entry X shadows entry Y")** | "Tell me which dir wins." | Genuinely useful but a *separate* order-sensitivity feature with its own model; bundling it bloats a correctness milestone. Already in PROJECT.md Out-of-Scope. | Defer to a dedicated order-sensitivity phase. This milestone = extraction + dedup + relative/cwd advisory only. |
-
----
-
-## Recommended Advisory: Name + Severity (Justified, Not Invented)
-
-### Name
-
-**Issue kind / `--json` `name`:** `relative_path_entry`
-**Human label:** "relative PATH entry" — with the cwd subset surfaced as **"current directory in PATH"**.
-
-Grounding (conventional terms a user already recognizes):
-
-| Source | Term it uses | Citation |
-|--------|--------------|----------|
-| Lynis (de-facto Linux audit tool) | **"Found relative path in PATH"** / "Suspicious location in PATH discovered" (warning) | github.com/CISOfy/lynis (binaries check) |
-| CIS Benchmarks | **"Ensure root PATH Integrity"** — enumerates empty (`::`), trailing colon (`:`), **current working directory (`.`)** | CIS_* "Ensure root PATH Integrity" (L1) |
-| CWE-427 (MITRE 4.20) | **"current working directory ... an untrusted search element"**; "empty element in the PATH" | cwe.mitre.org/data/definitions/427.html |
-| UPenn CETS | "`.` in your `$PATH`"; empty dir name "equivalent" to `.`; leading/trailing `:` same as `.` | cets.engineering.upenn.edu/answers/dot-path.html |
-| Go stdlib security policy | **"relative"/"current directory"**, error: *"resolves to executable in current directory"* | go.dev/blog/path-security |
-
-**Why `relative_path_entry` as the umbrella, with cwd as a sub-case:** "relative" is the broadest accurate term (covers `./scripts`, `scripts`, `bin/x`, `..`, AND bare `.`/empty). Every non-absolute (non-`/`-rooted) entry is the foot-gun class. The empty/`.`/colon cwd case is the most dangerous specialization and deserves a distinct message string ("current directory in PATH") and the CWE-427 tag, but it's the same issue kind. This keeps the model simple (one new `Kind`) while letting the *message* + *security ref* distinguish severity-of-explanation.
-
-> Naming caution: avoid "insecure PATH" / "untrusted PATH" as the primary label — it overclaims (a relative entry isn't necessarily exploited) and collides with CWE-426 ("untrusted search path" = *attacker-controlled*, the wrong weakness). Use "relative PATH entry" + a CWE-427 reference field for the security framing.
-
-### Severity
-
-**Recommended:** **`warning`** advisory tier — surfaces in output, does **not** bump the exit code (exit 3 stays reserved for `duplicate_*`/`shadowed`).
-
-Grounding for "not an error":
-
-- **Lynis** reports relative-path-in-PATH as a **warning/suggestion**, not a failure that aborts the audit.
-- **CIS "Ensure root PATH Integrity"** is **Level 1** and phrased as "correct **or justify**" — i.e. it may be intentional; it's a review item, not an absolute.
-- **Go** made cwd-in-PATH rejection **opt-in / policy-scoped** (the `go` command itself + `x/sys/execabs`), *not* a blanket runtime error for all programs — an explicit acknowledgement that relative/cwd entries are sometimes legitimate.
-- **CWE-427** lists the consequence as "Execute Unauthorized Code or Commands" but assigns **no CVSS score / no fixed likelihood** — confirming it is context-dependent, not unconditionally critical.
-
-So: real enough to always surface, conditional enough that forcing exit-3 would produce false alarms and corrupt the agent contract. → **advisory `warning`**, plus `security: "CWE-427"` on the cwd/empty/relative finding for machine-readable weakness mapping.
-
-Severity ladder this establishes (maps onto the existing exit-code contract):
-
-| Tier | Issue kinds | Exit impact |
-|------|-------------|-------------|
-| **actionable** (existing) | `duplicate_alias`, `reassigned_env`, `duplicate_path`, `shadowed` | bumps to exit 3 |
-| **warning / advisory** (NEW) | `relative_path_entry` (incl. cwd/empty) | no exit-code change |
-
-> Severity-vs-duplicate, explicitly: a **duplicate** PATH entry is a *correctness/cleanliness* problem (same as zsh's `typeset -U` target) → stays **actionable**. A **relative/cwd** entry is a *security-shaped advisory* the user may have chosen → **warning**. They are different severities by design, and this asymmetry is defensible: CIS/Lynis treat the security finding as "review/justify," while a redundant duplicate is an unambiguous tidy-up.
-
----
-
-## Expected User-Facing Behavior (What Each Finding Should Say)
-
-| Finding | Trigger | Human message (shape) | `--json` shape (illustrative) |
-|---------|---------|------------------------|-------------------------------|
-| **Duplicate PATH entry** (`duplicate_path`, actionable) | Two entries canonicalize to the same dir (incl. `~`≡`$HOME`, slash-normalized) | `duplicate PATH entry: $HOME/bin (also at line N as ~/bin)` | `{ "name": "duplicate_path", "line": M, "severity": "actionable" }` |
-| **Relative PATH entry** (`relative_path_entry`, warning) | Entry not rooted at `/` and not the cwd special-case (`./scripts`, `scripts`, `../x`) | `relative PATH entry: ./scripts — resolves against the current directory at runtime` | `{ "name": "relative_path_entry", "line": M, "severity": "warning" }` |
-| **Current directory in PATH** (`relative_path_entry`, warning, cwd sub-case) | Entry is `.`, empty field, leading/trailing/double colon | `current directory in PATH (empty entry) — executes commands from wherever you cd; see CWE-427` | `{ "name": "relative_path_entry", "line": M, "severity": "warning", "security": "CWE-427" }` |
-
-Notes on message content (kept honest per anti-features):
-- Never assert the entry *is* exploited — describe the mechanism ("resolves against the current directory at runtime"). Matches CWE-427/UPenn framing.
-- For the empty-field case, say "empty entry" explicitly so the user understands a stray `:` is the cause — this is the non-obvious one (CWE-427 + UPenn both stress empty≡`.`).
-- Do not editorialize about end-of-PATH being "safe" (Go/UPenn: it isn't).
+| **Freeze/resolve dynamic values (`$HOME`, `$(...)`) at ingest** | "Make profiles fully self-contained / deterministic." | Destroys portability — the Core Value. Freezes a profile to one machine's disk/user (explicitly Out of Scope in PROJECT.md). | Partial eval: resolve constants only; keep dynamic values late-bound in the manifest. |
+| **Blanket snapshot-and-overwrite of PATH on deactivate (conda-style)** | Simplest possible "restore." | Documented conda failure: silently discards PATH changes other tools made during the session (#8070); risks PATH growth. | direnv-style **reverse-diff** of only what the profile changed + refcount for overlap + `typeset -U`. |
+| **Manage the imperative startup surface (make all init switchable)** | "Switch *everything*, including `eval`/daemons/plugin bootstraps." | Side-effecting run-once code isn't reversible; reversing it = undefined behavior / broken shell. Out of Scope in PROJECT.md; chezmoi explicitly fences scripts off. | Thin unmanaged master block runs imperative bootstrap once; only declarative state is branch-switchable. |
+| **Shims (asdf-style) instead of live activation** | "Avoid mutating the live shell; cleaner isolation." | Shims can't represent aliases, functions, options, or arbitrary env — only executables. A *shell environment* profile fundamentally needs live activation (mise docs confirm shims can't reflect live env). | Sourced activate/deactivate manifest (the chosen model). |
+| **Auto-switch profile on `cd` (direnv's trigger)** | "It's magic, like direnv." | Conflates *project* (per-directory) with *identity/environment* (work vs personal) — orthogonal axes. Surprising mid-session env changes; re-introduces direnv's parent/child `.envrc` PATH-clobber bugs. | Explicit `checkout`. (Per-dir auto-checkout could be a *much later, opt-in* layer.) |
+| **Multi-shell support (bash/fish) in v2.0** | "Support my shell too." | The activation model is zsh-specific (`zmodload zsh/parameter`, `unalias`/`unset -f`, `typeset -U`, `$options`). Generalizing now dilutes the zero-residue core. Out of Scope in PROJECT.md. | zsh-only first; the `shell.Provider` seam already exists to add shells later if validated. |
+| **Deep multi-file config-graph ingest (follow every `source`/`*.zsh`)** | "My config is split across 20 files / a framework (oh-my-zsh)." | Explodes the ingest surface and partial-eval/ordering complexity before the core switch loop is proven. Out of Scope in PROJECT.md. | Single entry-point ingest first; sourced-file following is a later milestone. |
+| **Full env transaction/rollback engine with a daemon** | "Guarantee atomicity like a database." | A live interactive shell has no transaction primitive; a daemon/IPC layer is heavy and brittle for a single static-binary CLI (constraint: one external dep). | Verify-before-mutate + best-effort reverse-on-failure + `checkout -` rollback. Spike to find the achievable guarantee. |
+| **Resolve/lint PATH precedence & overhaul classifier precision inside v2.0** | "While you're parsing PATH, also fix ordering and tighten categories." | Explicitly deferred in PROJECT.md as independent of the switch loop; bundling stalls the manager. | Keep as separate future phases; ingest needs only *correct extraction + notation dedup* (re-scoped v1.1 PATH work). |
 
 ---
 
 ## Feature Dependencies
 
 ```
-Correct per-entry extraction (split on ':', keep empties, drop $PATH self-ref)
-    └──requires──> v1.0 trustworthy line numbers  (each entry's finding needs the statement line)
-    └──enables──>  Notation-equivalent dedup        (can't dedup entries you mis-extract)
-    └──enables──>  Relative/cwd advisory            (can't classify entries you mis-extract)
+[Ingest & categorize ~/.zshrc]   (existing parser + Cat* classifier — the front door)
+    └──requires──> nothing new; reuses shipped engine
+         │
+         ├──enables──> [Partial evaluation]  (resolve constants, keep $HOME/$(...) late-bound)
+         │                   └──requires──> [Ingest & categorize]
+         │
+         ├──enables──> [Declarative vs imperative split]  (what is switchable vs master block)
+         │                   └──requires──> [Ingest & categorize] (+ classifier precision for honesty)
+         │
+         └──enables──> [Git-backed profiles]  (store representation; branch = profile)
+                             └──requires──> [Ingest & categorize] + [Partial evaluation]
+                                  │
+                                  └──enables──> [checkout switches profile]
+                                          └──requires──> [Sourced shell integration / hook]
+                                          └──requires──> [State tracking: active branch + managed keys + base PATH]
+                                                  │
+                                                  ├──requires──> [Restore PATH from captured base + typeset -U]
+                                                  │                   └──requires──> PATH ingest (re-scoped v1.1)
+                                                  │
+                                                  ├──requires──> [Reverse env/alias/fn diff on deactivate]
+                                                  │
+                                                  ├──enables──> [diff: preview a switch]
+                                                  ├──enables──> [status / current / list]
+                                                  ├──enables──> [rollback / checkout -]
+                                                  │
+                                                  └──hardened-by──> [Zero-residue hot-switch (FRONTIER)]
+                                                          ├──enhanced-by──> [Reference-counted / ownership-aware restore]
+                                                          └──de-risked-by──> a SPIKE before commit
 
-Notation-only canonicalization (~≡$HOME≡${HOME}, slash-normalize)
-    └──feeds──>    duplicate_path dedup key
-
-Issue.Severity field (NEW)
-    └──requires──> exit-code derivation reads only the 'actionable' tier
-    └──enables──>  relative_path_entry surfaces without exit-3
-    └──seeds──>    deferred classifier-precision work (PROJECT.md)
-
-relative_path_entry (new Kind)
-    └──requires──> model.Issue + dto plumbing  (existing)
-    └──requires──> Issue.Severity field        (NEW, above)
-
-Coverage (golden fixtures + testgen oracle)
-    └──requires──> all of the above           (you pin behavior after it exists)
+[Shims]             ──conflicts──> [Sourced live activation]   (mutually exclusive; live activation chosen)
+[Auto-switch on cd] ──conflicts──> [Explicit checkout as the identity axis]   (different axes; defer)
+[Freeze dynamic values] ──conflicts──> [Partial evaluation / portability]
 ```
 
 ### Dependency Notes
 
-- **Extraction is the keystone.** Both new capabilities (dedup, relative/cwd advisory) are *classifications of correctly-split entries*. The extraction fix must land first; dedup and the advisory build on its output. Critically, the splitter must **keep empty fields** (they are the cwd findings) while dropping only the literal `$PATH`/`$path`/`${PATH}` self-reference token.
-- **Severity field gates the advisory's exit-code neutrality.** `relative_path_entry` cannot ship "correctly" (without bumping exit 3) until `Issue.Severity` exists and the exit-code derivation is updated to count only actionable-tier issues. Build the severity field in the same phase as (or just before) the advisory.
-- **Canonicalization is shared but scoped narrowly.** The same notation-normalizer feeds the dedup key; keep it string-only so it can't introduce env/FS dependence into *either* consumer.
-- **Coverage pins last.** The testgen oracle extension (relative/unrooted dup paths) and the `duplicate_path`/`shadowed` golden fixtures are the regression pin — they assert the above once it's implemented, consistent with the milestone's TDD constraint.
+- **Everything requires Ingest:** the manager can only manage the categorized set the existing engine produces. Ingest is the spine and the lowest-risk phase (code already exists).
+- **`checkout` requires both the hook and state-tracking:** without a sourced hook there's no way to mutate the live shell; without bookkeeping vars (active branch + managed keys) deactivate can't know what to reverse. These two must land together with (or just before) the first real switch.
+- **Restore-PATH requires PATH ingest:** the re-scoped v1.1 PATH extraction/canonicalization is a hard prerequisite for deduped, base-relative PATH rebuild — schedule PATH ingest before the switch loop.
+- **Zero-residue hot-switch *hardens* `checkout`; it is not a separate feature you can ship instead.** A basic switch can work; making it provably residue-free is the frontier layer the reverse-diff + refcount + `typeset -U` mechanics buy you. PROJECT.md correctly flags a spike first.
+- **`diff`/`status`/`rollback` all sit on top of state-tracking** and are individually cheap once the manifest + bookkeeping exist — they reuse the engine's structured output.
+- **Conflicts:** shims vs live activation (mutually exclusive — we chose live); auto-`cd`-switch vs explicit `checkout` (orthogonal axes — defer auto); freeze-dynamic vs portability (freezing breaks the Core Value).
 
 ---
 
 ## MVP Definition
 
-### Launch With (v1.1 — this milestone)
+### Launch With (v2.0 core)
 
-- [ ] **Correct per-entry extraction** — split PATH-family value on `:`, drop only the self-reference, keep empties; fixes `./scripts`→`/scripts` and the unrooted blind spot. *(Keystone — everything depends on it.)*
-- [ ] **Notation-only canonicalization + `duplicate_path` upgrade** — `~`≡`$HOME`≡`${HOME}`, slash-normalize; report the later duplicate; actionable tier. *(Closes the existing buggy dedup.)*
-- [ ] **`Issue.Severity` field + exit-code derivation update** — advisory tier exists; exit 3 counts only actionable issues. *(Gates the advisory.)*
-- [ ] **`relative_path_entry` advisory (warning)** including the cwd sub-case (`.`/empty/leading/trailing/double colon) with `security: CWE-427`. *(Highest-value new finding.)*
-- [ ] **Coverage** — golden fixtures for `duplicate_path` + `shadowed`; corpus asserts `issue_names`/`issue_lines`; testgen oracle extended to relative/unrooted dup paths. *(Regression pin; milestone exit criterion.)*
+Minimum to validate "git branch = live, zero-residue zsh profile."
 
-### Add After Validation (v1.x)
+- [ ] **Ingest & categorize `~/.zshrc`** — reuses shipped parser/classifier; nothing to manage without it.
+- [ ] **Partial evaluation (constants resolved, dynamics late-bound)** — portability is the Core Value; non-negotiable.
+- [ ] **Git-backed profiles (branch = profile)** — the defining mechanism.
+- [ ] **Declarative/imperative split + thin bootstrap `.zshrc`** — required to make switching *safe* (only reversible state is switchable).
+- [ ] **Sourced hook + state-tracking (active branch, managed keys, captured base PATH)** — the substrate for any switch/restore.
+- [ ] **`checkout <branch>` = deactivate(prev) → activate(next), PATH restored from base (`typeset -U`), env/alias/fn reverse-applied** — the headline.
+- [ ] **`status` / `list`** — users must see and discover profiles (near-free once state exists).
 
-- [ ] **System-audit mode (live FS/env)** — *only if* users ask to also validate the running PATH against disk (dir exists / writable / ownership / mode), explicitly as a separate, non-deterministic mode. Trigger: repeated user requests + acceptance of env-dependence. (This is Lynis/CIS scope.)
-- [ ] **PATH ordering / precedence analysis** — "entry X shadows entry Y." Trigger: a dedicated order-sensitivity milestone (already noted Out-of-Scope here).
-- [ ] **Configurable severity / suppression** (e.g. `# zsh-pro:allow relative-path`) — Trigger: false-positive complaints about intentional relative entries.
+### Add After Validation (v2.x)
 
-### Future Consideration (v2+)
+Once the core switch loop is proven residue-free in real shells.
 
-- [ ] **Multi-file / fragment PATH tracing** (`.zshenv` + `.zshrc` + `path_helper`) — defer until single-file analysis is proven; macOS `path_helper` interaction is a known mess.
-- [ ] **`fix`/`doctor` auto-remediation** (e.g. emit `typeset -U path`, strip `.`) — defer; product ramp, and write-mode contradicts the read-only core until a safety net exists.
+- [ ] **`diff` (preview a switch)** — trigger: users hesitate to switch blind; high trust payoff, modest cost.
+- [ ] **Zero-residue hot-switch hardening (reverse-diff + refcount)** — trigger: the spike confirms the approach; promote from frontier to guaranteed.
+- [ ] **`rollback` / `checkout -`** — trigger: first "that switch broke my shell" report.
+- [ ] **Structured `--json` for switch/diff/status** — trigger: agent/scripting demand; cheap on existing rails.
+- [ ] **Secret-at-commit warnings** — trigger: first near-miss committing a secret into a branch.
+- [ ] **Verify-before-mutate guard (refuse to switch over a dirty/unmanaged state)** — trigger: first half-applied-switch incident.
+
+### Future Consideration (post-PMF)
+
+- [ ] **Multi-shell (bash/fish)** — defer: activation model is zsh-specific; only after zsh value is proven and the `Provider` seam is exercised.
+- [ ] **Multi-file / framework (oh-my-zsh) ingest** — defer: large ingest-surface increase; single-entry-point must prove out first.
+- [ ] **Optional per-directory auto-checkout** — defer: re-introduces direnv's parent/child clobber hazards; only as an opt-in layer atop a solid explicit switch.
+- [ ] **PATH precedence/ordering analysis + classifier-precision overhaul** — defer: explicitly independent of the switch loop per PROJECT.md.
+- [ ] **Profile merge/compose (layer base + overlay branches)** — defer: powerful (git merge of environments) but needs single-branch switch rock-solid first.
 
 ---
 
@@ -174,57 +222,91 @@ Coverage (golden fixtures + testgen oracle)
 
 | Feature | User Value | Implementation Cost | Priority |
 |---------|------------|---------------------|----------|
-| Correct per-entry extraction | HIGH | LOW–MEDIUM | P1 |
-| Notation-only canonicalization + `duplicate_path` upgrade | MEDIUM | MEDIUM | P1 |
-| `Issue.Severity` field + exit-code update | HIGH (unblocks advisory + agent signal) | MEDIUM | P1 |
-| `relative_path_entry` advisory (incl. cwd, CWE-427 tag) | HIGH | MEDIUM | P1 |
-| Coverage (fixtures + oracle extension) | HIGH (regression pin) | MEDIUM | P1 |
-| `security: CWE-427` reference field | MEDIUM | LOW | P1 (rides with advisory) |
-| System-audit mode (live FS) | MEDIUM | HIGH | P3 (anti-feature for now) |
-| PATH ordering/precedence | MEDIUM | HIGH | P3 |
+| Ingest & categorize `~/.zshrc` | HIGH | LOW (reuses engine) | P1 |
+| Partial evaluation (portability) | HIGH | MEDIUM | P1 |
+| Git-backed profiles (branch=profile) | HIGH | MEDIUM | P1 |
+| Declarative/imperative split + master block | HIGH | MEDIUM | P1 |
+| Sourced hook + state-tracking | HIGH | MEDIUM | P1 |
+| `checkout` switch (deactivate→activate, PATH restore) | HIGH | HIGH | P1 |
+| `status` / `list` | MEDIUM | LOW | P1 |
+| `diff` (preview switch) | HIGH | MEDIUM | P2 |
+| Zero-residue hot-switch hardening (reverse-diff) | HIGH | HIGH | P2 (spike → P1 candidate) |
+| Reference-counted / ownership-aware restore | MEDIUM | HIGH | P2 |
+| `rollback` / `checkout -` | MEDIUM | MEDIUM | P2 |
+| Structured `--json` for switch/diff/status | MEDIUM | LOW | P2 |
+| Honest "unsafe-to-switch" classification | MEDIUM | MEDIUM | P2 |
+| Secret-at-commit warnings | MEDIUM | LOW | P2 |
+| Verify-before-mutate guard | MEDIUM | HIGH | P2 |
+| Multi-shell (bash/fish) | LOW (now) | HIGH | P3 |
+| Multi-file / framework ingest | MEDIUM | HIGH | P3 |
+| Per-directory auto-checkout | LOW | MEDIUM | P3 |
+| Profile merge/compose | MEDIUM | HIGH | P3 |
 
-All MVP items are P1 because the milestone is a tightly-scoped correctness pass; there is no "P2 within this milestone" — items are either in the correctness pass or explicitly deferred.
+**Priority key:** P1 = must have for v2.0 launch · P2 = add after core validates · P3 = post-PMF / future.
 
 ---
 
 ## Competitor Feature Analysis
 
-| Capability | ShellCheck (linter) | shfmt (formatter) | Lynis / CIS (system auditors) | zsh `typeset -U` (runtime) | **zsh-pro (our approach)** |
-|-----------|---------------------|-------------------|-------------------------------|----------------------------|----------------------------|
-| Per-entry PATH extraction from a config file | No (lints script syntax, not PATH contents) | No (formats only) | No (reads *live* `$PATH` of running user) | N/A (runtime dedup) | **Yes — static, per-statement, with line numbers** |
-| Duplicate PATH entry detection | No | No | Partial (root PATH only, live) | Yes (silently drops dupes at runtime, keeps first) | **Yes — static, notation-aware, reports the duplicate (`duplicate_path`, actionable)** |
-| Relative / cwd / empty PATH entry flag | **No** (SC2123 is *accidental clobber*, unrelated) | No | **Yes** (Lynis: "relative path in PATH" warning; CIS: "Ensure root PATH Integrity") — but live system only | No | **Yes — static from config (`relative_path_entry`, warning, CWE-427)** |
-| Accidental PATH-clobber heuristic | **Yes (SC2123)** | No | No | No | **No — deliberately out of scope (FP-prone here)** |
-| Deterministic (no live env/FS) | Yes (static) | Yes | **No** (depends on running system) | No (runtime) | **Yes — notation-only, no env/FS resolution** |
-| Machine-readable envelope with weakness tag | Yes (SARIF, but no PATH-content checks) | No | Partial (Lynis report files) | No | **Yes — `--json` with `severity` + `security: CWE-427`** |
-
-Reading: the existing tools split cleanly into "static linters that ignore PATH *contents*" and "live system auditors that need the running machine." zsh-pro occupies the empty intersection — **static, deterministic, config-file PATH-content hygiene with a machine envelope** — which is the milestone's differentiator. Our naming/severity deliberately mirror Lynis + CIS + CWE-427 so the output reads as familiar to anyone who has run those tools.
+| Capability | direnv | conda | Lmod / env-modules | chezmoi | home-manager | asdf/mise | **Our approach** |
+|------------|--------|-------|--------------------|---------|--------------|-----------|------------------|
+| Activation trigger | auto on `cd` | `conda activate` | `module load` | `apply` (files) | `switch` | shims / `mise activate` | explicit **`checkout <branch>`** |
+| Live shell mutation | `eval` of export diff | `eval` via shell-fn wrapper | shell evals modulefile output | n/a (files) | n/a (files/services) | shims / `cd` injection | **sourced manifest**, parent eval only |
+| Restore mechanism | **reverse recorded diff** (`DIRENV_DIFF`) | snapshot overwrite (`CONDA_PATH_BACKUP`) | **per-op reverse + refcount** | re-apply target state | re-run activation / `--rollback` | drop injected env / shim | **reverse-diff + refcount + `typeset -U`** |
+| Active-state tracking | `DIRENV_DIR/DIFF/WATCHES` | `CONDA_PREFIX/SHLVL/PREFIX_n` stack | encoded module table + refcounts + `pushenv` stack | `scriptState` persistent bucket | symlink generation chain + GC roots | env vars / shim dir | bookkeeping env vars (active branch, managed keys, base PATH) |
+| Profile/generation model | per-dir `.envrc` | named env dirs | named collections (`module save`) | single git source state | numbered symlink generations | `.tool-versions`/`.mise.toml` | **git branches** = profiles (history/diff/merge free) |
+| Preview before change | (load is the action) | no | `module --dry-run` | **`diff` / `status`** | build is the preview | no | **`diff` / `status` (+ `--json`)** |
+| Imperative escape hatch | arbitrary bash in `.envrc` | `activate.d`/`deactivate.d` scripts | arbitrary Lua in modulefile | **`run_once_`/`run_onchange_`/`before_`/`after_`** | activation DAG + `writeBoundary` | n/a | **thin unmanaged master block** (declarative-only switch) |
+| Ingest existing real config | no (write `.envrc`) | no | no (write modulefiles) | `add` imports files verbatim | no (write Nix) | no | **AST-parse + classify the real `~/.zshrc`** (the moat) |
+| Rollback | leave dir | `conda deactivate` | `module restore` | re-`apply` prior commit | **`switch --rollback`** | edit version file | **`checkout -`** + git history |
+| Safety guard | authorize (`direnv allow`) | none notable | refcount prevents over-removal | minimal-change apply | **`checkLinkTargets` before `writeBoundary`** | n/a | verify-before-mutate (P2) |
 
 ---
 
 ## Sources
 
-ShellCheck (establishes SC2123 scope = accidental clobber, NOT relative/cwd → confirms the gap we fill):
-- ShellCheck SC2123 wiki — "`PATH` is the shell search path. Use another name." (warning): https://www.shellcheck.net/wiki/SC2123
-- ShellCheck wiki sitemap / checks index (no relative-or-cwd-in-PATH check exists): https://www.shellcheck.net/wiki/ ; https://gist.github.com/nicerobot/53cee11ee0abbdc997661e65b348f375
-- SC2155 (separate; declare/assign) — context that ShellCheck's PATH-adjacent checks are about assignment mechanics, not entry hygiene: https://www.shellcheck.net/wiki/SC2155
+direnv (activation, `DIRENV_DIFF`/`DIRENV_DIR`/`DIRENV_WATCHES`, reverse-diff restore, `PATH_add`/`source_up`):
+- https://direnv.net/docs/hook.html
+- https://direnv.net/man/direnv.1.html
+- https://github.com/direnv/direnv/blob/master/test/show-direnv-diff.sh
+- https://github.com/direnv/direnv/blob/master/internal/cmd/config.go
+- https://direnv.net/CHANGELOG.html
+- https://kyan.com/insights/managing-a-project-specific-path-with-direnv
 
-CWE (severity + the empty-element=cwd semantics + correct weakness choice CWE-427 over CWE-426):
-- CWE-427 Uncontrolled Search Path Element (4.20) — empty PATH element = current working directory = "untrusted search element"; consequence "Execute Unauthorized Code or Commands"; no fixed CVSS: https://cwe.mitre.org/data/definitions/427.html
-- CWE-426 Untrusted Search Path (4.20) — *attacker-controlled* search path (the weakness we should NOT cite for relative entries): https://cwe.mitre.org/data/definitions/426.html
-- CWE-426 vs 427 distinction (peer weaknesses, "often confused"): https://pentest.y-security.de/CWE/CWE-427/
+conda (shell-fn wrapper, `CONDA_PREFIX`/`CONDA_SHLVL`/`CONDA_PATH_BACKUP`, snapshot-restore failure mode, var leakage):
+- https://docs.conda.io/projects/conda/en/stable/dev-guide/deep-dives/activation.html
+- https://docs.conda.io/projects/conda/en/latest/user-guide/tasks/manage-environments.html
+- https://github.com/conda/conda/issues/8070
+- https://github.com/conda/conda/issues/2914
+- https://github.com/conda/conda/issues/13439
 
-Conventional terminology + severity precedent in real tools:
-- Lynis (CISOfy) — "relative path in PATH" / "Suspicious location in PATH discovered" (warning), reads live system PATH: https://github.com/CISOfy/lynis ; https://cisofy.com/documentation/lynis/
-- CIS Benchmark "Ensure root PATH Integrity" (L1) — enumerates empty (`::`), trailing colon (`:`), current working directory (`.`); requires absolute paths; "correct or justify": https://www.tenable.com/audits/items/CIS_Red_Hat_EL8_Server_v3.0.0_L1.audit:da48f0ebd62095fa880efca1aae9c673
-- UPenn CETS "What's wrong with having '.' in your $PATH?" — empty dir name "equivalent" to `.`; leading/trailing colon same; end-placement does not eliminate risk: https://cets.engineering.upenn.edu/answers/dot-path.html
+environment-modules / Lmod (load/unload reversal, reference counting for PATH, `pushenv` stack, collections):
+- https://lmod.readthedocs.io/en/latest/010_user.html
+- https://lmod.readthedocs.io/en/latest/077_ref_counting.html
+- https://lmod.readthedocs.io/en/latest/015_writing_modules.html
+- https://lmod.readthedocs.io/en/latest/050_lua_modulefiles.html
 
-Go stdlib security policy (directly relevant precedent — zsh-pro is a Go tool; Go treats cwd-in-PATH as a security issue but opt-in, not blanket error):
-- "Command PATH security in Go" — `os/exec` returns error for cwd-resolved executables; `golang.org/x/sys/execabs`; Go 1.16 security release: https://go.dev/blog/path-security
+chezmoi (three-state model, diff/apply/status UX, `run_once_`/`run_onchange_`/`before_`/`after_` scripts):
+- https://www.chezmoi.io/user-guide/daily-operations/
+- https://www.chezmoi.io/user-guide/frequently-asked-questions/design/
+- https://www.chezmoi.io/user-guide/use-scripts-to-perform-actions/
+- https://deepwiki.com/twpayne/chezmoi/3.1-source-state-processing
 
-zsh duplicate-PATH convention (precedent that dedup keeps the first occurrence):
-- `typeset -U path` deduplication (keeps first occurrence): https://tech.serhatteker.com/post/2019-12/remove-duplicates-in-path-zsh/ ; https://til.hashrocket.com/posts/7evpdebn7g-remove-duplicates-in-zsh-path
+home-manager (generations as symlink chain, atomic switch, `--rollback`, activation DAG / `writeBoundary` / `checkLinkTargets`):
+- https://deepwiki.com/nix-community/home-manager/2.5-generation-and-profile-management
+- https://home-manager.dev/manual/25.11/
+- https://github.com/nix-community/home-manager/blob/master/modules/home-environment.nix
+- https://github.com/nix-community/home-manager/blob/master/modules/files.nix
+
+asdf / mise (shims vs activation; only activation reflects live env):
+- https://mise.jdx.dev/direnv.html
+- https://github.com/asdf-community/asdf-direnv/blob/master/README.md
+
+zsh zero-residue primitives (`typeset -U`, PATH-growth-on-re-source footgun):
+- https://tech.serhatteker.com/post/2019-12/remove-duplicates-in-path-zsh/
+- https://dev.to/deni_sugiarto_1a01ad7c3fb/how-to-remove-duplicate-paths-in-zsh-on-macos-3l68
+- https://paiml.github.io/bashrs/config/purifying.html
 
 ---
-*Feature research for: PATH-hygiene findings (zsh-pro v1.1 Trustworthy PATH Analysis)*
-*Researched: 2026-06-24*
+*Feature research for: git-versioned, branchable shell-environment manager (zsh; zero-residue hot-switch)*
+*Researched: 2026-06-25*
