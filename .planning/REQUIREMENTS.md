@@ -27,7 +27,7 @@ Requirements for this milestone. Each maps to a roadmap phase.
 
 - [ ] **SW-01**: A profile's declarative state is applied to the current shell via a **sourced loader that `eval`s emitted shell code** (a child process cannot mutate its parent shell). All zsh syntax lives in one emit path.
 - [ ] **SW-02**: Switching profiles **deactivates** the prior profile's managed state (reverse-diff manifest: `unalias`, `unset -f`, restore env to captured prior values, rebuild PATH from a captured base) then **activates** the new one — with **zero residue**: no leftover aliases/functions/options, no PATH growth, and base/unmanaged state left untouched (ownership-aware, Lmod-style — don't remove `/usr/local/bin` just because a profile also added it).
-- [ ] **SW-03**: *(Frontier)* Switching works **live in an already-open terminal**, not just new shells — validated by the Phase-1 spike asserting a byte-identical environment after `activate → switch → switch-back` on a no-op round-trip (env **and** aliases/functions/options).
+- [x] **SW-03**: *(Frontier)* Switching works **live in an already-open terminal**, not just new shells — validated by the Phase-1 spike asserting a byte-identical environment after `activate → switch → switch-back` on a no-op round-trip (env **and** aliases/functions/options).
 
 ### Bootstrap / Reliability
 
@@ -71,7 +71,7 @@ Which phases cover which requirements. Populated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| SW-03 | Phase 1 — SPIKE: Zero-Residue Live Hot-Switch | Pending |
+| SW-03 | Phase 1 — SPIKE: Zero-Residue Live Hot-Switch | Complete |
 | ING-01 | Phase 2 — IR + Partial Evaluation | Pending |
 | ING-02 | Phase 2 — IR + Partial Evaluation | Pending |
 | EVAL-01 | Phase 2 — IR + Partial Evaluation | Pending |
