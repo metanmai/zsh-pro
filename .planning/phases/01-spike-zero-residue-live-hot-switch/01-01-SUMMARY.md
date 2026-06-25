@@ -144,6 +144,12 @@ This plan's Task 2 (`tdd="true"`) is an empirical shell spike, not Go product TD
 - **Manifest shape validated** for the admitted classes — ready to become `model.Manifest` in the Phase 2 IR spine. Phase 4's emitter must carry forward the Rule-1 finding (capture live prior; `${(P)+var} == 1`).
 - **No blockers.** scratch/ is git-ignored and will be deleted after the verdict; nothing leaks into product code.
 
+## Self-Check: PASSED
+
+- Files verified present: `.gitignore`, `scratch/spike.zsh`, `scratch/profile_a.json`, `scratch/profile_b.json`, `01-01-SUMMARY.md`.
+- Commits verified present: `4c27c62` (chore: git-ignore scratch), `fbc2002` (docs: SUMMARY).
+- `go build ./...` + `go test ./...` (incl. testgen oracle pin) green; scratch/ has zero Go files and is git-ignored.
+
 ---
 *Phase: 01-spike-zero-residue-live-hot-switch*
 *Completed: 2026-06-25*
