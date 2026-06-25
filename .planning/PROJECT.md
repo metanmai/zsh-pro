@@ -2,22 +2,27 @@
 
 ## What This Is
 
-zsh-pro is a read-only zsh-config analyzer CLI. It parses a zsh config file (default `~/.zshrc`) with a real AST parser, classifies each entry (environment, aliases, functions, path, secrets, …), detects config issues (duplicate aliases, reassigned env vars, duplicate PATH entries, shadowed names), flags likely secrets, and emits either a human-readable report or a `--json` envelope for agents. As of milestone v1.0, the line numbers it reports are **correct** — the two documented line-number bugs are fixed and pinned by the testgen oracle.
+zsh-pro is a **git-versioned, branchable shell-environment manager**. It ingests a zsh config (default `~/.zshrc`) with a real AST parser, classifies each entry (environment, aliases, functions, PATH, options, secrets, …) into a structured, regenerable representation, and stores it as a git-style repo where **each branch is an environment profile**. Switching branches live-reloads the terminal into that profile — via a sourced activate/deactivate manifest — so you can keep distinct shell environments (work, personal, a client's stack) and `checkout` between them.
+
+The parse → classify → introspect engine (shipped across v1.0–v1.1 as a read-only analyzer) is the **ingest/understanding component** of this product, not the product itself. Earlier milestones over-framed that analyzer as the whole tool; v2.0 corrects the documented identity to the environment manager it was always meant to be.
 
 ## Core Value
 
-`analyze --json` reports line numbers you can trust — every issue points at the real statement line, and the reported line count is accurate.
+`checkout <branch>` gives you a different, trustworthy shell environment — declarative state (aliases, env, PATH, functions, options) applies and reverses cleanly with **zero residue**, while portability is preserved (dynamic values like `$HOME`/`$(...)` stay late-bound, never frozen to one machine).
 
-## Current Milestone: v1.1 Trustworthy PATH Analysis
+## Current Milestone: v2.0 Branchable Shell Environments
 
-**Goal:** Every PATH entry `analyze` reports is named correctly, genuine duplicates are caught across notations, and risky relative entries are flagged — without polluting the exit-code signal.
+**Goal:** Turn the ingest engine into a manager — represent `~/.zshrc` as a categorized, regenerable store, make each git branch an environment profile, and let `checkout <branch>` live-reload the terminal into that profile with zero residue.
 
 **Target features:**
-- **Correct extraction** — split the PATH-family assignment value on `:` (verbatim entries, drop the `$PATH` self-reference), fixing both the `./scripts`→`/scripts` mis-naming and the unrooted-entry blind spot.
-- **Semantic dedup** — notation-only canonicalization (`~` ≡ `$HOME` ≡ `${HOME}`, trailing/duplicate slashes normalized); no filesystem or live-`$HOME` resolution, so analysis stays deterministic and read-only-pure.
-- **Relative-entry advisory** — a new issue kind for relative/unrooted PATH entries, including bare `.` and empty (current-directory) entries.
-- **Issue severity tier** — a new severity field on `Issue` so the advisory surfaces without bumping the exit code; exit 3 stays reserved for genuine problems (duplicates, shadows).
-- **Coverage** — golden fixtures for the two untested issue kinds (`duplicate_path`, `shadowed`), corpus assertions on `issue_names`/`issue_lines`, and the testgen oracle extended to relative/unrooted dup paths as the regression pin.
+- **Ingest & categorize** — parse `~/.zshrc` into a structured, regenerable representation split by category (aliases / env / PATH / functions / options), reusing the existing parser + `Cat*` classifier as the front-end.
+- **Partial evaluation** — resolve static/constant values; keep dynamic ones (`$HOME`, `$(...)`, conditionals) unresolved so profiles stay portable across machines.
+- **Git-backed profiles** — store the representation as a git-style repo; branches are switchable environment profiles.
+- **Activate/deactivate manifest** — switching a live terminal deactivates the prior branch's managed state (unalias, `unset -f`, restore env, rebuild PATH from a captured base) then activates the new one, via a sourced shell integration (no parent-process mutation).
+- **Declarative vs imperative split** — only declarative state is switchable; imperative run-once code stays in a thin bootstrapping `.zshrc` "master block".
+- **(Frontier) zero-residue live hot-switch** — switching in an already-open terminal leaves no leftover aliases / PATH growth / stale env; de-risked by a spike before committing.
+
+**Foundational note:** v1.1 (Trustworthy PATH Analysis) was parked partway (Phase 2 shipped) when the product identity was corrected from "analyzer" to "environment manager" — see [MILESTONES.md](MILESTONES.md). Its PATH parsing/canonicalization work is re-scoped under this milestone's ingest layer.
 
 ## Requirements
 
@@ -43,23 +48,25 @@ zsh-pro is a read-only zsh-config analyzer CLI. It parses a zsh config file (def
 
 ### Active
 
-<!-- Milestone v1.1 (Trustworthy PATH Analysis). REQ-IDs detailed in REQUIREMENTS.md; mapped to phases by the roadmap. -->
+<!-- Milestone v2.0 (Branchable Shell Environments). REQ-IDs defined in REQUIREMENTS.md; mapped to phases by the roadmap. -->
 
-- [ ] PATH entries are extracted by splitting the assignment value on `:`, so relative entries are named correctly (`./scripts`, not `/scripts`) and unrooted entries are detected
-- [ ] Notation-equivalent entries (`~`/`$HOME`/`${HOME}`, trailing/duplicate slashes) are treated as the same entry for duplicate detection (notation-only; no filesystem/env resolution)
-- [ ] Relative/unrooted PATH entries — including bare `.` and empty entries — are surfaced as a new advisory
-- [ ] Golden fixtures cover `duplicate_path` and `shadowed`, the corpus asserts `issue_names`/`issue_lines`, and the testgen oracle pins relative/unrooted dup paths
+- [ ] Ingest `~/.zshrc` into a categorized, regenerable representation (aliases / env / PATH / functions / options)
+- [ ] Partial evaluation — resolve static values, keep dynamic ones (`$HOME`/`$(...)`/conditionals) late-bound
+- [ ] Git-backed environment profiles (branches); `checkout <branch>` selects a profile
+- [ ] Sourced activate/deactivate manifest that switches a live terminal with zero residue (declarative state only)
+- [ ] Thin bootstrapping `.zshrc` (master block + loader); imperative run-once code stays unmanaged
+
+<!-- Parked from v1.1 (see milestones/v1.1-ROADMAP.md): trustworthy PATH extraction + notation dedup is re-scoped into the ingest layer above; analyzer-reporting/oracle work (duplicate_path/shadowed fixtures) is deferred. -->
 
 ### Out of Scope
 
-<!-- Explicit boundaries with reasoning. -->
+<!-- Explicit boundaries with reasoning. Reframed for v2.0 (environment manager). -->
 
-- **Filesystem / live-`$HOME` resolution of PATH entries** — v1.1 canonicalization is *notation-only* (string-level); resolving `~`/`$HOME` against the actual environment, or `..`/symlinks against disk, would make a read-only static analyzer env-dependent and non-deterministic.
-- **PATH ordering / precedence analysis** (which earlier entry shadows a later one) — a separate order-sensitivity feature, not part of this correctness pass.
-- **Whole-file opaque fallback** — filed under CONCERNS.md → ## Fragile Areas, *not* a path bug. Partial-parse recovery needs upstream `mvdan/sh` work; separate effort.
-- **Classifier precision overhaul** (surface confidence, demote sub-high-confidence to an explicit "uncertain" bucket, tighten the `Contains("PATH")` / secret over-captures) — a captured design stance (REQUIREMENTS.md v2 PREC-*); its own future phase. Note: v1.1's *reconciler* PATH fix is independent of the *classifier's* PATH over-capture.
-- **Completing the dynamic-introspection half** (consume the resolved `IdentitySet`) — top of the product backlog, but a feature, not a bug fix.
-- **New commands / multi-file / other shells** (`fix`/`doctor`, `--paths`, bash-pro) — product ramp, not this milestone.
+- **Filesystem / live-`$HOME` resolution** — dynamic values (`~`/`$HOME`/`$(...)`) stay late-bound and unresolved; resolving them against a specific machine's disk or environment would freeze a profile to that machine and destroy the portability that makes branches useful.
+- **Owning the imperative startup surface** — arbitrary run-once code (daemons, `eval`, side-effecting init) is NOT made switchable; it stays in the unmanaged `.zshrc` "master block". Only declarative state is branch-switchable.
+- **Other shells** (bash, fish) — v2.0 targets zsh only; the activation model is zsh-specific (`zmodload zsh/parameter`, `unalias` / `unset -f` semantics).
+- **Multi-file config graphs** — single-entry-point ingest first; deep following of sourced files / `*.zsh` fragments is a later concern.
+- **PATH ordering / precedence analysis** and **classifier precision overhaul** (the "uncertain" bucket, tightening over-captures) — captured design stances for later, independent of the manager's core switch loop.
 
 ## Context
 
@@ -109,4 +116,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-06-24 — milestone v1.1 (Trustworthy PATH Analysis): Phase 2 (Issue Severity Tier) complete — every issue carries an actionable/advisory severity; only actionable issues drive exit_code/issues_found. Next: Phase 3 (Trustworthy PATH Extraction & Detection).*
+*Last updated: 2026-06-25 — pivoted to v2.0 (Branchable Shell Environments): corrected the project identity from "read-only analyzer" to a git-versioned, branchable shell-environment manager (the analyzer is now its ingest component). v1.1 parked partway (Phase 2 shipped) — see MILESTONES.md.*

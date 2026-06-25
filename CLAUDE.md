@@ -3,16 +3,16 @@
 
 **zsh-pro**
 
-zsh-pro is a read-only zsh-config analyzer CLI. It parses a zsh config file (default `~/.zshrc`) with a real AST parser, classifies each entry (environment, aliases, functions, path, secrets, …), detects config issues (duplicate aliases, reassigned env vars, duplicate PATH entries, shadowed names), flags likely secrets, and emits either a human-readable report or a `--json` envelope for agents. This milestone makes the line numbers it reports **correct** — fixing the two documented line-number bugs in the engine.
+zsh-pro is a **git-versioned, branchable shell-environment manager** (currently milestone v2.0). It ingests a zsh config (default `~/.zshrc`) with a real AST parser, classifies each entry into a structured, regenerable representation, and stores it as a git-style repo where each branch is an environment profile; `checkout <branch>` live-reloads the terminal into that profile via a sourced activate/deactivate manifest. The parse → classify → introspect engine (built across v1.0–v1.1 as a read-only analyzer) is the **ingest component**, not the product. See `.planning/PROJECT.md` for the authoritative current identity and milestone.
 
-**Core Value:** `analyze --json` reports line numbers you can trust — every issue points at the real statement line, and the reported line count is accurate.
+**Core Value:** `checkout <branch>` yields a different, trustworthy shell environment — declarative state (aliases/env/PATH/functions/options) applies and reverses with zero residue, while dynamic values (`$HOME`/`$(...)`) stay late-bound so profiles stay portable.
 
 ### Constraints
 
-- **Tech stack**: Go 1.25+; single external dependency (`mvdan.cc/sh/v3`) — **no new dependencies** for this work.
-- **Architecture**: Respect the existing layering — `core/analyze` stays shell-free (interface seam only); `core/testgen` imports only `core/model`; `core/shell/zsh` is touched only via the `Provider` seam / composition root.
-- **Compatibility**: Correcting the line numbers is a deliberate `analyze --json` wire-contract change — accepted by the user. It alters emitted `Lines` and issue `lines` values.
-- **Testing**: TDD. The `testgen` oracle property test (10 seeds) is the primary regression pin; line assertions stay on (`checkLines = true`) after this work.
+- **Tech stack**: Go 1.25+; single external dependency (`mvdan.cc/sh/v3`) — **no new dependencies** without explicit discussion.
+- **Architecture**: Respect the existing layering — `core/analyze` stays shell-free (interface seam only); `core/testgen` imports only `core/model`; `core/shell/zsh` is touched only via the `Provider` seam / composition root. New environment-manager surface (storage, shell integration, activation) should compose with this seam, not bypass it.
+- **Activation safety**: Branch switching must be zero-residue on declarative state (deactivate-then-activate) and must never freeze dynamic values — portability is a hard requirement.
+- **Testing**: TDD. The `testgen` oracle property test remains a regression pin for the ingest engine.
 <!-- GSD:project-end -->
 
 <!-- GSD:stack-start source:codebase/STACK.md -->
