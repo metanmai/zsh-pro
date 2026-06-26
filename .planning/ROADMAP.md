@@ -78,13 +78,13 @@ Plans:
   3. A value containing `$HOME`, `${...}`, `$(...)`, backticks, or a conditional is tagged dynamic and kept **late-bound verbatim** — never resolved against the current machine; a value that is a syntactic constant is tagged static. A profile authored with `$HOME` round-trips with `$HOME` intact.
   4. Partial-eval performs **no execution** of user config (static AST inspection only); `util.ExpandHome` is never used inside the IR.
 
-**Plans:** 2 plans
+**Plans:** 1/2 plans executed
 
 Plans:
 
 **Wave 1**
 
-- [ ] 02-01-PLAN.md — model.Profile/Entry types + parser value/dynamic capture (Approach A) + ir.Build + declarative/imperative routing gate
+- [x] 02-01-PLAN.md — model.Profile/Entry types + parser value/dynamic capture (Approach A) + ir.Build + declarative/imperative routing gate
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -174,7 +174,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. SPIKE — Zero-Residue Live Hot-Switch | 2/2 | Complete   | 2026-06-25 |
-| 2. IR + Partial Evaluation | 0/2 | Not started | - |
+| 2. IR + Partial Evaluation | 1/2 | In Progress|  |
 | 3. Git-Backed Store | 0/2 | Not started | - |
 | 4. Manifest Builder + Emit | 0/2 | Not started | - |
 | 5. Runtime Loader + CLI + Bootstrap | 0/2 | Not started | - |

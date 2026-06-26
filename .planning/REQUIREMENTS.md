@@ -11,11 +11,11 @@ Requirements for this milestone. Each maps to a roadmap phase.
 ### Ingest
 
 - [ ] **ING-01**: `zsh-pro` ingests `~/.zshrc` into a categorized, regenerable representation (env / aliases / functions / PATH / options) that round-trips back to behavior-equivalent zsh. Untouched statements are preserved verbatim (`Block.Text`); only rewritten declarative slices are templated.
-- [ ] **ING-02**: Ingest classifies each statement as **declarative** (set/unset-reversible → switchable) or **imperative** (run-once, side-effecting → unmanaged master block). A misclassified imperative line is a zero-residue violation by construction, so this gate is correctness-critical.
+- [x] **ING-02**: Ingest classifies each statement as **declarative** (set/unset-reversible → switchable) or **imperative** (run-once, side-effecting → unmanaged master block). A misclassified imperative line is a zero-residue violation by construction, so this gate is correctness-critical.
 
 ### Partial Evaluation
 
-- [ ] **EVAL-01**: The stored representation resolves syntactically-static values and keeps dynamic ones (`$HOME`, `${...}`, `$(...)`, conditionals) **late-bound** — "static" means syntactically constant, never resolved against the current machine's disk/env. Portability across machines is preserved.
+- [x] **EVAL-01**: The stored representation resolves syntactically-static values and keeps dynamic ones (`$HOME`, `${...}`, `$(...)`, conditionals) **late-bound** — "static" means syntactically constant, never resolved against the current machine's disk/env. Portability across machines is preserved.
 
 ### Profiles / Store
 
@@ -73,8 +73,8 @@ Which phases cover which requirements. Populated during roadmap creation.
 |-------------|-------|--------|
 | SW-03 | Phase 1 — SPIKE: Zero-Residue Live Hot-Switch | Complete |
 | ING-01 | Phase 2 — IR + Partial Evaluation | Pending |
-| ING-02 | Phase 2 — IR + Partial Evaluation | Pending |
-| EVAL-01 | Phase 2 — IR + Partial Evaluation | Pending |
+| ING-02 | Phase 2 — IR + Partial Evaluation | Complete |
+| EVAL-01 | Phase 2 — IR + Partial Evaluation | Complete |
 | PROF-01 | Phase 3 — Git-Backed Store | Pending |
 | PROF-02 | Phase 3 — Git-Backed Store | Pending |
 | SW-01 | Phase 4 — Manifest Builder + Emit | Pending |

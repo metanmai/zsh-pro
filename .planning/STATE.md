@@ -4,13 +4,13 @@ milestone: v2.0
 milestone_name: Branchable Shell Environments
 status: executing
 stopped_at: Phase 2 context gathered
-last_updated: "2026-06-26T20:31:31.503Z"
-last_activity: 2026-06-26 -- Phase 02 execution started
+last_updated: "2026-06-26T20:38:19.410Z"
+last_activity: 2026-06-26
 progress:
   total_phases: 6
   completed_phases: 1
   total_plans: 4
-  completed_plans: 2
+  completed_plans: 3
   percent: 17
 ---
 
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-06-25)
 ## Current Position
 
 Phase: 02 (IR + Partial Evaluation) — EXECUTING
-Plan: 1 of 2
-Status: Executing Phase 02
-Last activity: 2026-06-26 -- Phase 02 execution started
+Plan: 2 of 2
+Status: Ready to execute
+Last activity: 2026-06-26
 
-Progress: [██████████] 100% (phase 1)
+Progress: [████████░░] 75%
 
 ## Performance Metrics
 
@@ -53,6 +53,7 @@ Progress: [██████████] 100% (phase 1)
 
 *Updated after each plan completion*
 | Phase 01 P02 | 7 | 2 tasks | 2 files |
+| Phase 02 P01 | 18 | 3 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -68,6 +69,8 @@ Recent decisions affecting current work:
 - [Constraint]: Only `core/shell/zsh/emit.go` ever writes zsh syntax; `core/profile`/`core/store`/`core/activate` stay shell-agnostic and never import the concrete provider (single composition root preserved).
 - [Phase 1 spike]: Overall verdict GO (D-03): core classes aliases/env/PATH reverse byte-identical; functions+options admitted; completion's compinit excluded to master block (fpath array admittable).
 - [Phase 1 spike]: Reality-check measures the slice's declared-name VALUE delta, not a live env name-set diff — the honest measure under zsh -f env inheritance (Pitfall 5); Phase 4 emitter must follow.
+- [Phase ?]: [02-01]: IR value-capture via additive Block.Value/Dynamic at parse time (Approach A); static/dynamic detection in the core/shell/zsh AST tier keeps core/ir shell-free
+- [Phase ?]: [02-01]: routeManaged ING-02 gate admits 5 reversible classes; bare setopt/unsetopt routes imperative (#2); confidence never gates routing (D-06); ManagedOverride wins over auto verdict (D-07)
 
 ### Pending Todos
 
@@ -96,6 +99,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-06-26T11:57:21.304Z
+Last session: 2026-06-26T20:38:00.719Z
 Stopped at: Phase 2 context gathered
-Resume file: .planning/phases/02-ir-partial-evaluation/02-CONTEXT.md
+Resume file: None
