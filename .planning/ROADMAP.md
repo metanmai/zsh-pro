@@ -78,7 +78,7 @@ Plans:
   3. A value containing `$HOME`, `${...}`, `$(...)`, backticks, or a conditional is tagged dynamic and kept **late-bound verbatim** — never resolved against the current machine; a value that is a syntactic constant is tagged static. A profile authored with `$HOME` round-trips with `$HOME` intact.
   4. Partial-eval performs **no execution** of user config (static AST inspection only); `util.ExpandHome` is never used inside the IR.
 
-**Plans:** 2/2 plans complete
+**Plans:** 2/3 plans complete (1 gap-closure plan pending)
 
 Plans:
 
@@ -89,6 +89,10 @@ Plans:
 **Wave 2** *(blocked on Wave 1 completion)*
 
 - [x] 02-02-PLAN.md — shell.Regenerator seam + declarative templater + ir.Regenerate (source order) + byte-identical round-trip oracle
+
+**Gap closure** *(UAT array-assignment round-trip defect)*
+
+- [ ] 02-03-PLAN.md — detect array assignments (`name=(...)`) at parse time (additive Block.Array), route them imperative (routeManaged), oracle coverage + defensive empty-Value templater guard
 
 ### Phase 3: Git-Backed Store
 
