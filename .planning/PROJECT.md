@@ -46,13 +46,12 @@ The parse → classify → introspect engine (shipped across v1.0–v1.1 as a re
 - ✓ **Golden corpus kept honest** — corpus passes against corrected output; `empty.zsh` pinned at 0 lines — Phase 1 (PIN-02)
 - ✓ **Issue severity tier** — every issue carries a non-omitempty `actionable`/`advisory` severity; only actionable issues drive `exit_code` and `issues_found` (both via `HasActionableIssues()`, so they cannot disagree); the 4 existing kinds stay byte-identical (`SevActionable` is the zero value) — Phase 2 (SEV-01, SEV-02)
 - ✓ **Zero-residue live hot-switch proven feasible (GO)** — Phase 1 spike asserts `$aliases`/`$functions`/`$PATH`/`$path`/exported-env/`$options` byte-identical after `activate → switch → switch-back`; no PATH accumulation across cycles; the conditional drift guard holds; `compinit` excluded to the master block (the `fpath` array itself is reversible). Durable outputs: `01-FINDINGS.md` + `01-MANIFEST-SHAPE.md` — v2.0 Phase 1 (SW-03)
+- ✓ **Regenerable IR + partial evaluation** — `model.Profile`/`Entry` built from `[]model.Block` (source-ordered, verbatim-anchored); declarative/imperative switchability gate (`core/ir.routeManaged`) manages only faithfully byte-reversible shapes and routes everything else imperative-verbatim; static/dynamic tagging keeps `$HOME`/`$(...)` late-bound (no execution, no `util.ExpandHome` in the IR). Regeneration proven behavior-equivalent by a byte-identical `model.IdentitySet` round-trip oracle under sandboxed `zsh -f` across all 5 declarative classes. Durable outputs: `core/ir`, `core/shell/zsh/regen.go`, `02-VERIFICATION.md` — v2.0 Phase 2 (ING-01, ING-02, EVAL-01)
 
 ### Active
 
 <!-- Milestone v2.0 (Branchable Shell Environments). REQ-IDs defined in REQUIREMENTS.md; mapped to phases by the roadmap. -->
 
-- [ ] Ingest `~/.zshrc` into a categorized, regenerable representation (aliases / env / PATH / functions / options)
-- [ ] Partial evaluation — resolve static values, keep dynamic ones (`$HOME`/`$(...)`/conditionals) late-bound
 - [ ] Git-backed environment profiles (branches); `checkout <branch>` selects a profile
 - [ ] Sourced activate/deactivate manifest that switches a live terminal with zero residue (declarative state only)
 - [ ] Thin bootstrapping `.zshrc` (master block + loader); imperative run-once code stays unmanaged
@@ -118,4 +117,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-06-25 — pivoted to v2.0 (Branchable Shell Environments): corrected the project identity from "read-only analyzer" to a git-versioned, branchable shell-environment manager (the analyzer is now its ingest component). v1.1 parked partway (Phase 2 shipped) — see MILESTONES.md. · v2.0 Phase 1 (SPIKE) complete 2026-06-25 — zero-residue live hot-switch validated **GO**; proceeding to Phase 2 (IR + Partial Evaluation).*
+*Last updated: 2026-06-25 — pivoted to v2.0 (Branchable Shell Environments): corrected the project identity from "read-only analyzer" to a git-versioned, branchable shell-environment manager (the analyzer is now its ingest component). v1.1 parked partway (Phase 2 shipped) — see MILESTONES.md. · v2.0 Phase 1 (SPIKE) complete 2026-06-25 — zero-residue live hot-switch validated **GO**. · v2.0 Phase 2 (IR + Partial Evaluation) complete 2026-06-27 — `model.Profile`/`Entry` IR, declarative/imperative gate, static/dynamic tagging, byte-identical round-trip oracle (ING-01/ING-02/EVAL-01 validated; code review found+fixed a panic and a silent multi-name corruption before sign-off). Next: Phase 3 (Git-Backed Store).*
