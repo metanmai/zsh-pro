@@ -29,12 +29,16 @@ func Build(blocks []model.Block, c shell.Classifier) model.Profile {
 			Category:  cat,
 			Kind:      b.Kind,
 			CmdName:   b.CmdName,
-			Names:     b.Names,
-			Value:     b.Value,
-			Exported:  b.Exported,
-			Managed:   routeManaged(b, cat),
-			Override:  model.OverrideAuto,
-			Dynamic:   b.Dynamic,
+			// Defensive-copy the Names slice (WR-03): copying the slice header
+			// straight through would make the Entry and the source Block share a
+			// backing array, so a later mutation of either silently corrupts the
+			// other. A fresh slice severs that aliasing at the IR boundary.
+			Names:    append([]string(nil), b.Names...),
+			Value:    b.Value,
+			Exported: b.Exported,
+			Managed:  routeManaged(b, cat),
+			Override: model.OverrideAuto,
+			Dynamic:  b.Dynamic,
 		})
 	}
 	return p

@@ -24,11 +24,22 @@ import (
 func (Provider) Regenerate(e model.Entry) string {
 	switch e.Kind {
 	case model.KindAssignment:
+		// Belt-and-suspenders length guard (BL-01): the router already keeps
+		// empty-Names assignments out of the managed path, but a forced-managed
+		// (OverrideManaged) entry could still reach here. Templating needs a name;
+		// without one, fall through to verbatim Text rather than panicking on
+		// Names[0] (the "never panics in production" invariant).
+		if len(e.Names) == 0 {
+			return e.Text
+		}
 		if e.Exported {
 			return fmt.Sprintf("export %s=%s", e.Names[0], e.Value)
 		}
 		return fmt.Sprintf("%s=%s", e.Names[0], e.Value)
 	case model.KindAlias:
+		if len(e.Names) == 0 { // BL-01 guard, same rationale as KindAssignment
+			return e.Text
+		}
 		return fmt.Sprintf("alias %s=%s", e.Names[0], e.Value)
 	case model.KindFuncDecl:
 		// Value is the full `name() { ... }` span (pinned by Plan 02-01), so
@@ -36,6 +47,11 @@ func (Provider) Regenerate(e model.Entry) string {
 		return e.Value
 	case model.KindCommand:
 		if e.CmdName == "setopt" || e.CmdName == "unsetopt" {
+			// IN-01: a forced-managed bare setopt has no option name to template;
+			// emit verbatim Text rather than "setopt " (dangling trailing space).
+			if len(e.Names) == 0 {
+				return e.Text
+			}
 			return fmt.Sprintf("%s %s", e.CmdName, strings.Join(e.Names, " "))
 		}
 		// Non-setopt commands are imperative: fall through to verbatim Text.

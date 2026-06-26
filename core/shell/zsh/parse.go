@@ -71,6 +71,12 @@ func (p Provider) describe(stmt *syntax.Stmt, b *model.Block, src []byte) {
 				if a.Name != nil {
 					b.Names = append(b.Names, a.Name.Value)
 				}
+				// `+=` append must be recorded so the router keeps it out of the
+				// templated path (WR-01): the templater only emits `=`, which would
+				// silently turn an append into an overwrite across the round-trip.
+				if a.Append {
+					b.Append = true
+				}
 				if a.Value != nil {
 					b.Value = sliceSrc(src, a.Value.Pos().Offset(), a.Value.End().Offset())
 					b.Dynamic = b.Dynamic || wordIsDynamic(a.Value)
@@ -88,6 +94,15 @@ func (p Provider) describe(stmt *syntax.Stmt, b *model.Block, src []byte) {
 				// quoted, so Word.Lit() is empty. Read the literal name prefix
 				// (the leading *Lit part) up to the '='.
 				lit := p.wordLitPrefix(w)
+				// A type flag (`alias -g`/`-s`/...) changes alias semantics
+				// (global/suffix vs regular). The flag is not captured in the
+				// structured fields, so record its presence (WR-02) to keep the
+				// statement out of the templated path; it then round-trips as
+				// verbatim Text with the flag intact.
+				if strings.HasPrefix(lit, "-") {
+					b.Flagged = true
+					continue
+				}
 				if i := strings.IndexByte(lit, '='); i > 0 {
 					b.Names = append(b.Names, lit[:i])
 				}
@@ -106,6 +121,9 @@ func (p Provider) describe(stmt *syntax.Stmt, b *model.Block, src []byte) {
 			for _, a := range c.Assigns {
 				if a.Name != nil {
 					b.Names = append(b.Names, a.Name.Value)
+				}
+				if a.Append {
+					b.Append = true // WR-01: keep `export FOO+=x` out of the templated path
 				}
 				if a.Value != nil {
 					b.Value = sliceSrc(src, a.Value.Pos().Offset(), a.Value.End().Offset())
@@ -151,6 +169,9 @@ func (p Provider) describe(stmt *syntax.Stmt, b *model.Block, src []byte) {
 		for _, a := range c.Args {
 			if a.Name != nil {
 				b.Names = append(b.Names, a.Name.Value)
+			}
+			if a.Append {
+				b.Append = true // WR-01: `export PATH+=:/x` parses as a DeclClause
 			}
 			if a.Value != nil {
 				b.Value = sliceSrc(src, a.Value.Pos().Offset(), a.Value.End().Offset())
