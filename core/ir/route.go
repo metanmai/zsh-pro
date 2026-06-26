@@ -14,10 +14,12 @@ import "zsh-pro/core/model"
 //
 // Admitted (D-04 / D-06):
 //   - KindAssignment in CatEnvironment / CatPath / CatSecrets, with EXACTLY one
-//     name and a plain `=` assignment. Bare/flag-only forms (`export`,
-//     `export -p`) have no name; multi-name forms (`export A=1 B=2`) collapse to
-//     one Value in the model; `+=` append forms would be rewritten to `=`. All
-//     three route imperative (BL-01 / BL-02 / WR-01).
+//     name, a plain `=` assignment, and a scalar value. Bare/flag-only forms
+//     (`export`, `export -p`) have no name; multi-name forms (`export A=1 B=2`)
+//     collapse to one Value in the model; `+=` append forms would be rewritten to
+//     `=`; array-valued forms (`name=(...)`) have no scalar Value to template and
+//     would emit a bare `name=`, dropping the array. All route imperative
+//     (BL-01 / BL-02 / WR-01 / UAT array gap).
 //   - KindAlias, with EXACTLY one name and NO type flag. Bare `alias`, alias-print
 //     queries, multi-name `alias a=1 b=2`, and flagged `alias -g`/`-s` route
 //     imperative (BL-01 / BL-02 / WR-02).
@@ -45,6 +47,13 @@ func routeManaged(b model.Block, cat model.Category) bool {
 		// Faithfully templatable only as `[export ]NAME=VALUE`: exactly one name
 		// and a plain `=` (BL-01 empty-name guard; BL-02 multi-name; WR-01 +=).
 		if len(b.Names) != 1 || b.Append {
+			return false
+		}
+		// Array-valued (`name=(...)`) is not scalar-templatable (a.Array, no
+		// a.Value): the templater would emit a bare `name=` and drop the array.
+		// Route imperative -> verbatim Text (UAT array gap; same remedy as
+		// BL-02/WR-01/WR-02).
+		if b.Array {
 			return false
 		}
 		return cat == model.CatEnvironment || cat == model.CatPath || cat == model.CatSecrets
