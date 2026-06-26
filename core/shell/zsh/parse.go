@@ -81,6 +81,14 @@ func (p Provider) describe(stmt *syntax.Stmt, b *model.Block, src []byte) {
 					b.Value = sliceSrc(src, a.Value.Pos().Offset(), a.Value.End().Offset())
 					b.Dynamic = b.Dynamic || wordIsDynamic(a.Value)
 				}
+				// Array-valued (`name=(...)`): mvdan/sh populates a.Array and leaves
+				// a.Value nil, so the scalar branch above is skipped and b.Value stays
+				// empty. Detect it so the router keeps it out of the templated path —
+				// the full `(...)` span (multi-line included) round-trips via verbatim
+				// Text instead of being dropped to a bare `name=` (UAT array gap).
+				if a.Array != nil {
+					b.Array = true
+				}
 			}
 			return
 		}
@@ -129,6 +137,9 @@ func (p Provider) describe(stmt *syntax.Stmt, b *model.Block, src []byte) {
 					b.Value = sliceSrc(src, a.Value.Pos().Offset(), a.Value.End().Offset())
 					b.Dynamic = b.Dynamic || wordIsDynamic(a.Value)
 				}
+				if a.Array != nil {
+					b.Array = true // `export ARR=(x y)`: keep out of the templated path (UAT array gap)
+				}
 			}
 			for _, w := range c.Args[1:] {
 				lit := p.wordLitPrefix(w)
@@ -176,6 +187,9 @@ func (p Provider) describe(stmt *syntax.Stmt, b *model.Block, src []byte) {
 			if a.Value != nil {
 				b.Value = sliceSrc(src, a.Value.Pos().Offset(), a.Value.End().Offset())
 				b.Dynamic = b.Dynamic || wordIsDynamic(a.Value)
+			}
+			if a.Array != nil {
+				b.Array = true // `typeset -a arr=(p q)` parses as a DeclClause (UAT array gap)
 			}
 		}
 	case *syntax.FuncDecl:
