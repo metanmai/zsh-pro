@@ -78,12 +78,12 @@ Plans:
   3. A value containing `$HOME`, `${...}`, `$(...)`, backticks, or a conditional is tagged dynamic and kept **late-bound verbatim** — never resolved against the current machine; a value that is a syntactic constant is tagged static. A profile authored with `$HOME` round-trips with `$HOME` intact.
   4. Partial-eval performs **no execution** of user config (static AST inspection only); `util.ExpandHome` is never used inside the IR.
 
-**Plans**: TBD
+**Plans:** 2 plans
 
 Plans:
 
-- [ ] 02-01: TBD (`model.Profile`/`Entry`; build IR from `[]model.Block` via the reused `Parser`/`Classifier` seam; declarative/imperative routing)
-- [ ] 02-02: TBD (static/dynamic partial-eval pass; per-category regeneration anchored on verbatim `Raw`; portability + round-trip oracle)
+- [ ] 02-01-PLAN.md — model.Profile/Entry types + parser value/dynamic capture (Approach A) + ir.Build + declarative/imperative routing gate
+- [ ] 02-02-PLAN.md — shell.Regenerator seam + declarative templater + ir.Regenerate (source order) + byte-identical round-trip oracle
 
 ### Phase 3: Git-Backed Store
 
