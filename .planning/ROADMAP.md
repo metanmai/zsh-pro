@@ -78,7 +78,7 @@ Plans:
   3. A value containing `$HOME`, `${...}`, `$(...)`, backticks, or a conditional is tagged dynamic and kept **late-bound verbatim** — never resolved against the current machine; a value that is a syntactic constant is tagged static. A profile authored with `$HOME` round-trips with `$HOME` intact.
   4. Partial-eval performs **no execution** of user config (static AST inspection only); `util.ExpandHome` is never used inside the IR.
 
-**Plans:** 2/3 plans complete (1 gap-closure plan pending)
+**Plans:** 3/3 plans complete
 
 Plans:
 
@@ -92,7 +92,7 @@ Plans:
 
 **Gap closure** *(UAT array-assignment round-trip defect)*
 
-- [ ] 02-03-PLAN.md — detect array assignments (`name=(...)`) at parse time (additive Block.Array), route them imperative (routeManaged), oracle coverage + defensive empty-Value templater guard
+- [x] 02-03-PLAN.md — detect array assignments (`name=(...)`) at parse time (additive Block.Array), route them imperative (routeManaged), oracle coverage + defensive empty-Value templater guard
 
 ### Phase 3: Git-Backed Store
 
@@ -178,7 +178,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. SPIKE — Zero-Residue Live Hot-Switch | 2/2 | Complete   | 2026-06-25 |
-| 2. IR + Partial Evaluation | 2/2 | Complete   | 2026-06-26 |
+| 2. IR + Partial Evaluation | 3/3 | Complete   | 2026-06-26 |
 | 3. Git-Backed Store | 0/2 | Not started | - |
 | 4. Manifest Builder + Emit | 0/2 | Not started | - |
 | 5. Runtime Loader + CLI + Bootstrap | 0/2 | Not started | - |

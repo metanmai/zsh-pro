@@ -4,14 +4,14 @@ milestone: v2.0
 milestone_name: Branchable Shell Environments
 status: executing
 stopped_at: Phase 2 context gathered
-last_updated: "2026-06-26T21:35:56.354Z"
-last_activity: 2026-06-26 -- Phase 02 execution started
+last_updated: "2026-06-26T21:49:41.245Z"
+last_activity: 2026-06-26
 progress:
   total_phases: 6
-  completed_phases: 1
+  completed_phases: 2
   total_plans: 5
-  completed_plans: 4
-  percent: 17
+  completed_plans: 5
+  percent: 33
 ---
 
 # Project State
@@ -26,9 +26,9 @@ See: .planning/PROJECT.md (updated 2026-06-25)
 ## Current Position
 
 Phase: 02 (IR + Partial Evaluation) — EXECUTING
-Plan: 1 of 3
-Status: Executing Phase 02
-Last activity: 2026-06-26 -- Phase 02 execution started
+Plan: 2 of 3
+Status: Ready to execute
+Last activity: 2026-06-26
 
 Progress: [██████████] 100%
 
@@ -56,6 +56,7 @@ Progress: [██████████] 100%
 | Phase 01 P02 | 7 | 2 tasks | 2 files |
 | Phase 02 P01 | 18 | 3 tasks | 8 files |
 | Phase 02 P02 | 5 | 3 tasks | 8 files |
+| Phase 02 P03 | 11 | 3 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -73,6 +74,7 @@ Recent decisions affecting current work:
 - [Phase 1 spike]: Reality-check measures the slice's declared-name VALUE delta, not a live env name-set diff — the honest measure under zsh -f env inheritance (Pitfall 5); Phase 4 emitter must follow.
 - [Phase ?]: [02-01]: IR value-capture via additive Block.Value/Dynamic at parse time (Approach A); static/dynamic detection in the core/shell/zsh AST tier keeps core/ir shell-free
 - [Phase ?]: [02-01]: routeManaged ING-02 gate admits 5 reversible classes; bare setopt/unsetopt routes imperative (#2); confidence never gates routing (D-06); ManagedOverride wins over auto verdict (D-07)
+- [Phase 02]: [02-03] Array assignments route imperative (verbatim Text), not templated — additive Block.Array flag detected at parse time; same D-04/D-06 lineage as BL-02/WR-01/WR-02
 
 ### Pending Todos
 
@@ -101,6 +103,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-06-26T20:45:52.567Z
+Last session: 2026-06-26T21:49:03.744Z
 Stopped at: Phase 2 context gathered
 Resume file: None

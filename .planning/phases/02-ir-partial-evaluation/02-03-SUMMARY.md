@@ -97,3 +97,7 @@ None. The fix wires real parse-time detection through to the router and regenera
 ## Threat Flags
 
 None. The fix adds no new network endpoints, auth paths, file-access patterns, or schema changes at a trust boundary. It mitigates the in-register threats T-02-07 (silent config-corruption tampering) and T-02-08 (forced-managed corruption); the oracle continues to source regenerated content only under the sandboxed `zsh -f` (T-02-04 unchanged).
+
+## Self-Check: PASSED
+
+All created/modified files exist on disk; all seven commits (1c98897, 504a5f9, d7dda5c, f694b19, 3a4a751, d39fa72, 13bc0f8) are present in the repository.
