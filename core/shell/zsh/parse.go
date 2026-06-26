@@ -19,6 +19,8 @@ func (p Provider) Parse(src []byte) ([]model.Block, error) {
 	)
 	file, err := parser.Parse(bytes.NewReader(src), "")
 	if err != nil {
+		// Opaque blocks leave Dynamic=false by construction; they are emitted
+		// verbatim regardless, so Dynamic must not be read as a standalone filter.
 		return []model.Block{{
 			Text:      string(src),
 			StartLine: 1,
@@ -49,15 +51,17 @@ func (p Provider) Parse(src []byte) ([]model.Block, error) {
 			Text:      strings.TrimRight(string(src[start:end]), "\n"),
 			StartLine: int(startLine),
 		}
-		p.describe(stmt, &b)
+		p.describe(stmt, &b, src)
 		blocks = append(blocks, b)
 	}
 	return blocks, nil
 }
 
 // describe fills in the agnostic structural fields (Kind, CmdName, Names,
-// Exported) from the mvdan/sh AST node.
-func (p Provider) describe(stmt *syntax.Stmt, b *model.Block) {
+// Exported) from the mvdan/sh AST node, plus the additive Value (verbatim value
+// text) and Dynamic flag (an AST-derived static/dynamic verdict — no execution).
+// src is the original source, used to offset-slice verbatim value spans.
+func (p Provider) describe(stmt *syntax.Stmt, b *model.Block, src []byte) {
 	switch c := stmt.Cmd.(type) {
 	case *syntax.CallExpr:
 		// Pure assignment: leading assignments and no command words.
@@ -66,6 +70,10 @@ func (p Provider) describe(stmt *syntax.Stmt, b *model.Block) {
 			for _, a := range c.Assigns {
 				if a.Name != nil {
 					b.Names = append(b.Names, a.Name.Value)
+				}
+				if a.Value != nil {
+					b.Value = sliceSrc(src, a.Value.Pos().Offset(), a.Value.End().Offset())
+					b.Dynamic = b.Dynamic || wordIsDynamic(a.Value)
 				}
 			}
 			return
@@ -83,6 +91,14 @@ func (p Provider) describe(stmt *syntax.Stmt, b *model.Block) {
 				if i := strings.IndexByte(lit, '='); i > 0 {
 					b.Names = append(b.Names, lit[:i])
 				}
+				// Value is the text AFTER the first '=' in the word's verbatim
+				// source span, quotes preserved (no re-quoting). Alias args are
+				// flat *Word, not *Assign, so there is no clean Assign.Value path.
+				span := sliceSrc(src, w.Pos().Offset(), w.End().Offset())
+				if i := strings.IndexByte(span, '='); i >= 0 {
+					b.Value = span[i+1:]
+				}
+				b.Dynamic = b.Dynamic || wordIsDynamic(w)
 			}
 		case "export", "typeset", "declare", "local", "readonly":
 			b.Kind = model.KindAssignment
@@ -90,6 +106,10 @@ func (p Provider) describe(stmt *syntax.Stmt, b *model.Block) {
 			for _, a := range c.Assigns {
 				if a.Name != nil {
 					b.Names = append(b.Names, a.Name.Value)
+				}
+				if a.Value != nil {
+					b.Value = sliceSrc(src, a.Value.Pos().Offset(), a.Value.End().Offset())
+					b.Dynamic = b.Dynamic || wordIsDynamic(a.Value)
 				}
 			}
 			for _, w := range c.Args[1:] {
@@ -118,6 +138,10 @@ func (p Provider) describe(stmt *syntax.Stmt, b *model.Block) {
 			if a.Name != nil {
 				b.Names = append(b.Names, a.Name.Value)
 			}
+			if a.Value != nil {
+				b.Value = sliceSrc(src, a.Value.Pos().Offset(), a.Value.End().Offset())
+				b.Dynamic = b.Dynamic || wordIsDynamic(a.Value)
+			}
 		}
 	case *syntax.FuncDecl:
 		b.Kind = model.KindFuncDecl
@@ -130,12 +154,51 @@ func (p Provider) describe(stmt *syntax.Stmt, b *model.Block) {
 				b.Names = append(b.Names, n.Value)
 			}
 		}
+		// Capture the FULL `name() { ... }` span verbatim (NOT just the
+		// brace-body) — the pinned convention 02-02's templater emits unchanged.
+		b.Value = sliceSrc(src, stmt.Pos().Offset(), stmt.End().Offset())
 	case *syntax.IfClause, *syntax.ForClause, *syntax.WhileClause,
 		*syntax.CaseClause, *syntax.Block, *syntax.Subshell:
 		b.Kind = model.KindCompound
+		// Compound blocks (if/for/while/case) are conditionals: dynamic by
+		// construction.
+		b.Dynamic = true
 	default:
 		b.Kind = model.KindOther
 	}
+}
+
+// sliceSrc returns the verbatim source text spanning [start, end), clamped to
+// src bounds. It mirrors the offset-slicing used for Block.Text in Parse.
+func sliceSrc(src []byte, start, end uint) string {
+	if int(end) > len(src) {
+		end = uint(len(src))
+	}
+	if start > end {
+		return ""
+	}
+	return string(src[start:end])
+}
+
+// wordIsDynamic reports whether a value word contains a non-literal AST part:
+// a parameter expansion ($X / ${...}), a command substitution ($(...) or
+// backtick `...`, both *CmdSubst), an arithmetic expansion ($((...))), or a
+// process substitution (<(...)). It only walks the AST — it performs NO
+// execution and never resolves a value (EVAL-01).
+func wordIsDynamic(w *syntax.Word) bool {
+	if w == nil {
+		return false
+	}
+	dynamic := false
+	syntax.Walk(w, func(n syntax.Node) bool {
+		switch n.(type) {
+		case *syntax.ParamExp, *syntax.CmdSubst, *syntax.ArithmExp, *syntax.ProcSubst:
+			dynamic = true
+			return false // stop walking once a dynamic part is found
+		}
+		return true
+	})
+	return dynamic
 }
 
 // wordLitPrefix returns the leading literal text of a word. For a word like
