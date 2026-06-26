@@ -34,4 +34,6 @@ type Block struct {
 	Opaque    bool       // parser could not structurally understand this block
 	Category  Category   // set by classifier
 	Conf      Confidence // set by classifier
+	Value     string     // verbatim assignment value / alias body / option args / full func span (set by parser)
+	Dynamic   bool       // value's word contains a non-literal AST part ($HOME/$(...)/etc.) — no execution
 }
