@@ -99,6 +99,25 @@ func TestRegenerateNeverPanicsOnEmptyNames(t *testing.T) {
 	}
 }
 
+// TestRegenerateEmptyValueFallsThroughToText pins the defensive empty-Value
+// guard (UAT array gap, belt-and-suspenders): a KindAssignment Entry that has a
+// name but NO captured scalar Value — e.g. an array assignment forced managed via
+// OverrideManaged — must fall through to verbatim Text, never emit a bare `name=`
+// that drops the array. Mirrors the existing empty-Names guard (BL-01).
+func TestRegenerateEmptyValueFallsThroughToText(t *testing.T) {
+	p := Provider{}
+	entry := model.Entry{
+		Kind:  model.KindAssignment,
+		Names: []string{"plugins"},
+		Value: "",
+		Text:  "plugins=(git zsh-autosuggestions zsh-syntax-highlighting)",
+	}
+	got := p.Regenerate(entry)
+	if got != entry.Text {
+		t.Fatalf("Regenerate() = %q, want verbatim Text %q (empty-Value must not emit a bare name=)", got, entry.Text)
+	}
+}
+
 // TestRegenerateDynamicValueNeverResolved is an explicit EVAL-01 pin: a $HOME
 // value must round-trip with the literal $HOME intact, never the resolved path.
 func TestRegenerateDynamicValueNeverResolved(t *testing.T) {
