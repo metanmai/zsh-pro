@@ -367,20 +367,25 @@ func TestRegenRoundTrip(t *testing.T) {
 | A2 | The recommended `Block` enhancement (add `Value`/`Dynamic`) will not perturb the testgen oracle or corpus assertions (they assert category/issue/line, not value/dynamic). | Central Design Fork / Pitfall 2 | If a field addition somehow shifts classification, the pin breaks — mitigated by TDD: run `make check` after the change. Low risk: fields are additive and read-only in `describe()`. |
 | A3 | `introspectScript`'s top-level `source "$1"` makes the sourced file's `setopt` stick (not auto-reverted), so the oracle can observe regenerated options. | Pitfall 1 | If wrong, the options section would always be empty — detectable by a deliberate-corruption test. Confidence HIGH (matches spike mechanism + `introspect.go:26,36`). |
 
-## Open Questions
+## Open Questions (RESOLVED)
+
+> All three resolved during planning (`/gsd:plan-phase 2`) and locked into the PLAN.md files. Resolutions recorded inline below.
 
 1. **Should the declarative templater live in `core/ir` or `core/shell/zsh`?**
    - What we know: the milestone invariant pins *reversal* zsh codegen to `emit.go`; Phase 2 emits *forward* declarations.
    - What's unclear: whether the invariant binds forward emission too.
    - Recommendation: put it in `core/shell/zsh` behind a new narrow `shell.Regenerator` interface; `core/ir` calls it. Strictly invariant-safe and pre-positions Phase 4's `emit.go`. (See Pitfall 5 / A1.)
+   - **RESOLVED:** templater lives in `core/shell/zsh/regen.go` behind a new `shell.Regenerator` interface (recommendation a) — 02-02 design fork.
 
 2. **How does the oracle access the snapshot format given `introspectScript` is unexported?**
    - What we know: the const is package-private (`introspect.go:23`); the spike inlined its own throwaway script.
    - Recommendation: add an exported `Provider.SnapshotState(srcPath) (string, error)` (or reuse `Introspect` and compare `IdentitySet` fields) so the oracle and production share one snapshot definition. Comparing `model.IdentitySet` (aliases/functions/env/path/options maps) is arguably cleaner than string-diffing raw script output and is already returned by `Introspect`. The planner should weigh string-diff (D-08's literal reading) vs `IdentitySet`-equality (structured, already available via `introspect.go:42-52`).
+   - **RESOLVED:** reuse the already-exported `Provider.Introspect` and compare `model.IdentitySet` (no new helper, one source of truth) — 02-02 Task 3.
 
 3. **Is `EntryKind`/`Managed`/`Dynamic` represented as fields or a sub-enum?**
    - What we know: D-07 wants `ManagedOverride: auto|forced-managed|forced-unmanaged`; D-05 wants an orthogonal dynamic tag.
    - Recommendation: distinct fields — `Managed bool` (auto verdict), `Override ManagedOverride` (the D-07 enum, default auto), `Dynamic bool`. The effective managed state = `Override` if set, else `Managed`. Keeps the two axes orthogonal (D-05) and the override's win-and-persist semantics explicit (D-07). Naming follows `core/model` conventions (`type ManagedOverride string` with `Override*` constants, mirroring `BlockKind`/`Kind*`).
+   - **RESOLVED:** distinct fields (`Managed` / `Override` / `Dynamic`) with `EffectiveManaged` deriving override-wins — 02-01 Task 1 (D-05/D-07).
 
 ## Environment Availability
 
