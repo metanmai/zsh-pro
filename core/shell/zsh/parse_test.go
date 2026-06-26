@@ -1,6 +1,7 @@
 package zsh
 
 import (
+	"strings"
 	"testing"
 
 	"zsh-pro/core/model"
@@ -112,6 +113,121 @@ func TestParseCapturesAppendAndFlags(t *testing.T) {
 					if b.Names[i] != n {
 						t.Errorf("Names[%d] = %q, want %q", i, b.Names[i], n)
 					}
+				}
+			}
+		})
+	}
+}
+
+// TestParseCapturesArrayAssignment pins the UAT array gap: an array assignment
+// (`name=(...)`) must be DETECTED at parse time via Block.Array. mvdan/sh models
+// it as a.Array (*ArrayExpr) with a.Value == nil, so the scalar Value capture is
+// skipped and b.Value stays empty. Array must be set in all three Assigns loops
+// (plain `=`, export/typeset CallExpr, DeclClause) so the router can route it
+// imperative and the full `(...)` span survives via verbatim Text — same remedy
+// class as multi-name (BL-02) / `+=` (WR-01) / flagged aliases (WR-02). Scalar
+// assignments keep Array == false (additive, no scalar-path regression).
+func TestParseCapturesArrayAssignment(t *testing.T) {
+	cases := []struct {
+		name        string
+		src         string
+		wantArray   bool
+		wantExport  bool
+		wantDynamic bool
+		wantAppend  bool
+		wantNames   []string
+		textParts   []string // substrings that must survive in the verbatim Text
+	}{
+		{
+			name:      "single-line array (plugins)",
+			src:       "plugins=(git zsh-autosuggestions zsh-syntax-highlighting)\n",
+			wantArray: true,
+			wantNames: []string{"plugins"},
+			textParts: []string{"(git zsh-autosuggestions zsh-syntax-highlighting)"},
+		},
+		{
+			name:      "multi-line array",
+			src:       "arr=(\n  a\n  b\n)\n",
+			wantArray: true,
+			wantNames: []string{"arr"},
+			textParts: []string{"a", "b", ")"},
+		},
+		{
+			name:       "exported array",
+			src:        "export ARR=(x y)\n",
+			wantArray:  true,
+			wantExport: true,
+			wantNames:  []string{"ARR"},
+			textParts:  []string{"(x y)"},
+		},
+		{
+			// typeset -a may parse as a CallExpr or a DeclClause depending on the
+			// local mvdan/sh; both loops set Array, so the assertion holds either way.
+			name:      "typeset array (DeclClause path)",
+			src:       "typeset -a tarr=(p q)\n",
+			wantArray: true,
+			wantNames: []string{"tarr"},
+			textParts: []string{"(p q)"},
+		},
+		// Regression: Array must stay false for every scalar shape.
+		{
+			name:      "scalar assignment not array",
+			src:       "FOO=bar\n",
+			wantArray: false,
+			wantNames: []string{"FOO"},
+		},
+		{
+			name:        "dynamic scalar export not array",
+			src:         "export FOO=$HOME/x\n",
+			wantArray:   false,
+			wantExport:  true,
+			wantDynamic: true,
+			wantNames:   []string{"FOO"},
+		},
+		{
+			name:       "append scalar not array",
+			src:        "FOO+=:/x\n",
+			wantArray:  false,
+			wantAppend: true,
+			wantNames:  []string{"FOO"},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			blocks, err := (Provider{}).Parse([]byte(c.src))
+			if err != nil {
+				t.Fatalf("Parse error: %v", err)
+			}
+			if len(blocks) != 1 {
+				t.Fatalf("got %d blocks, want 1", len(blocks))
+			}
+			b := blocks[0]
+			if b.Kind != model.KindAssignment {
+				t.Errorf("Kind = %q, want %q", b.Kind, model.KindAssignment)
+			}
+			if b.Array != c.wantArray {
+				t.Errorf("Array = %v, want %v", b.Array, c.wantArray)
+			}
+			if b.Exported != c.wantExport {
+				t.Errorf("Exported = %v, want %v", b.Exported, c.wantExport)
+			}
+			if b.Dynamic != c.wantDynamic {
+				t.Errorf("Dynamic = %v, want %v", b.Dynamic, c.wantDynamic)
+			}
+			if b.Append != c.wantAppend {
+				t.Errorf("Append = %v, want %v", b.Append, c.wantAppend)
+			}
+			if len(b.Names) != len(c.wantNames) {
+				t.Fatalf("Names = %v, want %v", b.Names, c.wantNames)
+			}
+			for i, n := range c.wantNames {
+				if b.Names[i] != n {
+					t.Errorf("Names[%d] = %q, want %q", i, b.Names[i], n)
+				}
+			}
+			for _, part := range c.textParts {
+				if !strings.Contains(b.Text, part) {
+					t.Errorf("Text %q does not contain %q (verbatim array span not preserved)", b.Text, part)
 				}
 			}
 		})

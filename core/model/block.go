@@ -38,4 +38,5 @@ type Block struct {
 	Dynamic   bool       // value's word contains a non-literal AST part ($HOME/$(...)/etc.) — no execution
 	Append    bool       // assignment used `+=` (append, not overwrite) — kept out of the templated path so it is never rewritten to `=` (WR-01)
 	Flagged   bool       // alias carried a type flag (`-g`/`-s`/...) — kept out of the templated path so the flag is never dropped (WR-02)
+	Array     bool       // assignment is array-valued (`name=(...)`): mvdan/sh populates a.Array and leaves a.Value nil, so the scalar templater cannot reproduce it; kept out of the templated path so the array value is never dropped (UAT array gap, same class as WR-01/WR-02)
 }
