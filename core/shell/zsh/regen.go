@@ -32,6 +32,15 @@ func (Provider) Regenerate(e model.Entry) string {
 		if len(e.Names) == 0 {
 			return e.Text
 		}
+		// Belt-and-suspenders empty-Value guard (UAT array gap): a KindAssignment
+		// with a name but no captured scalar Value — e.g. an array assignment
+		// (`name=(...)`, where mvdan/sh leaves a.Value nil) forced managed via
+		// OverrideManaged — must NOT emit a bare `name=` that drops the value. Fall
+		// through to verbatim Text, same spirit as the empty-Names guard above. The
+		// router already routes arrays imperative; this defends against an override.
+		if e.Value == "" {
+			return e.Text
+		}
 		if e.Exported {
 			return fmt.Sprintf("export %s=%s", e.Names[0], e.Value)
 		}
