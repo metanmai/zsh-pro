@@ -82,7 +82,12 @@ Plans:
 
 Plans:
 
+**Wave 1**
+
 - [ ] 02-01-PLAN.md — model.Profile/Entry types + parser value/dynamic capture (Approach A) + ir.Build + declarative/imperative routing gate
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 02-02-PLAN.md — shell.Regenerator seam + declarative templater + ir.Regenerate (source order) + byte-identical round-trip oracle
 
 ### Phase 3: Git-Backed Store
