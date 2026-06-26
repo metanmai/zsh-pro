@@ -4,8 +4,8 @@ milestone: v2.0
 milestone_name: Branchable Shell Environments
 status: executing
 stopped_at: Phase 2 context gathered
-last_updated: "2026-06-26T15:26:11.461Z"
-last_activity: 2026-06-26 -- Phase 02 planning complete
+last_updated: "2026-06-26T20:31:31.503Z"
+last_activity: 2026-06-26 -- Phase 02 execution started
 progress:
   total_phases: 6
   completed_phases: 1
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-25)
 
 **Core value:** `checkout <branch>` gives you a different, trustworthy shell environment — declarative state (aliases/env/PATH/functions/options) applies and reverses cleanly with zero residue, while portability is preserved (dynamic values like `$HOME`/`$(...)` stay late-bound, never frozen to one machine).
-**Current focus:** Phase 2 — ir + partial evaluation
+**Current focus:** Phase 02 — IR + Partial Evaluation
 
 ## Current Position
 
-Phase: 2
-Plan: Not started
-Status: Ready to execute
-Last activity: 2026-06-26 -- Phase 02 planning complete
+Phase: 02 (IR + Partial Evaluation) — EXECUTING
+Plan: 1 of 2
+Status: Executing Phase 02
+Last activity: 2026-06-26 -- Phase 02 execution started
 
 Progress: [██████████] 100% (phase 1)
 
