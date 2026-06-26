@@ -46,6 +46,26 @@ func TestRouteManaged(t *testing.T) {
 		{"plugins source", model.Block{Kind: model.KindCommand, CmdName: "source"}, model.CatPlugins, false},
 		{"keybinding", model.Block{Kind: model.KindCommand, CmdName: "bindkey"}, model.CatKeybindings, false},
 		{"local override", model.Block{Kind: model.KindCompound}, model.CatLocal, false},
+		// BL-01: empty-Names assignment/alias must NOT route managed (would panic
+		// the templater's Names[0] read). These are bare/flag-only forms.
+		{"bare export no names", model.Block{Kind: model.KindAssignment}, model.CatEnvironment, false},
+		{"export -p no names", model.Block{Kind: model.KindAssignment}, model.CatEnvironment, false},
+		{"bare alias no names", model.Block{Kind: model.KindAlias}, model.CatAliases, false},
+		// BL-02: multi-name assignment/alias must route imperative (the model
+		// stores a single Value, so templating would pair name[0] with the last
+		// value and drop the rest). Verbatim Text round-trips faithfully instead.
+		{"multi-name export", model.Block{Kind: model.KindAssignment, Names: []string{"FOO", "BAZ"}}, model.CatEnvironment, false},
+		{"multi-name assignment", model.Block{Kind: model.KindAssignment, Names: []string{"A", "B"}}, model.CatPath, false},
+		{"multi-name alias", model.Block{Kind: model.KindAlias, Names: []string{"a", "b"}}, model.CatAliases, false},
+		// WR-01: a `+=` append assignment must route imperative (templating emits
+		// `=`, silently turning an append into an overwrite).
+		{"append assignment", model.Block{Kind: model.KindAssignment, Names: []string{"PATH"}, Append: true}, model.CatPath, false},
+		// WR-02: a flagged alias (`alias -g`/`-s`) must route imperative (the flag
+		// is not captured in structured fields, so templating downgrades it).
+		{"flagged alias", model.Block{Kind: model.KindAlias, Names: []string{"G"}, Flagged: true}, model.CatAliases, false},
+		// Single faithful shapes still route managed.
+		{"single env assignment still managed", model.Block{Kind: model.KindAssignment, Names: []string{"EDITOR"}}, model.CatEnvironment, true},
+		{"single alias still managed", model.Block{Kind: model.KindAlias, Names: []string{"gs"}}, model.CatAliases, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -106,6 +126,25 @@ func TestEffectiveManagedOverrideWins(t *testing.T) {
 	imperative := model.Entry{Managed: false, Override: model.OverrideManaged}
 	if !imperative.EffectiveManaged() {
 		t.Errorf("OverrideManaged did not win over Managed=false")
+	}
+}
+
+// TestBuildCopiesNamesSlice pins WR-03: the Entry must NOT share the source
+// Block's Names backing array, so a later mutation of either side cannot
+// silently corrupt the other.
+func TestBuildCopiesNamesSlice(t *testing.T) {
+	names := []string{"EDITOR"}
+	blocks := []model.Block{{Kind: model.KindAssignment, Names: names, Value: "nvim"}}
+	p := Build(blocks, stubClassifier{cat: model.CatEnvironment})
+
+	got := p.Entries[0].Names
+	if len(got) != 1 || got[0] != "EDITOR" {
+		t.Fatalf("Names not copied through: %v", got)
+	}
+	// Mutate the Entry's slice; the source block's slice must be untouched.
+	got[0] = "MUTATED"
+	if names[0] != "EDITOR" {
+		t.Errorf("Entry.Names shares backing array with source Block.Names: source mutated to %q", names[0])
 	}
 }
 

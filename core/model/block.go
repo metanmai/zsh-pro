@@ -36,4 +36,6 @@ type Block struct {
 	Conf      Confidence // set by classifier
 	Value     string     // verbatim assignment value / alias body / option args / full func span (set by parser)
 	Dynamic   bool       // value's word contains a non-literal AST part ($HOME/$(...)/etc.) — no execution
+	Append    bool       // assignment used `+=` (append, not overwrite) — kept out of the templated path so it is never rewritten to `=` (WR-01)
+	Flagged   bool       // alias carried a type flag (`-g`/`-s`/...) — kept out of the templated path so the flag is never dropped (WR-02)
 }

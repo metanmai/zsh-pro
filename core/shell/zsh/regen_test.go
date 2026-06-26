@@ -69,6 +69,36 @@ func TestRegenerate(t *testing.T) {
 	}
 }
 
+// TestRegenerateNeverPanicsOnEmptyNames pins BL-01: a forced-managed entry of
+// KindAssignment/KindAlias with empty Names must NOT panic (the "never panics in
+// production" invariant). It falls through to verbatim Text instead of reading
+// Names[0].
+func TestRegenerateNeverPanicsOnEmptyNames(t *testing.T) {
+	p := Provider{}
+	cases := []struct {
+		name  string
+		entry model.Entry
+		want  string
+	}{
+		{"empty-names assignment falls through to Text", model.Entry{Kind: model.KindAssignment, Text: "export -p"}, "export -p"},
+		{"empty-names exported assignment falls through to Text", model.Entry{Kind: model.KindAssignment, Exported: true, Text: "export"}, "export"},
+		{"empty-names alias falls through to Text", model.Entry{Kind: model.KindAlias, Text: "alias"}, "alias"},
+		{"empty-names setopt falls through to Text", model.Entry{Kind: model.KindCommand, CmdName: "setopt", Text: "setopt"}, "setopt"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("Regenerate panicked on empty Names: %v", r)
+				}
+			}()
+			if got := p.Regenerate(tc.entry); got != tc.want {
+				t.Fatalf("Regenerate() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestRegenerateDynamicValueNeverResolved is an explicit EVAL-01 pin: a $HOME
 // value must round-trip with the literal $HOME intact, never the resolved path.
 func TestRegenerateDynamicValueNeverResolved(t *testing.T) {
