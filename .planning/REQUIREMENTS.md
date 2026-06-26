@@ -10,7 +10,7 @@ Requirements for this milestone. Each maps to a roadmap phase.
 
 ### Ingest
 
-- [ ] **ING-01**: `zsh-pro` ingests `~/.zshrc` into a categorized, regenerable representation (env / aliases / functions / PATH / options) that round-trips back to behavior-equivalent zsh. Untouched statements are preserved verbatim (`Block.Text`); only rewritten declarative slices are templated.
+- [x] **ING-01**: `zsh-pro` ingests `~/.zshrc` into a categorized, regenerable representation (env / aliases / functions / PATH / options) that round-trips back to behavior-equivalent zsh. Untouched statements are preserved verbatim (`Block.Text`); only rewritten declarative slices are templated.
 - [x] **ING-02**: Ingest classifies each statement as **declarative** (set/unset-reversible → switchable) or **imperative** (run-once, side-effecting → unmanaged master block). A misclassified imperative line is a zero-residue violation by construction, so this gate is correctness-critical.
 
 ### Partial Evaluation
@@ -72,7 +72,7 @@ Which phases cover which requirements. Populated during roadmap creation.
 | Requirement | Phase | Status |
 |-------------|-------|--------|
 | SW-03 | Phase 1 — SPIKE: Zero-Residue Live Hot-Switch | Complete |
-| ING-01 | Phase 2 — IR + Partial Evaluation | Pending |
+| ING-01 | Phase 2 — IR + Partial Evaluation | Complete |
 | ING-02 | Phase 2 — IR + Partial Evaluation | Complete |
 | EVAL-01 | Phase 2 — IR + Partial Evaluation | Complete |
 | PROF-01 | Phase 3 — Git-Backed Store | Pending |

@@ -35,7 +35,7 @@ Previous-milestone phases are archived. Full detail in [milestones/](milestones/
 **Milestone Goal:** Represent `~/.zshrc` as a categorized, regenerable, git-backed store where each branch is an environment profile, and let `checkout <branch>` live-reload an already-open terminal into that profile with zero residue.
 
 - [x] **Phase 1: SPIKE — Zero-Residue Live Hot-Switch** - Prove (or disprove) that a live terminal can `activate → switch → switch-back` with a byte-identical environment, reversing aliases/functions/options, not just env — before building any IR, store, or CLI (completed 2026-06-25)
-- [ ] **Phase 2: IR + Partial Evaluation** - Build the regenerable `model.Profile` from parsed blocks, tag each entry declarative/imperative and static/dynamic, and regenerate behavior-equivalent per-category `.zsh`
+- [x] **Phase 2: IR + Partial Evaluation** - Build the regenerable `model.Profile` from parsed blocks, tag each entry declarative/imperative and static/dynamic, and regenerate behavior-equivalent per-category `.zsh` (completed 2026-06-26)
 - [ ] **Phase 3: Git-Backed Store** - Store the IR as a git repo (via the `git` binary) where each branch is a profile; create/list/switch profiles tracked per-terminal, with detected secrets excluded by default
 - [ ] **Phase 4: Manifest Builder + Emit** - Turn a profile into a reversible `Manifest` (record-and-reverse with a drift guard; PATH as a delta vs captured base) and emit the apply/deactivate zsh code from the one place zsh syntax lives
 - [ ] **Phase 5: Runtime Loader + CLI + Bootstrap** - Wire the live terminal via a sourced emit-and-source loader and the `checkout`/`activate`/`deactivate`/`list`/`status` verbs, bootstrapped by an idempotent `.zshrc` block that is fail-open and fast
@@ -78,7 +78,7 @@ Plans:
   3. A value containing `$HOME`, `${...}`, `$(...)`, backticks, or a conditional is tagged dynamic and kept **late-bound verbatim** — never resolved against the current machine; a value that is a syntactic constant is tagged static. A profile authored with `$HOME` round-trips with `$HOME` intact.
   4. Partial-eval performs **no execution** of user config (static AST inspection only); `util.ExpandHome` is never used inside the IR.
 
-**Plans:** 1/2 plans executed
+**Plans:** 2/2 plans complete
 
 Plans:
 
@@ -88,7 +88,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 02-02-PLAN.md — shell.Regenerator seam + declarative templater + ir.Regenerate (source order) + byte-identical round-trip oracle
+- [x] 02-02-PLAN.md — shell.Regenerator seam + declarative templater + ir.Regenerate (source order) + byte-identical round-trip oracle
 
 ### Phase 3: Git-Backed Store
 
@@ -174,7 +174,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. SPIKE — Zero-Residue Live Hot-Switch | 2/2 | Complete   | 2026-06-25 |
-| 2. IR + Partial Evaluation | 1/2 | In Progress|  |
+| 2. IR + Partial Evaluation | 2/2 | Complete   | 2026-06-26 |
 | 3. Git-Backed Store | 0/2 | Not started | - |
 | 4. Manifest Builder + Emit | 0/2 | Not started | - |
 | 5. Runtime Loader + CLI + Bootstrap | 0/2 | Not started | - |
