@@ -123,6 +123,20 @@ func (p Provider) describe(stmt *syntax.Stmt, b *model.Block, src []byte) {
 					b.Names = append(b.Names, lit)
 				}
 			}
+		case "setopt", "unsetopt":
+			// setopt/unsetopt carry their reversible state in the option-name
+			// args (e.g. `setopt EXTENDED_GLOB`). Capture each option name into
+			// Names so the routing gate can admit it (ING-02) and the templater
+			// can rebuild it from structured fields (D-10). Flag args (-o NAME)
+			// are skipped — a bare/flag-only setopt has no name to template.
+			b.Kind = model.KindCommand
+			for _, w := range c.Args[1:] {
+				lit := p.wordLitPrefix(w)
+				if lit == "" || strings.HasPrefix(lit, "-") {
+					continue
+				}
+				b.Names = append(b.Names, lit)
+			}
 		default:
 			b.Kind = model.KindCommand
 		}
