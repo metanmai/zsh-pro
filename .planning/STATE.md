@@ -2,9 +2,9 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Branchable Shell Environments
-status: verifying
-stopped_at: Phase 2 context gathered
-last_updated: "2026-06-26T20:45:52.573Z"
+status: ready_to_plan
+stopped_at: Phase 02 complete (2/2) — ready to discuss Phase 3
+last_updated: 2026-06-26T21:13:10.510Z
 last_activity: 2026-06-26
 progress:
   total_phases: 6
@@ -21,13 +21,13 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-25)
 
 **Core value:** `checkout <branch>` gives you a different, trustworthy shell environment — declarative state (aliases/env/PATH/functions/options) applies and reverses cleanly with zero residue, while portability is preserved (dynamic values like `$HOME`/`$(...)` stay late-bound, never frozen to one machine).
-**Current focus:** Phase 02 — IR + Partial Evaluation
+**Current focus:** Phase 3 — git backed store
 
 ## Current Position
 
-Phase: 02 (IR + Partial Evaluation) — EXECUTING
-Plan: 2 of 2
-Status: Phase complete — ready for verification
+Phase: 3
+Plan: Not started
+Status: Ready to plan
 Last activity: 2026-06-26
 
 Progress: [██████████] 100%
@@ -36,7 +36,7 @@ Progress: [██████████] 100%
 
 **Velocity:**
 
-- Total plans completed: 2
+- Total plans completed: 4
 - Average duration: — min
 - Total execution time: 0 hours
 
@@ -45,6 +45,7 @@ Progress: [██████████] 100%
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 01 | 2 | - | - |
+| 02 | 2 | - | - |
 
 **Recent Trend:**
 
