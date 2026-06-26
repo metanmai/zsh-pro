@@ -2,9 +2,9 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Branchable Shell Environments
-status: ready_to_plan
-stopped_at: Phase 01 complete (2/2) — ready to discuss Phase 2
-last_updated: 2026-06-25T16:04:10.430Z
+status: planning
+stopped_at: Phase 2 context gathered
+last_updated: "2026-06-26T11:57:21.312Z"
 last_activity: 2026-06-25
 progress:
   total_phases: 6
@@ -96,6 +96,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-06-25 (Phase 1 executed)
-Stopped at: Phase 1 SPIKE complete (2/2) — verdict GO, verified 4/4 SC. SW-03 done. Next: discuss/plan Phase 2 (IR + Partial Evaluation).
-Resume file: None
+Last session: 2026-06-26T11:57:21.304Z
+Stopped at: Phase 2 context gathered
+Resume file: .planning/phases/02-ir-partial-evaluation/02-CONTEXT.md
