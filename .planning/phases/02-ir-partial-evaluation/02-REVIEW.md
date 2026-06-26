@@ -25,7 +25,30 @@ findings:
   warning: 4
   info: 2
   total: 8
-status: issues_found
+status: resolved
+resolved_at: 2026-06-27
+resolution: |
+  All 8 findings resolved via STRICT TDD (RED test commit 8124e77 → GREEN fix
+  commit a814d17). Root cause fixed at the router per D-04/D-06: routeManaged
+  now admits only faithfully byte-reversible shapes; everything else routes
+  imperative (verbatim Text).
+  - BL-01 (panic): fixed — empty-Names assignment/alias no longer routes managed;
+    regen.go also guards Names[0] defensively (forced-managed safety).
+  - BL-02 (corruption): fixed — multi-name assignment/alias routes imperative
+    (verbatim), so both names+values survive the round-trip.
+  - WR-01 (+= → =): fixed — parser captures a.Append; append assignments route
+    imperative.
+  - WR-02 (alias -g/-s dropped): fixed — parser sets Flagged; flagged aliases
+    route imperative verbatim with the flag intact.
+  - WR-03 (Names aliasing): fixed — Build defensive-copies the Names slice.
+  - WR-04 (false-green oracle): fixed — round-trip oracle asserts Parse err==nil
+    and ingests the adversarial shapes (multi-name export/alias, += append,
+    global alias); all round-trip byte/behavior-faithfully.
+  - IN-01 (setopt trailing space): fixed — empty-Names setopt returns verbatim Text.
+  - IN-02 (Override doc): unchanged; EffectiveManaged already treats "" as auto
+    and Build always sets OverrideAuto, so it is currently safe (doc nuance only).
+  Gate: `make check` fully clean (fmt+vet+golangci-lint 0 issues+all tests);
+  round-trip oracle PASS (not skipped); testgen + corpus regression pins green.
 ---
 
 # Phase 2: Code Review Report
@@ -33,7 +56,7 @@ status: issues_found
 **Reviewed:** 2026-06-27
 **Depth:** standard
 **Files Reviewed:** 15
-**Status:** issues_found
+**Status:** resolved (all 8 findings fixed 2026-06-27 — RED 8124e77 → GREEN a814d17; see frontmatter `resolution`)
 
 ## Summary
 
