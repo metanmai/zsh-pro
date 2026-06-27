@@ -19,6 +19,10 @@ const (
 	ErrProfileNotFound errStore = "zsh-pro: profile not found"
 	// ErrProfileExists is returned when creating a profile whose name already exists.
 	ErrProfileExists errStore = "zsh-pro: profile already exists"
+	// ErrInvalidProfileName is returned when a profile/branch name is empty, starts
+	// with '-' (argument-injection guard), contains a rune outside [A-Za-z0-9._/-],
+	// or has a '..'/'.' path component (path-traversal guard) — threat T-03-02.
+	ErrInvalidProfileName errStore = "zsh-pro: invalid profile name"
 	// ErrSecretBackendUnavailable is returned when no OS keychain backend is present;
 	// the store falls back to the git-ignored vault file.
 	ErrSecretBackendUnavailable errStore = "zsh-pro: no secret backend available; using vault file"

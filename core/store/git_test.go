@@ -42,7 +42,7 @@ func TestErrStoreSentinelsArePhrased(t *testing.T) {
 
 	sentinels := []errStore{
 		ErrGitAbsent, ErrNotInitialized, ErrProfileNotFound,
-		ErrProfileExists, ErrSecretBackendUnavailable, ErrGitCommand,
+		ErrProfileExists, ErrInvalidProfileName, ErrSecretBackendUnavailable, ErrGitCommand,
 	}
 	for _, s := range sentinels {
 		if !strings.HasPrefix(s.Error(), "zsh-pro:") {
