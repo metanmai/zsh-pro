@@ -116,7 +116,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1)*
 
-- [ ] 03-02-PLAN.md — core/store orchestrator: Init (idempotent bare repo + main baseline) / Branches / Current (per-terminal ZSHPRO_PROFILE) / Create (forks main) / Checkout / Commit (plumbing-to-branch, no checkout) / Read (git show); Read(Commit(p)) round-trip pin composed with the Phase 2 oracle
+- [x] 03-02-PLAN.md — core/store orchestrator: Init (idempotent bare repo + main baseline) / Branches / Current (per-terminal ZSHPRO_PROFILE) / Create (forks main) / Checkout / Commit (plumbing-to-branch, no checkout) / Read (git show); Read(Commit(p)) round-trip pin composed with the Phase 2 oracle
 
 **Wave 3** *(blocked on Wave 2)*
 
@@ -188,7 +188,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 |-------|----------------|--------|-----------|
 | 1. SPIKE — Zero-Residue Live Hot-Switch | 2/2 | Complete   | 2026-06-25 |
 | 2. IR + Partial Evaluation | 3/3 | Complete   | 2026-06-26 |
-| 3. Git-Backed Store | 1/3 | In Progress|  |
+| 3. Git-Backed Store | 2/3 | In Progress|  |
 | 4. Manifest Builder + Emit | 0/2 | Not started | - |
 | 5. Runtime Loader + CLI + Bootstrap | 0/2 | Not started | - |
 | 6. Ingest End-to-End | 0/2 | Not started | - |

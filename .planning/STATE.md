@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Branchable Shell Environments
 status: executing
-stopped_at: Phase 3 fully planned (3 plans, 3 waves) — ready to execute
-last_updated: "2026-06-27T11:30:09.963Z"
+stopped_at: Completed 03-02-PLAN.md (core/store orchestrator + round-trip pin)
+last_updated: "2026-06-27T13:39:29.174Z"
 last_activity: 2026-06-27
 progress:
   total_phases: 6
   completed_phases: 2
   total_plans: 8
-  completed_plans: 6
+  completed_plans: 7
   percent: 33
 ---
 
@@ -26,11 +26,11 @@ See: .planning/PROJECT.md (updated 2026-06-25)
 ## Current Position
 
 Phase: 03 (git-backed-store) — EXECUTING
-Plan: 2 of 3
+Plan: 3 of 3
 Status: Ready to execute
 Last activity: 2026-06-27
 
-Progress: [████████░░] 75%
+Progress: [█████████░] 88%
 
 ## Performance Metrics
 
@@ -58,6 +58,7 @@ Progress: [████████░░] 75%
 | Phase 02 P02 | 5 | 3 tasks | 8 files |
 | Phase 02 P03 | 11 | 3 tasks | 8 files |
 | Phase 03 P01 | 9 | 3 tasks | 8 files |
+| Phase 03 P02 | 9 | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -80,6 +81,10 @@ Recent decisions affecting current work:
 - [Phase ?]: [03-01] Profile<->JSON serialization via a store-local DTO (entryDTO/profileDTO), not json tags on model.Entry — keeps the Phase 2 IR struct pure (critical decision #1, option b)
 - [Phase ?]: [03-01] git driver mirrors introspect.go subprocess shape verbatim (5s timeout + LookPath guard + degrade); no go-git, no new dependency (PROF-01, critical decision #4)
 - [Phase ?]: [03-01] mapGitError maps every git failure to ErrGitCommand and never embeds raw stderr; all store errors are zsh-pro-phrased errStore sentinels (D-11)
+- [Phase ?]: [03-02] Commit is plumbing-to-branch (temp index -> write-tree -> commit-tree -> update-ref), zero checkout — the conda concurrent-activation race avoided by construction (D-12, critical decision #4)
+- [Phase ?]: [03-02] Active profile per-terminal via ZSHPRO_PROFILE (name only; unset => main); Checkout validates existence but does NOT export (export is Phase 5 loader) (D-13)
+- [Phase ?]: [03-02] New/Commit/KeychainDriver/WithheldReport declared in FINAL form this wave so Plan 03 changes no signature and edits no test in this plan
+- [Phase ?]: [03-02] UnmarshalProfile preserves nil Entries for an entry-less profile (mirrors cloneNames) so Read(Commit(model.Profile{})) is reflect.DeepEqual to its input (Rule 1 fix)
 
 ### Pending Todos
 
@@ -108,6 +113,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-06-27T11:29:38.670Z
-Stopped at: Phase 3 fully planned (3 plans, 3 waves) — ready to execute
+Last session: 2026-06-27T13:39:29.160Z
+Stopped at: Completed 03-02-PLAN.md (core/store orchestrator + round-trip pin)
 Resume file: None

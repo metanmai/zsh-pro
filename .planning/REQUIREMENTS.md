@@ -19,8 +19,8 @@ Requirements for this milestone. Each maps to a roadmap phase.
 
 ### Profiles / Store
 
-- [ ] **PROF-01**: The representation is stored as a git-backed repo **via the `git` binary** (no new Go dependency; mirrors the existing `zsh -f` subprocess pattern) where each branch is an environment profile.
-- [ ] **PROF-02**: The user can create, list, and switch profiles (`checkout <branch>`); the active profile is tracked **per-terminal** (env-var-carried state), never a global file (avoids the conda concurrent-activation race class).
+- [x] **PROF-01**: The representation is stored as a git-backed repo **via the `git` binary** (no new Go dependency; mirrors the existing `zsh -f` subprocess pattern) where each branch is an environment profile.
+- [x] **PROF-02**: The user can create, list, and switch profiles (`checkout <branch>`); the active profile is tracked **per-terminal** (env-var-carried state), never a global file (avoids the conda concurrent-activation race class).
 - [ ] **PROF-03**: Detected secrets are **excluded from the committed profile by default** (no encryption dependency); the user is told what was withheld. Reuses the existing secret detection from the ingest engine.
 
 ### Switch / Activation
@@ -75,8 +75,8 @@ Which phases cover which requirements. Populated during roadmap creation.
 | ING-01 | Phase 2 — IR + Partial Evaluation | Complete |
 | ING-02 | Phase 2 — IR + Partial Evaluation | Complete |
 | EVAL-01 | Phase 2 — IR + Partial Evaluation | Complete |
-| PROF-01 | Phase 3 — Git-Backed Store | Pending |
-| PROF-02 | Phase 3 — Git-Backed Store | Pending |
+| PROF-01 | Phase 3 — Git-Backed Store | Complete |
+| PROF-02 | Phase 3 — Git-Backed Store | Complete |
 | SW-01 | Phase 4 — Manifest Builder + Emit | Pending |
 | SW-02 | Phase 4 — Manifest Builder + Emit | Pending |
 | BOOT-01 | Phase 5 — Runtime Loader + CLI + Bootstrap | Pending |
