@@ -62,10 +62,17 @@ func MarshalProfile(p model.Profile) ([]byte, error) {
 
 // UnmarshalProfile reconstructs a model.Profile from profile.json bytes. It is the
 // exact inverse of MarshalProfile (no re-parse, so the store stays shell-agnostic).
+// An entry-less profile decodes to the zero value model.Profile{} (nil Entries),
+// not a non-nil empty slice — the same nil-preserving choice cloneNames makes — so
+// the empty-profile round-trip Read(Commit(model.Profile{})) is reflect.DeepEqual
+// to its input (D-01 fidelity at the no-entries edge).
 func UnmarshalProfile(b []byte) (model.Profile, error) {
 	var dto profileDTO
 	if err := json.Unmarshal(b, &dto); err != nil {
 		return model.Profile{}, err
+	}
+	if len(dto.Entries) == 0 {
+		return model.Profile{}, nil
 	}
 	p := model.Profile{Entries: make([]model.Entry, len(dto.Entries))}
 	for i := range dto.Entries {
