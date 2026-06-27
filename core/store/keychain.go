@@ -1,0 +1,310 @@
+package store
+
+// This file provides the three CONCRETE implementations of the KeychainDriver
+// interface declared (in its FINAL form) in store.go (Plan 02) — it does NOT
+// redeclare that interface. Each backend moves a name-scoped secret value to/from
+// a system secret store and reports which backend it is via Kind(), so Plan 03's
+// literal-secret exclusion can stamp the matching SecretRef.Kind on the committed
+// pointer (a machine without a system keychain produces a `file`-kind reference
+// that Ph4/5 dereferences from the vault, not via `security`).
+//
+// Every subprocess backend mirrors the introspect.go / git.go shape verbatim:
+// context.WithTimeout(5s) + defer cancel, exec.CommandContext, a SEPARATE stderr
+// buffer, and a zsh-pro-phrased typed error on failure — raw `security`/secret-tool
+// stderr is NEVER surfaced (D-11, Pitfall 4, ASVS V7). Secret values flow via
+// cmd.Stdin, never argv, so they never appear in `ps` (Pitfall 3, ASVS V7).
+//
+// Deref naming contract (RESEARCH Open Question 2, critical decision #3 — the
+// scheme Ph4/5 reads back): secrets are GLOBAL-BY-NAME. The OS keychain backends
+// use service "zsh-pro", account "<KEY>" (exactly one stored entry per secret name,
+// referenced per-profile via a SecretRef); the vault backend uses one `KEY=value`
+// line per name. Two profiles that both reference API_KEY share the one stored
+// value — D-07's "value store keyed by name in one place, referenced per-profile".
+
+import (
+	"bytes"
+	"context"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"zsh-pro/core/model"
+)
+
+// keychainTimeout is the per-call subprocess timeout, mirroring git.go's gitTimeout
+// and the 5s zsh -f timeout in the zsh provider's introspect.go.
+const keychainTimeout = 5 * time.Second
+
+// keychainService is the namespace under which every secret value is stored
+// (service "zsh-pro", account = the secret name). It is the global-by-name deref
+// contract Ph4/5 reads.
+const keychainService = "zsh-pro"
+
+// vaultFileName is the basename of the git-ignored fallback vault. It lives as a
+// SIBLING of the bare repo dir (never inside it), see newVaultKeychain.
+const vaultFileName = ".zsh-pro-vault"
+
+// Compile-time assertions that all three concrete backends satisfy the four-method
+// KeychainDriver interface (Store/Retrieve/Delete/Kind) declared in store.go.
+var (
+	_ KeychainDriver = macOSKeychain{}
+	_ KeychainDriver = linuxKeychain{}
+	_ KeychainDriver = vaultKeychain{}
+)
+
+// NewOSKeychainDriver selects the secret backend at runtime via exec.LookPath,
+// mirroring the git/zsh absence guards: `security` present (macOS) -> macOSKeychain;
+// else `secret-tool` present (Linux) -> linuxKeychain; else the git-ignored 0600
+// vault file fallback rooted at a sibling of the bare repo dir. It never returns
+// nil — the vault fallback always succeeds — so callers (and excludeSecrets) can
+// rely on a non-nil driver. Called at the composition root (main.go).
+func NewOSKeychainDriver(dir string) KeychainDriver {
+	if _, err := exec.LookPath("security"); err == nil {
+		return macOSKeychain{}
+	}
+	if _, err := exec.LookPath("secret-tool"); err == nil {
+		return linuxKeychain{}
+	}
+	return newVaultKeychain(dir)
+}
+
+// macOSKeychain stores secrets in the macOS login keychain via the `security`
+// binary. Kind() is SecretRefKeychain.
+type macOSKeychain struct{}
+
+// Kind reports this as a keychain-class backend so the SecretRef Plan 03 stamps
+// resolves via the OS keychain at deref time.
+func (macOSKeychain) Kind() model.SecretRefKind { return model.SecretRefKeychain }
+
+// Store writes value under account=key, service=zsh-pro, updating in place (-U).
+// The value is piped via cmd.Stdin using the VERIFIED doubled-stdin form
+// (value\nvalue\n — `security -w` with no value arg prompts AND asks to confirm),
+// so the secret NEVER appears on argv / in `ps` (Pitfall 3). The arg list ends in
+// `-w` with no trailing value element.
+func (macOSKeychain) Store(key, value string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), keychainTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "security", "add-generic-password",
+		"-a", key, "-s", keychainService, "-U", "-w")
+	cmd.Stdin = strings.NewReader(value + "\n" + value + "\n")
+	var errb bytes.Buffer
+	cmd.Stderr = &errb
+	if err := cmd.Run(); err != nil {
+		return mapKeychainError()
+	}
+	return nil
+}
+
+// Retrieve returns the trimmed value stored under account=key, service=zsh-pro.
+// A not-found item is a nonzero exit mapped to a zsh-pro-phrased error — the raw
+// `SecKeychain...` stderr is never surfaced (D-11).
+func (macOSKeychain) Retrieve(key string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), keychainTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "security", "find-generic-password",
+		"-a", key, "-s", keychainService, "-w")
+	var out, errb bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &errb
+	if err := cmd.Run(); err != nil {
+		return "", mapKeychainError()
+	}
+	return strings.TrimRight(out.String(), "\n"), nil
+}
+
+// Delete removes the account=key, service=zsh-pro entry. A not-found delete is
+// mapped to a zsh-pro-phrased error (raw stderr suppressed).
+func (macOSKeychain) Delete(key string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), keychainTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "security", "delete-generic-password",
+		"-a", key, "-s", keychainService)
+	var errb bytes.Buffer
+	cmd.Stderr = &errb
+	if err := cmd.Run(); err != nil {
+		return mapKeychainError()
+	}
+	return nil
+}
+
+// linuxKeychain stores secrets in the Linux Secret Service (GNOME Keyring / KWallet)
+// via libsecret's `secret-tool`. [CITED: man secret-tool] — this recipe is
+// documented-only and was NOT exercised on the macOS development machine; it is
+// guarded by NewOSKeychainDriver's LookPath probe and selected only when
+// `secret-tool` is present. Kind() is SecretRefKeychain: secret-tool IS a
+// keychain-class backend (the system secret service), so its references resolve via
+// the keychain path at deref time.
+type linuxKeychain struct{}
+
+// Kind reports this as a keychain-class backend (the Linux system secret service).
+func (linuxKeychain) Kind() model.SecretRefKind { return model.SecretRefKeychain }
+
+// Store pipes value via stdin (secret-tool reads the value from stdin natively, so
+// it never reaches argv) under the attribute schema `service zsh-pro key <key>`,
+// which Retrieve/Delete look up identically. [CITED]
+func (linuxKeychain) Store(key, value string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), keychainTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "secret-tool", "store",
+		"--label=zsh-pro "+key, "service", keychainService, "key", key)
+	cmd.Stdin = strings.NewReader(value)
+	var errb bytes.Buffer
+	cmd.Stderr = &errb
+	if err := cmd.Run(); err != nil {
+		return mapKeychainError()
+	}
+	return nil
+}
+
+// Retrieve looks up the value by the same attribute schema and trims the trailing
+// newline secret-tool appends. [CITED]
+func (linuxKeychain) Retrieve(key string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), keychainTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "secret-tool", "lookup",
+		"service", keychainService, "key", key)
+	var out, errb bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &errb
+	if err := cmd.Run(); err != nil {
+		return "", mapKeychainError()
+	}
+	return strings.TrimRight(out.String(), "\n"), nil
+}
+
+// Delete clears the entry matching the attribute schema. [CITED]
+func (linuxKeychain) Delete(key string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), keychainTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "secret-tool", "clear",
+		"service", keychainService, "key", key)
+	var errb bytes.Buffer
+	cmd.Stderr = &errb
+	if err := cmd.Run(); err != nil {
+		return mapKeychainError()
+	}
+	return nil
+}
+
+// vaultKeychain is the portable fallback used when no OS keychain CLI is present.
+// It stores entries in a plain file, one `key=value` line per secret name, written
+// with 0o600 perms (owner-only — ASVS V12, Security V12). Kind() is SecretRefFile
+// (NOT keychain — this is exactly the distinction the SecretRef.Kind = kc.Kind()
+// stamp relies on: a machine without `security`/`secret-tool` produces a file-kind
+// reference that Ph4/5 dereferences from the vault, not via a missing `security`).
+//
+// There is NO encryption (forbidden, D-09): the protection is "not in git history",
+// not at-rest crypto. That guarantee is enforced three ways — the file is
+// .gitignore'd, it lives OUTSIDE the bare repo (see newVaultKeychain), and the
+// commit plumbing recipe (Plan 02) stages ONLY profile.json + profile.zsh, so the
+// vault path can never enter a committed tree.
+type vaultKeychain struct {
+	path string // absolute path to the vault file (a sibling of the bare repo dir)
+}
+
+// newVaultKeychain roots the vault file at a SIBLING of the bare repo dir, never a
+// file directly inside it. D-04 makes the store dir ($ZSHPRO_HOME / XDG) the bare
+// repo itself, so a file inside it would sit alongside objects/ and refs/; placing
+// it at filepath.Join(filepath.Dir(repoDir), vaultFileName) keeps it under the same
+// parent but out of the object store — defense-in-depth on top of the plumbing
+// recipe (which already stages only profile.json/profile.zsh).
+func newVaultKeychain(repoDir string) vaultKeychain {
+	return vaultKeychain{path: filepath.Join(filepath.Dir(repoDir), vaultFileName)}
+}
+
+// Kind reports this as the file backend (the vault fallback) — the per-backend kind
+// that lets exclusion stamp a file-kind SecretRef when no OS keychain is present.
+func (vaultKeychain) Kind() model.SecretRefKind { return model.SecretRefFile }
+
+// Store upserts key=value in the vault file, rewriting it 0o600. Values never
+// contain a newline in practice (a single assignment value); a defensive guard
+// strips any embedded newline so one entry can never corrupt the line-per-secret
+// format. The value is never logged.
+func (v vaultKeychain) Store(key, value string) error {
+	entries, err := v.load()
+	if err != nil {
+		return err
+	}
+	entries[key] = strings.ReplaceAll(value, "\n", "")
+	return v.save(entries)
+}
+
+// Retrieve returns the value stored under key, or a zsh-pro-phrased not-found error
+// (never a raw filesystem error message).
+func (v vaultKeychain) Retrieve(key string) (string, error) {
+	entries, err := v.load()
+	if err != nil {
+		return "", err
+	}
+	val, ok := entries[key]
+	if !ok {
+		return "", ErrSecretBackendUnavailable
+	}
+	return val, nil
+}
+
+// Delete removes key from the vault file (a no-op if absent), rewriting it 0o600.
+func (v vaultKeychain) Delete(key string) error {
+	entries, err := v.load()
+	if err != nil {
+		return err
+	}
+	delete(entries, key)
+	return v.save(entries)
+}
+
+// load reads the vault file into a name->value map. A missing file is an empty
+// vault (not an error) so the first Store creates it. Malformed lines are skipped.
+func (v vaultKeychain) load() (map[string]string, error) {
+	entries := map[string]string{}
+	b, err := os.ReadFile(v.path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return entries, nil
+		}
+		return nil, ErrSecretBackendUnavailable
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		if line == "" {
+			continue
+		}
+		k, val, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		entries[k] = val
+	}
+	return entries, nil
+}
+
+// save writes the name->value map back to the vault file with 0o600 perms
+// (owner read/write only). os.WriteFile truncates+rewrites, so a Delete shrinks the
+// file. A write failure is mapped to a zsh-pro-phrased error.
+func (v vaultKeychain) save(entries map[string]string) error {
+	var buf bytes.Buffer
+	for k, val := range entries {
+		buf.WriteString(k)
+		buf.WriteByte('=')
+		buf.WriteString(val)
+		buf.WriteByte('\n')
+	}
+	if err := os.WriteFile(v.path, buf.Bytes(), 0o600); err != nil {
+		return ErrSecretBackendUnavailable
+	}
+	return nil
+}
+
+// mapKeychainError translates any keychain subprocess failure into a zsh-pro-phrased
+// typed error. Like mapGitError it deliberately does NOT embed the raw stderr
+// (D-11; T-03-01): the user never sees `SecKeychainSearchCopyNext: ...`. A
+// not-found, a timeout, and a backend error all collapse to the same surfaced
+// sentinel — the store treats "no secret backend / lookup failed" uniformly.
+func mapKeychainError() error {
+	return ErrSecretBackendUnavailable
+}

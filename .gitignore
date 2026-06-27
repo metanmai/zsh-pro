@@ -3,3 +3,8 @@
 
 # Throwaway de-risk spike artifacts (Phase 01, D-08) — never committed as product code.
 /scratch/
+
+# zsh-pro secret vault fallback (Phase 03, D-09) — never commit. Belt-and-suspenders:
+# the commit plumbing already stages only profile.json/profile.zsh and the vault
+# lives OUTSIDE the bare repo (a sibling of the repo dir).
+.zsh-pro-vault
