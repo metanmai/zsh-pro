@@ -87,7 +87,7 @@ None yet.
 [Issues that affect future work]
 
 - [Phase 1 gate]: Zero-residue feasibility for the alias/function/option (and any completion/keybinding/hook) delta is the single material unknown. The spike must define kill-criteria up front; if some state class is un-cleanly-reversible, narrow the managed set before the manifest is designed.
-- [Phase 3 decision]: Secret-handling default in the synced tree (exclude `CatSecrets` by default vs `--include-secrets` gate) — confirm with user during planning (no encryption dependency allowed).
+- [Phase 3 decision — RESOLVED 2026-06-27]: Secret handling settled in 03-CONTEXT.md as a **reference/deref model** (not a plain exclude/gate): literal secrets → `SecretRef` (resolver-agnostic `kind:key`, keychain-default + git-ignored file fallback); already-dynamic secrets commit verbatim; full store-side exclusion built in Ph3, deref-on-switch in Ph4/5. Elevates PROF-03 — planner to update REQUIREMENTS traceability (PROF-03 starts Ph3).
 - [Phase 5 / deferred]: Trust model for shared/`git pull`'d profiles (SHARE-01) is out of scope for v2.0 (single-user local); revisit if a team/shared store enters scope.
 
 ## Deferred Items
