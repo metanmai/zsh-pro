@@ -12,6 +12,18 @@ package store
 // (it never imports core/shell/zsh). The SecretRef.Kind is stamped from the ACTIVE
 // driver's kc.Kind(), not a hardcoded constant, so a machine without a system keychain
 // produces a `file`-kind reference that Ph4/5 dereferences from the vault (T-03-09).
+//
+// FAIL-CLOSED (T-03-03, CR-01/CR-02): exclusion can only reason faithfully about a
+// secret that is a SINGLE-NAME SCALAR assignment, because the parser COLLAPSES a
+// multi-name assignment (`export A=$HOME B=secret`) into one Entry whose Value holds
+// only the LAST segment and whose Dynamic flag is OR'd across ALL segments — so the
+// literal can hide in Entry.Text under a name that is not Names[0], and the Dynamic
+// guard can be tripped by an unrelated segment. An array secret (`export ARR=(...)`)
+// likewise carries its literal only in Text with an empty Value. For any CatSecrets
+// entry whose shape is not a single-name scalar (isExcludableSecretShape false, or a
+// single-name assignment with no scalar literal), exclusion CANNOT prove the literal
+// is captured, so it ABORTS the Commit with ErrUnsafeSecretShape rather than fall
+// through to a verbatim commit that would leak the literal into the tree.
 
 import (
 	"context"
@@ -28,16 +40,26 @@ import (
 // caller-held reference see the literal value unchanged. The returned Profile is the
 // one Commit marshals + commits.
 //
-// The D-08 predicate uses ONLY already-populated Entry fields (the classifier's
-// CatSecrets verdict + the parser's Dynamic flag — no new inspection):
-//   - LITERAL  (Category==CatSecrets && !Dynamic && Value != ""): capture Value into the
-//     backend under key Names[0], replace the entry with a SecretRef{Kind: kc.Kind()},
-//     clear Value, and append a WithheldSecret. A literal secret with a nil backend is
-//     ErrSecretBackendUnavailable (never a nil-panic); a backend Store failure aborts
-//     the whole Commit so a half-excluded profile is never committed.
-//   - DYNAMIC  (Category==CatSecrets && Dynamic): already a late-bound pointer — committed
-//     verbatim, not captured, not reported (D-08).
-//   - everything else: passed through unchanged.
+// The verdict over each entry uses ONLY already-populated Entry fields (the
+// classifier's CatSecrets verdict + the parser's Dynamic flag — no new inspection),
+// and FAILS CLOSED on any CatSecrets shape it cannot model faithfully:
+//   - NOT a CatSecrets entry: passed through unchanged.
+//   - CatSecrets but NOT an excludable shape (isExcludableSecretShape false — a
+//     multi-name assignment, a non-assignment secret, CR-01/CR-02): ABORT the Commit
+//     with ErrUnsafeSecretShape. The literal can hide in Text under a name other than
+//     Names[0], so the only safe action is to refuse rather than leak (T-03-03).
+//   - excludable-shape DYNAMIC (single-name, Dynamic): already a late-bound pointer —
+//     committed verbatim, not captured, not reported (D-08). This is the legitimate
+//     `export TOKEN=$(vault get)` case.
+//   - excludable-shape LITERAL (single-name, !Dynamic, Value != ""): capture Value into
+//     the backend under key Names[0], replace the entry with a SecretRef{Kind:
+//     kc.Kind()}, clear Value+Text, and append a WithheldSecret. A literal secret with a
+//     nil backend is ErrSecretBackendUnavailable (never a nil-panic); a backend Store
+//     failure aborts the whole Commit so a half-excluded profile is never committed.
+//   - excludable-shape but NO scalar literal (single-name, !Dynamic, Value == ""): a
+//     degenerate or array secret (`export ARR=(sk-one sk-two)` leaves Value empty and
+//     hides its literal in Text). The store cannot model that from Entry fields, so it
+//     ABORTS with ErrUnsafeSecretShape rather than commit the verbatim Text (T-03-03).
 //
 // No secret value is ever logged or echoed (Pitfall 3 / ASVS V7). The ctx is accepted to
 // match Commit's call shape and leave room for a context-aware backend without a future
@@ -56,13 +78,33 @@ func excludeSecrets(_ context.Context, p model.Profile, kc KeychainDriver) (mode
 	var report WithheldReport
 	for i := range entries {
 		e := &entries[i]
-		if !isLiteralSecret(*e) {
-			// Not a literal secret: a dynamic secret (already a pointer, D-08) or any
-			// non-secret entry is committed verbatim.
+		if e.Category != model.CatSecrets {
+			// Not a secret-named var: committed verbatim, untouched.
 			continue
 		}
+		if !isExcludableSecretShape(*e) {
+			// A CatSecrets entry whose shape does not faithfully model a single secret
+			// segment (a multi-name assignment whose collapsed Value/Dynamic cannot tell
+			// us WHICH segment is the secret, or a non-assignment secret). Excluding it
+			// would risk leaving the literal in Text (CR-01) or capturing it under the
+			// wrong key (CR-02). Fail closed (T-03-03): never fall through to a verbatim
+			// commit that would leak the literal.
+			return model.Profile{}, nil, ErrUnsafeSecretShape
+		}
+		if e.Dynamic {
+			// Single-name dynamic secret (export TOKEN=$(...)): already a late-bound
+			// pointer, committed verbatim and not reported (D-08).
+			continue
+		}
+		if e.Value == "" {
+			// Single-name, non-dynamic, but no scalar literal in Value: an array secret
+			// (`export ARR=(sk-one sk-two)`) keeps its literal only in Text, or a
+			// degenerate empty assignment. The store cannot prove from Entry fields that
+			// Text holds no literal, so fail closed rather than commit Text verbatim.
+			return model.Profile{}, nil, ErrUnsafeSecretShape
+		}
 
-		key := e.Names[0] // isLiteralSecret guarantees a non-empty Names.
+		key := e.Names[0] // isExcludableSecretShape guarantees exactly one name.
 		if kc == nil {
 			// A literal secret with no backend cannot be safely excluded: refuse rather
 			// than commit the literal or nil-panic. The composition root always injects a
@@ -121,12 +163,23 @@ func secretRefValue(ref model.SecretRef) string {
 	return fmt.Sprintf("'<zsh-pro secret %s:%s>'", ref.Kind, ref.Key)
 }
 
-// isLiteralSecret is the D-08 LITERAL predicate over already-populated Entry fields:
-// a secret-named var (the classifier's CatSecrets verdict) whose value is a static
-// literal (not Dynamic) and non-empty. An already-dynamic secret (export TOKEN=$(...))
-// is NOT literal — it is a late-bound pointer committed verbatim. Names must be
-// non-empty so Names[0] is a valid SecretRef key (a CatSecrets assignment always has a
-// name; the guard makes the precondition explicit rather than risking an index panic).
-func isLiteralSecret(e model.Entry) bool {
-	return e.Category == model.CatSecrets && !e.Dynamic && e.Value != "" && len(e.Names) > 0
+// isExcludableSecretShape reports whether a CatSecrets entry is the ONLY shape whose
+// Value/Dynamic faithfully describe its single secret segment: a single-name scalar
+// assignment. The parser collapses a multi-name assignment (`export A=$HOME B=secret`)
+// into ONE Entry with Names=[A,B], a Value that is only the LAST segment, and a Dynamic
+// flag OR'd across ALL segments — so for anything but len(Names)==1 the literal may live
+// in Text under a name other than Names[0] and the per-entry Value/Dynamic cannot be
+// trusted (CR-01/CR-02). A non-assignment secret (Kind != KindAssignment) is likewise
+// not a clean NAME=value to capture. excludeSecrets fails closed (ErrUnsafeSecretShape)
+// on every CatSecrets entry that is NOT this shape rather than risk leaking the literal.
+//
+// This is a SHAPE gate only: it does not decide literal-vs-dynamic. Within an excludable
+// shape, excludeSecrets still splits Dynamic (committed verbatim, D-08) from a non-empty
+// scalar literal (captured + referenced), and fails closed on a single-name secret with
+// no scalar literal (an array `export ARR=(...)` hides its literal in Text with an empty
+// Value).
+func isExcludableSecretShape(e model.Entry) bool {
+	return e.Category == model.CatSecrets &&
+		e.Kind == model.KindAssignment &&
+		len(e.Names) == 1
 }

@@ -26,6 +26,19 @@ const (
 	// ErrSecretBackendUnavailable is returned when no OS keychain backend is present;
 	// the store falls back to the git-ignored vault file.
 	ErrSecretBackendUnavailable errStore = "zsh-pro: no secret backend available; using vault file"
+	// ErrUnsafeSecretShape is returned when a CatSecrets assignment cannot be safely
+	// excluded because its shape does not faithfully model a single secret segment.
+	// The parser collapses a multi-name assignment (`export A=$HOME B=secret`) into
+	// ONE entry whose Value is only the last segment and whose Dynamic flag reflects
+	// ANY segment, so the literal can hide in Text under the wrong name; an array
+	// secret (`export ARR=(sk-one sk-two)`) likewise carries its literal only in Text
+	// with an empty Value. Neither shape can be excluded at Entry granularity without
+	// risking a leak, so Commit FAILS CLOSED here (T-03-03) rather than committing the
+	// literal verbatim — the user must split the secret into its own NAME=value
+	// statement. This is reserved for genuinely-unsafe shapes: a single-name scalar
+	// literal is still excluded, and an already-dynamic single-name secret still
+	// commits verbatim (D-08).
+	ErrUnsafeSecretShape errStore = "zsh-pro: cannot safely store a secret in a multi-name or non-scalar assignment; split it into its own statement"
 	// ErrGitCommand is the generic mapped failure for any git plumbing error. The
 	// raw git stderr is intentionally NOT embedded (D-11; Pitfall 4).
 	ErrGitCommand errStore = "zsh-pro: git operation failed"

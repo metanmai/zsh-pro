@@ -288,3 +288,178 @@ func TestExcludeSecretsNilKeychain(t *testing.T) {
 		t.Errorf("secret-free profile changed shape: got %d entries, want %d", len(out.Entries), len(secretFree.Entries))
 	}
 }
+
+// assertCommitDidNotWrite proves a failed Commit was fully fail-closed against the
+// `main` branch: the ref did not move off its pre-Commit tip and no profile.json blob
+// was written, so NO committed blob can contain the leaked literal. It is the shared
+// "nothing reached the tree" assertion for the CR-01/CR-02 adversarial tests.
+func assertCommitDidNotWrite(t *testing.T, s *Store, ctx context.Context, preTip string) {
+	t.Helper()
+	postTip, err := s.git.revParse(ctx, "refs/heads/main")
+	if err != nil {
+		t.Fatalf("revParse(main) after failed Commit: %v", err)
+	}
+	if postTip != preTip {
+		t.Errorf("main tip moved on a fail-closed Commit: pre=%q post=%q (a commit was written)", preTip, postTip)
+	}
+	if s.git.catFileExists(ctx, "main:profile.json") {
+		t.Errorf("main:profile.json exists after a fail-closed Commit — a blob was written when none should be")
+	}
+	if _, err := s.Read(ctx, "main"); !errors.Is(err, ErrProfileNotFound) {
+		t.Errorf("Read(main) after a fail-closed Commit = %v, want ErrProfileNotFound (no profile committed)", err)
+	}
+}
+
+// TestCommitFailsClosedMultiNameSecretWithDynamicSibling is the CR-01 adversarial pin
+// (T-03-03). `export PATH=$HOME/bin API_KEY=sk-LEAKED-SECRET-123` collapses in the
+// parser to ONE entry: Names=[PATH, API_KEY], Value="sk-LEAKED-SECRET-123" (last
+// segment), Dynamic=true (because of $HOME). Before the fix, the !Dynamic guard made
+// isLiteralSecret false, so the entry bypassed exclusion and the literal committed
+// VERBATIM into both profile.json and profile.zsh. After the fix, the multi-name shape
+// is un-excludable, so Commit FAILS CLOSED with ErrUnsafeSecretShape and writes nothing.
+func TestCommitFailsClosedMultiNameSecretWithDynamicSibling(t *testing.T) {
+	s, vault := newSecretStore(t)
+	ctx := context.Background()
+	if err := s.Init(ctx); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	preTip, err := s.git.revParse(ctx, "refs/heads/main")
+	if err != nil {
+		t.Fatalf("revParse(main) baseline: %v", err)
+	}
+
+	const leaked = "sk-LEAKED-SECRET-123"
+	p := buildSecretProfile(t, "export PATH=$HOME/bin API_KEY="+leaked+"\n")
+
+	// Sanity: the fixture really is the CR-01 collapsed shape (guards against a parser
+	// change that would silently make this test vacuous).
+	if len(p.Entries) != 1 {
+		t.Fatalf("fixture should parse to one collapsed entry, got %d: %#v", len(p.Entries), p.Entries)
+	}
+	e := p.Entries[0]
+	if e.Category != model.CatSecrets || len(e.Names) != 2 || !e.Dynamic {
+		t.Fatalf("fixture is not the CR-01 multi-name dynamic-sibling shape: %#v", e)
+	}
+
+	// FAIL CLOSED: Commit must refuse, not leak.
+	report, err := s.Commit(ctx, "main", p, "multi-name secret with a dynamic sibling")
+	if !errors.Is(err, ErrUnsafeSecretShape) {
+		t.Fatalf("Commit = (%v, %v), want ErrUnsafeSecretShape (fail closed)", report, err)
+	}
+	if report != nil {
+		t.Errorf("WithheldReport = %v, want nil on a fail-closed abort", report)
+	}
+
+	// Nothing reached the tree: ref unmoved, no profile.json, Read => not found.
+	assertCommitDidNotWrite(t, s, ctx, preTip)
+
+	// And the literal was never captured into the backend either.
+	if got, err := vault.Retrieve("API_KEY"); err == nil {
+		t.Errorf("vault captured API_KEY=%q on a fail-closed abort; nothing should have been stored", got)
+	}
+}
+
+// TestCommitFailsClosedMultiNameSecretWrongKeyOrder is the CR-02 adversarial pin.
+// `export OTHER=foo API_KEY=sk-REAL-SECRET` collapses to Names=[OTHER, API_KEY],
+// Value="sk-REAL-SECRET" (last segment), Dynamic=false. Before the fix, isLiteralSecret
+// was true, so the real secret was captured under the WRONG key OTHER (Names[0]), the
+// benign `OTHER=foo` was destroyed, and API_KEY resolved to nothing. After the fix, the
+// multi-name shape is un-excludable: Commit FAILS CLOSED, writes nothing, the benign
+// sibling is not destroyed (the caller's profile is untouched), and the secret is NOT
+// captured under any key.
+func TestCommitFailsClosedMultiNameSecretWrongKeyOrder(t *testing.T) {
+	s, vault := newSecretStore(t)
+	ctx := context.Background()
+	if err := s.Init(ctx); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	preTip, err := s.git.revParse(ctx, "refs/heads/main")
+	if err != nil {
+		t.Fatalf("revParse(main) baseline: %v", err)
+	}
+
+	const real = "sk-REAL-SECRET"
+	p := buildSecretProfile(t, "export OTHER=foo API_KEY="+real+"\n")
+
+	// Sanity: the fixture is the CR-02 collapsed shape (Names[0] is NOT the secret).
+	if len(p.Entries) != 1 {
+		t.Fatalf("fixture should parse to one collapsed entry, got %d: %#v", len(p.Entries), p.Entries)
+	}
+	e := p.Entries[0]
+	if e.Category != model.CatSecrets || len(e.Names) != 2 || e.Names[0] != "OTHER" || e.Dynamic {
+		t.Fatalf("fixture is not the CR-02 wrong-key-order shape: %#v", e)
+	}
+	originalText := p.Entries[0].Text // capture to prove the benign sibling is not destroyed
+
+	report, err := s.Commit(ctx, "main", p, "multi-name secret, benign sibling first")
+	if !errors.Is(err, ErrUnsafeSecretShape) {
+		t.Fatalf("Commit = (%v, %v), want ErrUnsafeSecretShape (fail closed)", report, err)
+	}
+	if report != nil {
+		t.Errorf("WithheldReport = %v, want nil on a fail-closed abort", report)
+	}
+
+	// Nothing reached the tree.
+	assertCommitDidNotWrite(t, s, ctx, preTip)
+
+	// The benign `OTHER=foo` sibling is NOT destroyed: Commit operates on a copy and
+	// aborted, so the caller's entry still carries its original verbatim Text.
+	if p.Entries[0].Text != originalText {
+		t.Errorf("caller's Entry.Text was mutated by a fail-closed Commit: got %q, want %q", p.Entries[0].Text, originalText)
+	}
+	if !strings.Contains(p.Entries[0].Text, "OTHER=foo") {
+		t.Errorf("benign sibling OTHER=foo missing from caller's entry: %q", p.Entries[0].Text)
+	}
+
+	// The secret was captured under NEITHER the wrong key (OTHER) nor the right one
+	// (API_KEY) — a fail-closed abort stores nothing.
+	if got, err := vault.Retrieve("OTHER"); err == nil {
+		t.Errorf("vault captured the secret under the WRONG key OTHER=%q (CR-02 regression)", got)
+	}
+	if got, err := vault.Retrieve("API_KEY"); err == nil {
+		t.Errorf("vault captured API_KEY=%q on a fail-closed abort; nothing should have been stored", got)
+	}
+}
+
+// TestCommitFailsClosedArraySecret pins the array-secret leak gap that the single-name
+// shape gate alone would miss: `export SECRETS=(sk-arr-leak)` parses to a SINGLE-name
+// assignment (Names=[SECRETS]) but with Value="" and Dynamic=false — the literal lives
+// ONLY in Text. Committing it verbatim would leak `sk-arr-leak` into profile.json's text
+// field and profile.zsh. The store cannot model an array value from Entry fields, so the
+// empty-scalar-literal branch FAILS CLOSED with ErrUnsafeSecretShape.
+func TestCommitFailsClosedArraySecret(t *testing.T) {
+	s, vault := newSecretStore(t)
+	ctx := context.Background()
+	if err := s.Init(ctx); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	preTip, err := s.git.revParse(ctx, "refs/heads/main")
+	if err != nil {
+		t.Fatalf("revParse(main) baseline: %v", err)
+	}
+
+	const leaked = "sk-arr-leak"
+	p := buildSecretProfile(t, "export SECRETS=("+leaked+")\n")
+
+	// Sanity: a single-name CatSecrets assignment with no scalar Value (the array shape).
+	if len(p.Entries) != 1 {
+		t.Fatalf("fixture should parse to one entry, got %d: %#v", len(p.Entries), p.Entries)
+	}
+	e := p.Entries[0]
+	if e.Category != model.CatSecrets || len(e.Names) != 1 || e.Dynamic || e.Value != "" {
+		t.Fatalf("fixture is not the single-name array-secret shape: %#v", e)
+	}
+	if !strings.Contains(e.Text, leaked) {
+		t.Fatalf("array literal not in Text as expected (test would be vacuous): %q", e.Text)
+	}
+
+	report, err := s.Commit(ctx, "main", p, "array-valued secret")
+	if !errors.Is(err, ErrUnsafeSecretShape) {
+		t.Fatalf("Commit = (%v, %v), want ErrUnsafeSecretShape (fail closed on array secret)", report, err)
+	}
+
+	assertCommitDidNotWrite(t, s, ctx, preTip)
+	if got, err := vault.Retrieve("SECRETS"); err == nil {
+		t.Errorf("vault captured SECRETS=%q on a fail-closed abort; nothing should have been stored", got)
+	}
+}
