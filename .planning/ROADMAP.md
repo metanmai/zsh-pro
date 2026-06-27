@@ -106,12 +106,21 @@ Plans:
   3. The active profile is tracked per-terminal (env-var-carried), so switching in one terminal never changes another and concurrent switches cannot corrupt a shared "current profile" file.
   4. Detected secrets (reusing the shipped secret detection) are excluded from the committed tree by default, and the user is told what was withheld.
 
-**Plans**: TBD
+**Plans**: 3 plans
 
 Plans:
 
-- [ ] 03-01: TBD (`core/store`: `Init`/`Branches`/`Current`/`Checkout`/`Read`/`Commit` over the `git` binary; repo layout, baseline branch)
-- [ ] 03-02: TBD (per-terminal active-profile tracking; secret-exclusion default + withheld-summary)
+**Wave 1**
+
+- [ ] 03-01-PLAN.md — SecretRef contract (core/model) + lossless deterministic Profile<->JSON serialization + git subprocess driver/plumbing primitives + zsh-pro-phrased errors
+
+**Wave 2** *(blocked on Wave 1)*
+
+- [ ] 03-02-PLAN.md — core/store orchestrator: Init (idempotent bare repo + main baseline) / Branches / Current (per-terminal ZSHPRO_PROFILE) / Create (forks main) / Checkout / Commit (plumbing-to-branch, no checkout) / Read (git show); Read(Commit(p)) round-trip pin composed with the Phase 2 oracle
+
+**Wave 3** *(blocked on Wave 2)*
+
+- [ ] 03-03-PLAN.md — secret exclusion on Commit (literal->SecretRef + capture + withheld-report; already-dynamic verbatim) + KeychainDriver (security/secret-tool/0600 vault) + composition-root wiring + PROF-03 traceability (D-10)
 
 ### Phase 4: Manifest Builder + Emit
 
