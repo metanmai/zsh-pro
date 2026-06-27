@@ -7,6 +7,7 @@ package store
 // round-trip. Raw keychain stderr must never leak into a returned error (D-11).
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"os/exec"
@@ -153,4 +154,109 @@ func TestMacOSKeychainNotFoundIsPhrased(t *testing.T) {
 	if strings.Contains(err.Error(), "SecKeychain") {
 		t.Errorf("returned error leaked raw keychain stderr: %q", err.Error())
 	}
+}
+
+// TestVaultMultiLineRoundTrip is the WR-01 pin: a multi-line value (a PEM private
+// key — PRIVATE_KEY matches secretRe) round-trips through the vault intact. Before
+// the base64 encoding, Store stripped every '\n', concatenating the lines into an
+// unrecoverable blob; now Store/Retrieve preserve arbitrary bytes byte-for-byte.
+func TestVaultMultiLineRoundTrip(t *testing.T) {
+	v := newVaultKeychain(t.TempDir())
+
+	const pem = "-----BEGIN KEY-----\nLINE1\nLINE2\n-----END KEY-----\n"
+	if err := v.Store("PRIVATE_KEY", pem); err != nil {
+		t.Fatalf("Store(multi-line): %v", err)
+	}
+
+	got, err := v.Retrieve("PRIVATE_KEY")
+	if err != nil {
+		t.Fatalf("Retrieve(PRIVATE_KEY): %v", err)
+	}
+	if got != pem {
+		t.Errorf("multi-line value corrupted by the vault:\n got=%q\nwant=%q", got, pem)
+	}
+	// Belt-and-suspenders: the value's newlines really survived (the old code
+	// concatenated them away, which this exact-equality check above already catches,
+	// but assert the line count explicitly so a regression names the symptom).
+	if n := strings.Count(got, "\n"); n != strings.Count(pem, "\n") {
+		t.Errorf("retrieved value has %d newlines, want %d (newline stripping regression)", n, strings.Count(pem, "\n"))
+	}
+
+	// The on-disk vault must still be a single physical line per secret (the embedded
+	// newlines live INSIDE the base64, so one secret never spills across lines).
+	raw, err := os.ReadFile(v.path)
+	if err != nil {
+		t.Fatalf("ReadFile vault: %v", err)
+	}
+	if lines := strings.Count(strings.TrimRight(string(raw), "\n"), "\n"); lines != 0 {
+		t.Errorf("vault holds %d line breaks for one secret, want 0 (multi-line value leaked into the line format):\n%s", lines, raw)
+	}
+	// And the raw plaintext must NOT appear on disk verbatim (it is base64-encoded).
+	if strings.Contains(string(raw), "BEGIN KEY") {
+		t.Errorf("vault stored the value as plaintext, not base64:\n%s", raw)
+	}
+}
+
+// TestVaultSaveDeterministicOrder is the WR-02 pin: the vault file serializes its
+// keys in a stable (sorted) order, so an otherwise-identical vault is byte-identical
+// across rewrites instead of churning with Go's randomized map iteration. It writes a
+// 5-key vault, then re-saves the SAME entries many times and asserts the on-disk bytes
+// never change.
+func TestVaultSaveDeterministicOrder(t *testing.T) {
+	v := newVaultKeychain(t.TempDir())
+
+	// Insert in a deliberately non-sorted order; the file must come out sorted.
+	for _, k := range []string{"ZULU", "ALPHA", "MIKE", "BRAVO", "OSCAR"} {
+		if err := v.Store(k, "val-"+k); err != nil {
+			t.Fatalf("Store(%s): %v", k, err)
+		}
+	}
+
+	first, err := os.ReadFile(v.path)
+	if err != nil {
+		t.Fatalf("ReadFile vault: %v", err)
+	}
+
+	// Keys must be sorted on disk (ALPHA before BRAVO before MIKE ...).
+	wantOrder := "ALPHA=\nBRAVO=\nMIKE=\nOSCAR=\nZULU="
+	gotOrder := strings.Join(lineKeysPrefix(string(first)), "\n")
+	if gotOrder != wantOrder {
+		t.Errorf("vault key order = %q, want sorted %q", gotOrder, wantOrder)
+	}
+
+	// Re-saving the identical entry set must produce byte-identical output every time
+	// (the WR-02 churn the map-iteration order used to cause). 20 passes: a randomized
+	// 5-key map reorders with overwhelming probability across that many rewrites.
+	entries, err := v.load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	for i := 0; i < 20; i++ {
+		if err := v.save(entries); err != nil {
+			t.Fatalf("save (pass %d): %v", i, err)
+		}
+		again, err := os.ReadFile(v.path)
+		if err != nil {
+			t.Fatalf("ReadFile (pass %d): %v", i, err)
+		}
+		if !bytes.Equal(first, again) {
+			t.Fatalf("vault bytes changed across an identical re-save (pass %d) — non-deterministic order:\nfirst=%q\nagain=%q", i, first, again)
+		}
+	}
+}
+
+// lineKeysPrefix returns the `KEY=` prefix of each non-empty vault line (the key plus
+// the '=' separator, with the base64 value half stripped) so a test can assert key
+// ORDER without depending on the encoded value bytes.
+func lineKeysPrefix(content string) []string {
+	var out []string
+	for _, line := range strings.Split(strings.TrimRight(content, "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		if i := strings.IndexByte(line, '='); i >= 0 {
+			out = append(out, line[:i+1])
+		}
+	}
+	return out
 }

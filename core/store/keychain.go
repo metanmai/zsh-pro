@@ -17,13 +17,15 @@ package store
 // Deref naming contract (RESEARCH Open Question 2, critical decision #3 — the
 // scheme Ph4/5 reads back): secrets are GLOBAL-BY-NAME. The OS keychain backends
 // use service "zsh-pro", account "<KEY>" (exactly one stored entry per secret name,
-// referenced per-profile via a SecretRef); the vault backend uses one `KEY=value`
-// line per name. Two profiles that both reference API_KEY share the one stored
-// value — D-07's "value store keyed by name in one place, referenced per-profile".
+// referenced per-profile via a SecretRef); the vault backend uses one
+// `KEY=base64(value)` line per name. Two profiles that both reference API_KEY share
+// the one stored value — D-07's "value store keyed by name in one place, referenced
+// per-profile".
 
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -193,8 +195,10 @@ func (linuxKeychain) Delete(key string) error {
 }
 
 // vaultKeychain is the portable fallback used when no OS keychain CLI is present.
-// It stores entries in a plain file, one `key=value` line per secret name, written
-// with 0o600 perms (owner-only — ASVS V12, Security V12). Kind() is SecretRefFile
+// It stores entries in a plain file, one `key=base64(value)` line per secret name,
+// written with 0o600 perms (owner-only — ASVS V12, Security V12). The base64 value
+// half keeps the line-per-secret format while preserving arbitrary bytes, including
+// multi-line values (WR-01). Kind() is SecretRefFile
 // (NOT keychain — this is exactly the distinction the SecretRef.Kind = kc.Kind()
 // stamp relies on: a machine without `security`/`secret-tool` produces a file-kind
 // reference that Ph4/5 dereferences from the vault, not via a missing `security`).
@@ -222,16 +226,17 @@ func newVaultKeychain(repoDir string) vaultKeychain {
 // that lets exclusion stamp a file-kind SecretRef when no OS keychain is present.
 func (vaultKeychain) Kind() model.SecretRefKind { return model.SecretRefFile }
 
-// Store upserts key=value in the vault file, rewriting it 0o600. Values never
-// contain a newline in practice (a single assignment value); a defensive guard
-// strips any embedded newline so one entry can never corrupt the line-per-secret
-// format. The value is never logged.
+// Store upserts key=value in the vault file, rewriting it 0o600. The value is
+// base64-encoded (see save) so an arbitrary byte sequence — including a multi-line
+// PEM key, which PRIVATE_KEY matches in secretRe — round-trips intact through the
+// line-per-secret format (WR-01). The in-memory map holds the DECODED value; save
+// encodes it. The value is never logged.
 func (v vaultKeychain) Store(key, value string) error {
 	entries, err := v.load()
 	if err != nil {
 		return err
 	}
-	entries[key] = strings.ReplaceAll(value, "\n", "")
+	entries[key] = value
 	return v.save(entries)
 }
 
@@ -259,8 +264,12 @@ func (v vaultKeychain) Delete(key string) error {
 	return v.save(entries)
 }
 
-// load reads the vault file into a name->value map. A missing file is an empty
-// vault (not an error) so the first Store creates it. Malformed lines are skipped.
+// load reads the vault file into a name->value map of DECODED values. A missing
+// file is an empty vault (not an error) so the first Store creates it. Each line is
+// `key=base64(value)`; the value half is base64-decoded so multi-line / arbitrary
+// bytes round-trip (WR-01). A line with no '=' or an undecodable value half is
+// skipped (forward/back compatible: a hand-edited or legacy plaintext line that is
+// not valid base64 is ignored rather than surfacing a corrupt value).
 func (v vaultKeychain) load() (map[string]string, error) {
 	entries := map[string]string{}
 	b, err := os.ReadFile(v.path)
@@ -274,24 +283,41 @@ func (v vaultKeychain) load() (map[string]string, error) {
 		if line == "" {
 			continue
 		}
-		k, val, ok := strings.Cut(line, "=")
+		k, enc, ok := strings.Cut(line, "=")
 		if !ok {
 			continue
 		}
-		entries[k] = val
+		raw, decErr := base64.StdEncoding.DecodeString(enc)
+		if decErr != nil {
+			continue // skip a malformed / non-base64 value half
+		}
+		entries[k] = string(raw)
 	}
 	return entries, nil
 }
 
-// save writes the name->value map back to the vault file with 0o600 perms
-// (owner read/write only). os.WriteFile truncates+rewrites, so a Delete shrinks the
-// file. A write failure is mapped to a zsh-pro-phrased error.
+// save writes the name->value map back to the vault file with 0o600 perms (owner
+// read/write only). os.WriteFile truncates+rewrites, so a Delete shrinks the file. A
+// write failure is mapped to a zsh-pro-phrased error.
+//
+// Two determinism/safety properties (WR-01/WR-02): values are base64-encoded so an
+// arbitrary byte sequence (including embedded newlines, e.g. a PEM key) round-trips
+// through the line-per-secret format with no corruption; and keys are written in
+// SORTED order (reusing the package-local sortStrings — no new import) so an
+// otherwise-identical vault always serializes byte-identically instead of churning
+// across Go's randomized map-iteration order.
 func (v vaultKeychain) save(entries map[string]string) error {
+	keys := make([]string, 0, len(entries))
+	for k := range entries {
+		keys = append(keys, k)
+	}
+	sortStrings(keys)
+
 	var buf bytes.Buffer
-	for k, val := range entries {
+	for _, k := range keys {
 		buf.WriteString(k)
 		buf.WriteByte('=')
-		buf.WriteString(val)
+		buf.WriteString(base64.StdEncoding.EncodeToString([]byte(entries[k])))
 		buf.WriteByte('\n')
 	}
 	if err := os.WriteFile(v.path, buf.Bytes(), 0o600); err != nil {
