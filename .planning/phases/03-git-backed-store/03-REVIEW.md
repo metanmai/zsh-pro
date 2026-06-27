@@ -25,7 +25,8 @@ findings:
   warning: 3
   info: 2
   total: 7
-status: issues_found
+status: resolved
+resolved: 2026-06-27
 ---
 
 # Phase 3: Code Review Report
@@ -33,7 +34,25 @@ status: issues_found
 **Reviewed:** 2026-06-27
 **Depth:** standard
 **Files Reviewed:** 16
-**Status:** issues_found
+**Status:** resolved (all findings fixed — see Resolution below)
+
+## Resolution (2026-06-27)
+
+All confirmed findings fixed and verified green (`make check`: 0 lint issues, full suite incl. Phase 2 oracle + round-trip pins). Each fix is backed by an adversarial test that fails pre-fix and passes post-fix.
+
+| ID | Fix | Commit |
+|----|-----|--------|
+| CR-01 / CR-02 | `excludeSecrets` fails closed via `isExcludableSecretShape` — only single-name scalar `CatSecrets` assignments are excludable; any multi-name / non-scalar (incl. array `export ARR=(...)`, a leak vector found beyond the review) aborts the Commit with `ErrUnsafeSecretShape`, never leaking. Single-name literal still excluded; single-name dynamic still verbatim (D-08). | `c663e62` |
+| WR-01 / WR-02 | Vault stores `key=base64(value)` (newline-safe) in sorted-key order (deterministic). | `d6b01e2` |
+| WR-03 | `Read` distinguishes an absent branch (`ErrProfileNotFound`) from a present-but-uncommitted branch (empty `model.Profile{}`). | `ddcb8e0` |
+| IN-02 | Shallow-copy comment corrected (no behavior change). | `9767e92` |
+| IN-01 | Deferred (belt-and-suspenders post-commit blob scan) — the fail-closed CR fix is the substantive protection. | — |
+
+Tests: `TestCommitFailsClosedMultiNameSecretWithDynamicSibling`, `TestCommitFailsClosedMultiNameSecretWrongKeyOrder`, `TestCommitFailsClosedArraySecret`, `TestVaultMultiLineRoundTrip`, `TestVaultSaveDeterministicOrder`, `TestReadDistinguishesAbsentFromUncommitted`.
+
+---
+
+### Original findings (as-found, now resolved)
 
 ## Summary
 
