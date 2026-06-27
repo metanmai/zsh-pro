@@ -157,6 +157,48 @@ func TestCheckout(t *testing.T) {
 	}
 }
 
+// TestReadDistinguishesAbsentFromUncommitted pins the WR-03 contract: Read returns
+// the EMPTY profile for a branch that exists but was never committed to (fresh `main`
+// after Init, and a freshly Create'd fork), and reserves ErrProfileNotFound for a
+// genuinely-absent branch. Before the fix, Read conflated the two: a fresh `main`
+// (whose baseline is an empty-tree root commit with no profile.json) errored with
+// ErrProfileNotFound even though Branches/Checkout treat it as a real profile.
+func TestReadDistinguishesAbsentFromUncommitted(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	if err := s.Init(ctx); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+
+	// `main` exists (Branches/Checkout agree) but has no profile.json yet => empty
+	// profile, NOT an error.
+	got, err := s.Read(ctx, "main")
+	if err != nil {
+		t.Errorf("Read(main) on fresh init = %v, want nil (main exists but is uncommitted)", err)
+	}
+	if !reflect.DeepEqual(got, model.Profile{}) {
+		t.Errorf("Read(main) on fresh init = %#v, want empty model.Profile{}", got)
+	}
+
+	// A freshly Create'd fork is likewise present-but-uncommitted (it shares main's
+	// empty baseline tip) => empty profile, not ErrProfileNotFound.
+	if err := s.Create(ctx, "work"); err != nil {
+		t.Fatalf("Create(work): %v", err)
+	}
+	got, err = s.Read(ctx, "work")
+	if err != nil {
+		t.Errorf("Read(work) on a fresh fork = %v, want nil (work exists but is uncommitted)", err)
+	}
+	if !reflect.DeepEqual(got, model.Profile{}) {
+		t.Errorf("Read(work) on a fresh fork = %#v, want empty model.Profile{}", got)
+	}
+
+	// A genuinely-absent branch still surfaces ErrProfileNotFound (the reserved case).
+	if _, err := s.Read(ctx, "does-not-exist"); !errors.Is(err, ErrProfileNotFound) {
+		t.Errorf("Read(does-not-exist) = %v, want ErrProfileNotFound (genuinely absent branch)", err)
+	}
+}
+
 // TestValidBranchName pins the V5 + path-traversal guard (T-03-02): argument
 // injection (leading '-'), path traversal ('../etc' and embedded 'foo/../bar'), and
 // the empty name are all rejected, while legitimate names ('work-1', 'v1.0') pass.

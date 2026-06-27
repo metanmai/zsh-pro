@@ -304,17 +304,35 @@ func (s *Store) Commit(ctx context.Context, branch string, p model.Profile, msg 
 
 // Read reconstructs a model.Profile from a branch's profile.json, pulled straight
 // from the object DB via `git show <branch>:profile.json` — no checkout, no working
-// tree (D-12). It first probes existence with catFileExists so a missing profile
-// surfaces a zsh-pro-phrased ErrProfileNotFound instead of letting `git show` print
-// a raw `fatal: path ... does not exist` (D-11/Pitfall 4, threat T-03-01). The bytes
-// are decoded by UnmarshalProfile — no re-parse, so the store stays shell-agnostic.
+// tree (D-12). It reads from the object DB so a read never disturbs another
+// terminal's HEAD; the bytes are decoded by UnmarshalProfile — no re-parse, so the
+// store stays shell-agnostic.
+//
+// CONTRACT (WR-03) — Read distinguishes "branch absent" from "branch present but not
+// yet committed to", because Branches/Checkout treat a never-committed branch as a
+// real, switchable profile and the Phase 5 verb caller must be able to read it:
+//   - branch does NOT exist (no refs/heads/<branch>): ErrProfileNotFound. This is the
+//     genuinely-absent case (e.g. `checkout typo`), the zsh-pro-phrased error the CLI
+//     surfaces instead of a raw git `fatal: path ... does not exist` (T-03-01).
+//   - branch EXISTS but has no profile.json at its tip: the EMPTY profile
+//     model.Profile{} (no error). This is the fresh `main` baseline (an empty-tree
+//     root commit from Init) and a freshly Create'd fork before its first Commit —
+//     both are valid, readable profiles that simply hold no entries yet.
+//   - branch exists WITH a profile.json: decode and return it (the committed case,
+//     including a profile committed as empty, which serializes a profile.json blob).
 func (s *Store) Read(ctx context.Context, branch string) (model.Profile, error) {
 	if err := validBranchName(branch); err != nil {
 		return model.Profile{}, err
 	}
+	// Probe the BRANCH first: a missing ref is a genuinely-absent profile.
+	if !s.git.catFileExists(ctx, "refs/heads/"+branch) {
+		return model.Profile{}, ErrProfileNotFound
+	}
+	// The branch exists. A missing profile.json at its tip means "present but never
+	// committed to" — return the empty profile, NOT ErrProfileNotFound (WR-03).
 	objRef := branch + ":profile.json"
 	if !s.git.catFileExists(ctx, objRef) {
-		return model.Profile{}, ErrProfileNotFound
+		return model.Profile{}, nil
 	}
 	b, err := s.git.show(ctx, objRef)
 	if err != nil {
