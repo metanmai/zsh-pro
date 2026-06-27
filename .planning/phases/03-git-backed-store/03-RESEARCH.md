@@ -390,7 +390,9 @@ b = append(b, '\n')
 | A4 | git <2.28 `symbolic-ref` fallback is only theoretically needed (this machine is 2.50.1) | State of the Art | LOW — the fallback is cheap to add and the absence/old-version degrade path is required by D-06 anyway. |
 | A5 | The git-ignored vault file is acceptable as the "no encryption" fallback (protection = not-in-git-history, not at-rest crypto) | Standard Stack | LOW — explicitly chosen by D-09; documented so the planner surfaces it to the user as the security posture. |
 
-## Open Questions
+## Open Questions (RESOLVED during Phase 3 planning)
+
+> Resolution summary (folded into the plans 2026-06-27): **Q1** → `Entry.Secret *SecretRef` (omitempty), additive, with the excluded literal's `Value` cleared; serialized via a store-local DTO and pinned by the `Read(Commit(p))` round-trip test (03-01 / 03-02). **Q2** → global-by-name keychain entries (service `zsh-pro`, account `<KEY>`), one value per secret name referenced per-profile — the deref contract Ph4/5 reads (03-03). **Q3** → resolved by scope: Phase 3 round-trips an in-memory `model.Profile` only; the real `~/.zshrc` on-ramp stays Ph6.
 
 1. **`SecretRef` placement on `Entry` and the exact JSON shape.**
    - What we know: it must be additive (Pitfall 5) and live in `core/model` (dependency-free). `kind:key` is the locked serialization (D-09).
