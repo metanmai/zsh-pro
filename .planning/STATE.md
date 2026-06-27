@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Branchable Shell Environments
-status: executing
+status: verifying
 stopped_at: Completed 03-02-PLAN.md (core/store orchestrator + round-trip pin)
-last_updated: "2026-06-27T13:39:29.174Z"
+last_updated: "2026-06-27T14:47:25.975Z"
 last_activity: 2026-06-27
 progress:
   total_phases: 6
-  completed_phases: 2
+  completed_phases: 3
   total_plans: 8
-  completed_plans: 7
-  percent: 33
+  completed_plans: 8
+  percent: 50
 ---
 
 # Project State
@@ -27,10 +27,10 @@ See: .planning/PROJECT.md (updated 2026-06-25)
 
 Phase: 03 (git-backed-store) — EXECUTING
 Plan: 3 of 3
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-06-27
 
-Progress: [█████████░] 88%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
@@ -59,6 +59,7 @@ Progress: [█████████░] 88%
 | Phase 02 P03 | 11 | 3 tasks | 8 files |
 | Phase 03 P01 | 9 | 3 tasks | 8 files |
 | Phase 03 P02 | 9 | 2 tasks | 6 files |
+| Phase 03 P03 | 35 | 4 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -85,6 +86,9 @@ Recent decisions affecting current work:
 - [Phase ?]: [03-02] Active profile per-terminal via ZSHPRO_PROFILE (name only; unset => main); Checkout validates existence but does NOT export (export is Phase 5 loader) (D-13)
 - [Phase ?]: [03-02] New/Commit/KeychainDriver/WithheldReport declared in FINAL form this wave so Plan 03 changes no signature and edits no test in this plan
 - [Phase ?]: [03-02] UnmarshalProfile preserves nil Entries for an entry-less profile (mirrors cloneNames) so Read(Commit(model.Profile{})) is reflect.DeepEqual to its input (Rule 1 fix)
+- [Phase ?]: [03-03] excludeSecrets removes the literal from BOTH Entry.Text AND Entry.Value — Text is the JSON text field + the Regenerator empty-Value fallback, so clearing only Value leaked into profile.json AND profile.zsh (T-03-03 Rule 1 fix); both get an inert kind:key placeholder, Secret is authoritative
+- [Phase ?]: [03-03] SecretRef.Kind = kc.Kind() from the live backend (not hardcoded) so the vault fallback yields a file-kind reference Ph4/5 derefs from the vault (T-03-09)
+- [Phase ?]: [03-03] D-08 literal-vs-dynamic split reuses the shipped CatSecrets verdict + parser Dynamic flag (no new regex/AST); store stays shell-agnostic; main.go is the sole core/shell/zsh importer; PROF-03 store-side half done, completes Ph6
 
 ### Pending Todos
 
@@ -113,6 +117,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-06-27T13:39:29.160Z
+Last session: 2026-06-27T14:47:02.323Z
 Stopped at: Completed 03-02-PLAN.md (core/store orchestrator + round-trip pin)
 Resume file: None
