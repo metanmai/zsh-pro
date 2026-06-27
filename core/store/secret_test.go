@@ -293,6 +293,12 @@ func TestExcludeSecretsNilKeychain(t *testing.T) {
 // `main` branch: the ref did not move off its pre-Commit tip and no profile.json blob
 // was written, so NO committed blob can contain the leaked literal. It is the shared
 // "nothing reached the tree" assertion for the CR-01/CR-02 adversarial tests.
+//
+// The tip-unmoved + no-profile.json checks ARE the "nothing was written" proof. Read
+// is then expected to return the EMPTY profile, not ErrProfileNotFound: `main` exists
+// from Init's baseline root commit, so per the WR-03 contract a present-but-uncommitted
+// branch reads back as model.Profile{} (an empty profile has no entries, hence no
+// literal — which is exactly the fail-closed outcome we want).
 func assertCommitDidNotWrite(t *testing.T, s *Store, ctx context.Context, preTip string) {
 	t.Helper()
 	postTip, err := s.git.revParse(ctx, "refs/heads/main")
@@ -305,8 +311,12 @@ func assertCommitDidNotWrite(t *testing.T, s *Store, ctx context.Context, preTip
 	if s.git.catFileExists(ctx, "main:profile.json") {
 		t.Errorf("main:profile.json exists after a fail-closed Commit — a blob was written when none should be")
 	}
-	if _, err := s.Read(ctx, "main"); !errors.Is(err, ErrProfileNotFound) {
-		t.Errorf("Read(main) after a fail-closed Commit = %v, want ErrProfileNotFound (no profile committed)", err)
+	got, err := s.Read(ctx, "main")
+	if err != nil {
+		t.Errorf("Read(main) after a fail-closed Commit = %v, want nil (main exists but nothing was committed; WR-03)", err)
+	}
+	if len(got.Entries) != 0 {
+		t.Errorf("Read(main) after a fail-closed Commit returned %d entries, want 0 (nothing was committed)", len(got.Entries))
 	}
 }
 
