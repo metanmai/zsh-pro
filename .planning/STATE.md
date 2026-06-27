@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Branchable Shell Environments
 status: executing
-stopped_at: Phase 3 context gathered
-last_updated: "2026-06-27T10:38:35.356Z"
-last_activity: 2026-06-27 -- Phase 03 planning complete
+stopped_at: Phase 3 fully planned (3 plans, 3 waves) — ready to execute
+last_updated: "2026-06-27T11:30:09.963Z"
+last_activity: 2026-06-27
 progress:
   total_phases: 6
   completed_phases: 2
   total_plans: 8
-  completed_plans: 5
+  completed_plans: 6
   percent: 33
 ---
 
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-25)
 
 **Core value:** `checkout <branch>` gives you a different, trustworthy shell environment — declarative state (aliases/env/PATH/functions/options) applies and reverses cleanly with zero residue, while portability is preserved (dynamic values like `$HOME`/`$(...)` stay late-bound, never frozen to one machine).
-**Current focus:** Phase 3 — git backed store
+**Current focus:** Phase 03 — git-backed-store
 
 ## Current Position
 
-Phase: 3
-Plan: Not started
+Phase: 03 (git-backed-store) — EXECUTING
+Plan: 2 of 3
 Status: Ready to execute
-Last activity: 2026-06-27 -- Phase 03 planning complete
+Last activity: 2026-06-27
 
-Progress: [██████████] 100%
+Progress: [████████░░] 75%
 
 ## Performance Metrics
 
@@ -57,6 +57,7 @@ Progress: [██████████] 100%
 | Phase 02 P01 | 18 | 3 tasks | 8 files |
 | Phase 02 P02 | 5 | 3 tasks | 8 files |
 | Phase 02 P03 | 11 | 3 tasks | 8 files |
+| Phase 03 P01 | 9 | 3 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -75,6 +76,10 @@ Recent decisions affecting current work:
 - [Phase ?]: [02-01]: IR value-capture via additive Block.Value/Dynamic at parse time (Approach A); static/dynamic detection in the core/shell/zsh AST tier keeps core/ir shell-free
 - [Phase ?]: [02-01]: routeManaged ING-02 gate admits 5 reversible classes; bare setopt/unsetopt routes imperative (#2); confidence never gates routing (D-06); ManagedOverride wins over auto verdict (D-07)
 - [Phase 02]: [02-03] Array assignments route imperative (verbatim Text), not templated — additive Block.Array flag detected at parse time; same D-04/D-06 lineage as BL-02/WR-01/WR-02
+- [Phase ?]: [03-01] SecretRef placement = Entry.Secret *SecretRef (omitempty) with cleared Value when set; additive dependency-free in core/model (critical decision #2)
+- [Phase ?]: [03-01] Profile<->JSON serialization via a store-local DTO (entryDTO/profileDTO), not json tags on model.Entry — keeps the Phase 2 IR struct pure (critical decision #1, option b)
+- [Phase ?]: [03-01] git driver mirrors introspect.go subprocess shape verbatim (5s timeout + LookPath guard + degrade); no go-git, no new dependency (PROF-01, critical decision #4)
+- [Phase ?]: [03-01] mapGitError maps every git failure to ErrGitCommand and never embeds raw stderr; all store errors are zsh-pro-phrased errStore sentinels (D-11)
 
 ### Pending Todos
 
@@ -103,6 +108,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-06-27T07:36:27.658Z
-Stopped at: Phase 3 context gathered
-Resume file: .planning/phases/03-git-backed-store/03-CONTEXT.md
+Last session: 2026-06-27T11:29:38.670Z
+Stopped at: Phase 3 fully planned (3 plans, 3 waves) — ready to execute
+Resume file: None

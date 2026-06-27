@@ -112,7 +112,7 @@ Plans:
 
 **Wave 1**
 
-- [ ] 03-01-PLAN.md — SecretRef contract (core/model) + lossless deterministic Profile<->JSON serialization + git subprocess driver/plumbing primitives + zsh-pro-phrased errors
+- [x] 03-01-PLAN.md — SecretRef contract (core/model) + lossless deterministic Profile<->JSON serialization + git subprocess driver/plumbing primitives + zsh-pro-phrased errors
 
 **Wave 2** *(blocked on Wave 1)*
 
@@ -188,7 +188,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 |-------|----------------|--------|-----------|
 | 1. SPIKE — Zero-Residue Live Hot-Switch | 2/2 | Complete   | 2026-06-25 |
 | 2. IR + Partial Evaluation | 3/3 | Complete   | 2026-06-26 |
-| 3. Git-Backed Store | 0/2 | Not started | - |
+| 3. Git-Backed Store | 1/3 | In Progress|  |
 | 4. Manifest Builder + Emit | 0/2 | Not started | - |
 | 5. Runtime Loader + CLI + Bootstrap | 0/2 | Not started | - |
 | 6. Ingest End-to-End | 0/2 | Not started | - |
