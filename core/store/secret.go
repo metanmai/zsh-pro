@@ -35,10 +35,15 @@ import (
 // excludeSecrets rewrites p so no literal secret value survives into the committed
 // tree, capturing each into the injected backend and reporting what was withheld.
 //
-// It operates on a DEFENSIVE COPY of the profile (a fresh Entries slice): the caller's
-// original Profile is never mutated, so the Phase 2 round-trip comparison and any
-// caller-held reference see the literal value unchanged. The returned Profile is the
-// one Commit marshals + commits.
+// It operates on a fresh COPY of the Entries slice (a shallow copy of the entry
+// values): the caller's original Profile is never mutated, so the Phase 2 round-trip
+// comparison and any caller-held reference see the literal value unchanged. The copy
+// is shallow — a copied Entry shares the caller's Names backing array and Secret
+// pointer — but the loop only ever REPLACES value-typed fields (Text, Value) and
+// INSTALLS a new Secret pointer; it never writes through e.Names[i] or *e.Secret, so
+// no aliased state of the caller is mutated in place. (Names is additionally cloned
+// at the IR boundary in ir.Build, so even the shared backing array is not the
+// parser's.) The returned Profile is the one Commit marshals + commits.
 //
 // The verdict over each entry uses ONLY already-populated Entry fields (the
 // classifier's CatSecrets verdict + the parser's Dynamic flag — no new inspection),
@@ -65,10 +70,13 @@ import (
 // match Commit's call shape and leave room for a context-aware backend without a future
 // signature change; the current backends are synchronous.
 func excludeSecrets(_ context.Context, p model.Profile, kc KeychainDriver) (model.Profile, WithheldReport, error) {
-	// Defensive copy of the entry slice so the caller's Profile is untouched. A nil
+	// Shallow copy of the entry slice so the caller's Profile is untouched. A nil
 	// Entries stays nil (no allocation) — the secret-free / empty-profile path is a
 	// pure no-op that returns the profile and a nil report, preserving the Phase 2
-	// round-trip equality.
+	// round-trip equality. The copy shares each Entry's Names backing array and Secret
+	// pointer with the caller, but the loop below only replaces value-typed fields and
+	// installs a new Secret pointer (never writes through the shared array/pointer), so
+	// the caller is never corrupted (TestExcludeSecretsDefensiveCopy pins this).
 	if len(p.Entries) == 0 {
 		return p, nil, nil
 	}
