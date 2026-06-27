@@ -32,6 +32,7 @@ type Entry struct {
 	Managed   bool            // auto verdict: is this a reversible declarative class? (D-06)
 	Override  ManagedOverride // explicit override of the auto verdict (D-07); defaults OverrideAuto
 	Dynamic   bool            // value contains a non-literal AST part ($HOME/$(...)/...) — orthogonal axis (D-05)
+	Secret    *SecretRef      // non-nil iff this entry is a secret-replaced literal (D-07); the literal Value is cleared when set so the secret never round-trips
 }
 
 // EffectiveManaged reports whether the entry is treated as managed (declarative,
