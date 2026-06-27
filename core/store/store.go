@@ -18,6 +18,7 @@ import (
 	"os"
 	"strings"
 
+	"zsh-pro/core/ir"
 	"zsh-pro/core/model"
 	"zsh-pro/core/shell"
 )
@@ -46,6 +47,25 @@ type KeychainDriver interface {
 	Delete(key string) error
 	Kind() model.SecretRefKind // which backend this driver is -> SecretRef.Kind in Plan 03
 }
+
+// WithheldSecret names one literal secret excluded from a committed tree: the var
+// name and its 1-based source line, so the CLI can tell the user exactly what was
+// withheld. It is zero-value-usable. Plan 03 populates it as Commit excludes
+// literal secrets; this plan only declares the shape.
+type WithheldSecret struct {
+	Name      string // the secret var name (Entry.Names[0]), e.g. "API_KEY"
+	StartLine int    // 1-based source line of the excluded assignment
+}
+
+// WithheldReport is the producer/consumer contract for secret exclusion: Phase 3
+// PRODUCES this report on Commit (Plan 03 populates it as it captures literal
+// secrets into the keychain backend and replaces them with a SecretRef before the
+// tree is written); the CLI CONSUMES it in Phase 5 to tell the user what was
+// withheld (success-criterion #4, "told what was withheld"). A nil/empty report
+// means nothing was withheld. It is declared HERE because Commit's return type
+// references it (define contracts no later than first use); the type is FINAL —
+// Plan 03 changes neither it nor Commit's signature, only the body that fills it.
+type WithheldReport []WithheldSecret
 
 // Store is the git-backed profile store. It holds exactly four injected
 // dependencies and no global state, mirroring the project's injected-driver
@@ -166,6 +186,128 @@ func (s *Store) Create(ctx context.Context, name string) error {
 		return err
 	}
 	return s.git.updateRef(ctx, "refs/heads/"+name, mainSHA)
+}
+
+// Commit writes a profile to a target branch purely via plumbing — no checkout,
+// no working-tree mutation anywhere (D-12, critical decision #4; the conda race
+// avoided by construction). It stages exactly two blobs: profile.json (the
+// authoritative lossless IR serialization, D-01) and profile.zsh (a derived
+// source-ordered view generated through the injected regenerator seam, D-02/D-03).
+// The recipe is the Plan-01-proven Pattern 1 (exercised end-to-end by
+// TestGitCommitToBranch): hash-object each blob, seed a temp index from the branch
+// tree (parented) or empty (root commit), update-index --cacheinfo both paths,
+// write-tree, commit-tree, update-ref. Every git call goes through gitRunner so an
+// error is zsh-pro-phrased, never raw (D-11).
+//
+// Commit has its FINAL two-value signature (WithheldReport, error). Secret
+// exclusion is wired in Plan 03: it will insert an excludeSecrets step before
+// marshaling (capturing literal secrets into the keychain backend and replacing
+// each with a SecretRef) and change the `return nil, nil` to return a populated
+// report. Until then this commits the profile as-given and returns an empty
+// report. Plan 03 changes neither this signature nor its callers.
+func (s *Store) Commit(ctx context.Context, branch string, p model.Profile, msg string) (WithheldReport, error) {
+	if err := validBranchName(branch); err != nil {
+		return nil, err
+	}
+
+	// profile.json is authoritative (D-01); profile.zsh is the derived view emitted
+	// via the injected seam (D-02/D-03) — values pass through verbatim, never resolved.
+	jsonBytes, err := MarshalProfile(p)
+	if err != nil {
+		return nil, err
+	}
+	zshBytes := ir.Regenerate(p, s.regen)
+
+	blobJSON, err := s.git.hashObject(ctx, jsonBytes)
+	if err != nil {
+		return nil, err
+	}
+	blobZSH, err := s.git.hashObject(ctx, zshBytes)
+	if err != nil {
+		return nil, err
+	}
+
+	// Temp index file OUTSIDE any working tree (a bare repo has none anyway), cleaned
+	// up after. GIT_INDEX_FILE is set by runCommit so all index ops target it.
+	idxFile, err := os.CreateTemp("", "zshpro-index-*")
+	if err != nil {
+		return nil, err
+	}
+	idx := idxFile.Name()
+	// Only the name is needed; git owns the file content via GIT_INDEX_FILE. The
+	// deferred remove is best-effort — a leftover temp index is harmless.
+	_ = idxFile.Close()
+	defer func() { _ = os.Remove(idx) }()
+
+	ref := "refs/heads/" + branch
+	var parent string
+	if s.git.catFileExists(ctx, ref) {
+		// Seed the temp index from the branch's current tree and parent on its tip.
+		if _, err := s.git.runCommit(ctx, idx, commitTS, "read-tree", branch); err != nil {
+			return nil, err
+		}
+		parent, err = s.git.revParse(ctx, ref)
+		if err != nil {
+			return nil, err
+		}
+	} else if _, err := s.git.runCommit(ctx, idx, commitTS, "read-tree", "--empty"); err != nil {
+		// Brand-new branch: start from an empty index and make a root commit (no -p).
+		return nil, err
+	}
+
+	// Stage exactly profile.json + profile.zsh via cacheinfo (mode,sha,path) — never
+	// any other path, so the git-ignored vault file can never enter the tree.
+	if _, err := s.git.runCommit(ctx, idx, commitTS, "update-index", "--add", "--cacheinfo", "100644,"+blobJSON+",profile.json"); err != nil {
+		return nil, err
+	}
+	if _, err := s.git.runCommit(ctx, idx, commitTS, "update-index", "--add", "--cacheinfo", "100644,"+blobZSH+",profile.zsh"); err != nil {
+		return nil, err
+	}
+
+	treeOut, err := s.git.runCommit(ctx, idx, commitTS, "write-tree")
+	if err != nil {
+		return nil, err
+	}
+	tree := strings.TrimSpace(string(treeOut))
+
+	// commit-tree: parented if the branch existed, else a root commit. The message is
+	// passed as distinct argv (-m) — the Plan-01-proven form (TestGitCommitToBranch);
+	// it is non-sensitive fixed/user text and is never shell-interpolated.
+	commitArgs := []string{"commit-tree", tree, "-m", msg}
+	if parent != "" {
+		commitArgs = []string{"commit-tree", tree, "-p", parent, "-m", msg}
+	}
+	commitOut, err := s.git.runCommit(ctx, idx, commitTS, commitArgs...)
+	if err != nil {
+		return nil, err
+	}
+	commit := strings.TrimSpace(string(commitOut))
+
+	if err := s.git.updateRef(ctx, ref, commit); err != nil {
+		return nil, err
+	}
+	return nil, nil // no secrets withheld yet — exclusion is Plan 03
+}
+
+// Read reconstructs a model.Profile from a branch's profile.json, pulled straight
+// from the object DB via `git show <branch>:profile.json` — no checkout, no working
+// tree (D-12). It first probes existence with catFileExists so a missing profile
+// surfaces a zsh-pro-phrased ErrProfileNotFound instead of letting `git show` print
+// a raw `fatal: path ... does not exist` (D-11/Pitfall 4, threat T-03-01). The bytes
+// are decoded by UnmarshalProfile — no re-parse, so the store stays shell-agnostic.
+func (s *Store) Read(ctx context.Context, branch string) (model.Profile, error) {
+	if err := validBranchName(branch); err != nil {
+		return model.Profile{}, err
+	}
+	objRef := branch + ":profile.json"
+	if !s.git.catFileExists(ctx, objRef) {
+		return model.Profile{}, ErrProfileNotFound
+	}
+	b, err := s.git.show(ctx, objRef)
+	if err != nil {
+		return model.Profile{}, err
+	}
+	return UnmarshalProfile(b)
 }
 
 // validBranchName rejects names that are unsafe to interpolate into git argv or a
