@@ -200,23 +200,36 @@ func (s *Store) Create(ctx context.Context, name string) error {
 // error is zsh-pro-phrased, never raw (D-11).
 //
 // Commit has its FINAL two-value signature (WithheldReport, error). Secret
-// exclusion is wired in Plan 03: it will insert an excludeSecrets step before
-// marshaling (capturing literal secrets into the keychain backend and replacing
-// each with a SecretRef) and change the `return nil, nil` to return a populated
-// report. Until then this commits the profile as-given and returns an empty
-// report. Plan 03 changes neither this signature nor its callers.
+// exclusion is ACTIVE (D-07–D-10): as the FIRST step, excludeSecrets rewrites the
+// profile so every literal secret (Category==CatSecrets && !Dynamic && Value!="")
+// is captured into the injected keychain/vault backend and replaced by a SecretRef
+// (Kind=kc.Kind()) with its literal cleared, while already-dynamic secrets commit
+// verbatim (D-08). The post-exclusion profile is what gets marshaled, regenerated,
+// and committed — the literal value never enters the tree — and the populated
+// WithheldReport names what was withheld (success-criterion #4, surfaced by the CLI
+// in Phase 5). The signature is unchanged from Plan 02.
 func (s *Store) Commit(ctx context.Context, branch string, p model.Profile, msg string) (WithheldReport, error) {
 	if err := validBranchName(branch); err != nil {
 		return nil, err
 	}
 
-	// profile.json is authoritative (D-01); profile.zsh is the derived view emitted
-	// via the injected seam (D-02/D-03) — values pass through verbatim, never resolved.
-	jsonBytes, err := MarshalProfile(p)
+	// Exclude literal secrets BEFORE anything is serialized: capture each into the
+	// backend, replace with a SecretRef, clear the literal. Everything downstream
+	// (marshal, regenerate, hash, commit) operates on `excluded`, NOT the caller's `p`,
+	// so the literal never reaches the committed tree (T-03-03). A backend/nil-driver
+	// failure aborts the Commit before any ref moves.
+	excluded, report, err := excludeSecrets(ctx, p, s.keychain)
 	if err != nil {
 		return nil, err
 	}
-	zshBytes := ir.Regenerate(p, s.regen)
+
+	// profile.json is authoritative (D-01); profile.zsh is the derived view emitted
+	// via the injected seam (D-02/D-03) — values pass through verbatim, never resolved.
+	jsonBytes, err := MarshalProfile(excluded)
+	if err != nil {
+		return nil, err
+	}
+	zshBytes := ir.Regenerate(excluded, s.regen)
 
 	blobJSON, err := s.git.hashObject(ctx, jsonBytes)
 	if err != nil {
@@ -286,7 +299,7 @@ func (s *Store) Commit(ctx context.Context, branch string, p model.Profile, msg 
 	if err := s.git.updateRef(ctx, ref, commit); err != nil {
 		return nil, err
 	}
-	return nil, nil // no secrets withheld yet — exclusion is Plan 03
+	return report, nil // names the literal secrets excluded above (nil/empty when none)
 }
 
 // Read reconstructs a model.Profile from a branch's profile.json, pulled straight
