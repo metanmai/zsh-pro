@@ -1,10 +1,14 @@
 {
   "phase": "04",
-  "cycle": 1,
-  "HIGH_COUNT": 16,
-  "prev_high": 9999,
-  "per_lens": { "correctness": 4, "risk": 4, "requirement-coverage": 3, "security": 3, "simplicity": 2 },
-  "consensus_high": ["CH-1", "CH-2", "CH-3", "CH-4", "CH-5", "CH-6", "CH-7", "CH-8"],
+  "cycle": 2,
+  "HIGH_COUNT": 11,
+  "prev_high": 16,
+  "per_lens": { "correctness": 3, "risk": 4, "requirement-coverage": 1, "security": 3, "simplicity": 0 },
+  "consensus_high": ["CH-9", "CH-10", "CH-11", "CH-12", "CH-13", "CH-14", "CH-15"],
   "converged": false,
-  "max_cycles": 5
+  "max_cycles": 5,
+  "history": [
+    { "cycle": 1, "HIGH_COUNT": 16 },
+    { "cycle": 2, "HIGH_COUNT": 11 }
+  ]
 }
