@@ -1,7 +1,7 @@
 ---
 phase: 05-runtime-loader-cli-bootstrap
 updated: 2026-07-02T00:00:00Z
-open_count: 4
+open_count: 10
 ---
 
 # Open Questions — Phase 5 Runtime Loader + CLI + Bootstrap
@@ -44,3 +44,61 @@ open_count: 4
 - **Why uncertain:** The absolute number depends on the measurement machine and zsh version; the structural zero-subprocess check is the load-bearing guarantee, the millisecond budget is a sanity backstop.
 - **Impact:** Low-medium — a wrong number either false-fails on slow hardware or tolerates regression. Pairing it with the structural grep check de-risks either direction.
 - **Confidence:** MEDIUM. Flagged so discuss/plan-phase locks the exact figure against a real `hyperfine` run.
+
+---
+
+> The following were auto-decided during smart-discuss (Phase 5 CONTEXT, 2026-07-02, unattended). Each has a safe reversible default applied so planning can proceed; confirm against the actual Phase-4 `emit.go` call surface and codebase during plan-phase.
+
+## OQ-05-05: Exact `zp_*` helper call surface must match Phase 4's actual `emit.go` output
+
+- **Question:** Phase 4 is documented but NOT yet executed — `core/shell/zsh/emit.go`, `core/activate`, and `core/model/manifest.go` do not exist on disk yet. The loader's `zp_*` helper set/signatures (CONTEXT D-01) are locked from the Phase 1 reference snippet + Phase 4 design (D-12/OQ-8), but the LITERAL bare calls `emit.go` emits (helper names, arg order, whether PATH-rebuild is a named helper vs inlined) can only be byte-confirmed once emit.go lands.
+- **Tentative choice (applied):** Lock the helper contract to the Phase 1 snippet + Phase 4 D-12/OQ-8 shapes (`zp_capture_env <var>`, `zp_restore_env <var> <applied>`, shadow slots `ZP_<profile>_PRIOR_ALIAS_/FUNC_<name>`, PATH `PATH="$ZP_BASE_PATH"; path=(<additions> $path)`). At plan/execute time, diff the loader's defined helpers against `emit.go`'s actual emitted calls and reconcile any signature mismatch (localized edit — both live in `core/shell/zsh`).
+- **Alternatives:** (a) block Phase 5 until Phase 4 executes (rejected — CONTEXT is produced ahead of execution by design; the contract is a locked seam, not undefined); (b) invent a new helper set (rejected — must match Phase 4's bare-call seam OQ-5/OQ-18).
+- **Why uncertain:** The two land together; a helper-signature mismatch breaks activation until reconciled. The Phase 4 zero-residue property test + Phase 5 live-terminal wiring test are the backstops.
+- **Impact:** Medium. Reversible (localized signature edit in one package).
+- **Confidence:** HIGH on the contract shape; the "confirm against real emit.go" step is a plan-phase gate, not a decision.
+
+## OQ-05-06: Binary emit subcommand naming the verbs call
+
+- **Question:** The sourced `activate`/`checkout`/`deactivate` functions `eval "$(zsh-pro <emit-verb> <name>)"` to fetch Phase-4-emitted code. What is the emit subcommand's name/shape?
+- **Tentative choice (applied):** A single internal subcommand `zsh-pro emit <apply|deactivate> <name>` (mode arg), distinct from the public `hook`. Keeps the CLI surface small; the mode arg avoids two near-identical verbs.
+- **Alternatives:** (a) two subcommands (`emit-apply`/`emit-deactivate`) — more explicit but more surface; (b) fold into `checkout` printing both — muddles the validate-vs-emit split.
+- **Why uncertain:** Pure naming; no correctness impact as long as the sourced functions and the CLI dispatch agree.
+- **Impact:** Low. Reversible before ship.
+- **Confidence:** MEDIUM-HIGH.
+
+## OQ-05-07: Where `zsh -n` validation physically runs
+
+- **Question:** Emitted code must be `zsh -n`-validated before `eval` (Req 6). Does the sourced function run `zsh -n` on the captured string, or does the binary self-validate before printing?
+- **Tentative choice (applied):** Validate in the sourced verb, `zsh -n` on the captured emitted string (here-string/tempfile), closest to the `eval` boundary — the function is the last checkpoint before mutation, so it is the correct guard site. `zsh -n` here is a subprocess, but only on an explicit verb (not the hot path), so it is allowed.
+- **Alternatives:** (a) binary self-validates before printing — moves the check away from the eval boundary and still requires trusting the transport; (b) both (defense-in-depth) — acceptable but redundant for v2.0.
+- **Why uncertain:** Either satisfies the acceptance criterion; the sourced-verb site is chosen for being adjacent to the actual `eval`.
+- **Impact:** Low-medium. Reversible.
+- **Confidence:** MEDIUM-HIGH.
+
+## OQ-05-08: Last-good record payload richness
+
+- **Question:** The per-terminal last-good record (Req 6) lets a failed switch fall back. Does it store just the profile name, or name + manifest/emitted-code reference?
+- **Tentative choice (applied):** Profile NAME only (`ZP_LAST_GOOD_PROFILE`). The store is the source of truth; re-derivation goes through the binary on demand. Since a failed switch is rejected BEFORE any eval (atomic per-switch validation, D-16), the shell already holds the prior good declarative state — the last-good name is a report/recovery aid, not a re-apply payload.
+- **Alternatives:** (a) cache the last-good emitted code per terminal (faster recovery, but stale-cache + per-terminal-storage complexity); (b) name + manifest hash (drift detection — over-engineered for v2.0).
+- **Why uncertain:** Depends on whether recovery ever needs to RE-APPLY (vs just not-corrupt). With up-front atomic validation, re-apply is not needed on the failure path.
+- **Impact:** Low. Reversible.
+- **Confidence:** MEDIUM.
+
+## OQ-05-09: Store injection shape into `core/cli`
+
+- **Question:** `core/cli` must not import the concrete store. How is the store threaded in from the composition root?
+- **Tentative choice (applied):** Extend `cli.New(provider, store)` where `store` is a minimal store-facing interface DECLARED IN `core/cli` (e.g. `Branches(ctx) ([]string, error)`, `Current() string`, `Read(ctx, name) (model.Profile, error)`, `Checkout(ctx, name) error`), satisfied by `*store.Store`; `main.go` passes the concrete `*store.Store`. Mirrors the existing `shell.Provider`-interface injection discipline.
+- **Alternatives:** (a) a setter (`cli.SetStore`) — mutable, less clean; (b) import `*store.Store` directly into `core/cli` — VIOLATES the composition-root layering (rejected).
+- **Why uncertain:** Naming/shape only; the layering constraint is firm.
+- **Impact:** Low-medium. Reversible.
+- **Confidence:** HIGH on "interface declared in core/cli, injected at main.go"; MEDIUM on the exact method set.
+
+## OQ-05-10: Provider seam exposing the loader const
+
+- **Question:** The loader const lives in `core/shell/zsh`; `core/cli`'s `hook` handler must fetch it without holding zsh text. What seam exposes it?
+- **Tentative choice (applied):** A `HookScript() string` method on the Provider composite (a new `shell.Hooker` sub-interface, mirroring how `Regenerator`/`Introspector` compose into `shell.Provider`). `core/cli` calls `c.provider.HookScript()` and prints it — no zsh text in `core/cli`.
+- **Alternatives:** (a) a standalone `shell.Hooker` interface injected separately — extra wiring, no benefit; (b) a package-level exported const `zsh.LoaderScript` read at main.go and passed in — leaks the const shape across the seam.
+- **Why uncertain:** Seam naming/placement only; the invariant (const in `core/shell/zsh`, `core/cli` zsh-text-free) is firm.
+- **Impact:** Low. Reversible.
+- **Confidence:** HIGH on the invariant; MEDIUM-HIGH on `HookScript()` on the Provider.
