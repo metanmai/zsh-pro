@@ -1,7 +1,7 @@
 ---
 phase: 04-manifest-builder-emit
-updated: 2026-07-01T20:00:00Z
-open_count: 23
+updated: 2026-07-01T22:10:00Z
+open_count: 26
 ---
 
 # Open Questions — Phase 4 Manifest Builder + Emit
@@ -208,3 +208,32 @@ open_count: 23
 - **Alternatives:** (a) keep the "still present" assertion (rejected — tautology); (b) assert only exactly-once (rejected — misses a compensating strip+duplicate that keeps count wrong).
 - **Impact:** Medium — a tautological sub-check gives false confidence; the strengthened count+exactly-once + base-strip mutant makes it a real ownership guard.
 - **Confidence:** HIGH. Addresses review concern CH-15.
+
+## OQ-24: Dedicated filter-independent option-state + alias-body snapshot sections (from REVIEWS cycle-3 CH-16)
+
+- **Question:** Cycle-3 CH-16: on zsh 5.9 the `aliases` and `options` module-backed associations are typed `association-hide-hideval-special`, so the C28 TYPE-CLASS filter (skip `(*special*|*tied*|*hide*|undefined)`) EXCLUDES them from the full `${(@kv)parameters}` snapshot. The instrument snapshots function BODIES and PATH via dedicated sections but NOT alias bodies or option state — so a leaked alias or an unrestored option passes byte-identical (a C19-class false-green on 2 of the 6 residue classes, contradicting SPEC Req 5). How is the options/aliases class made byte-comparable without re-admitting the drift-prone `*special*` params through the filter?
+- **Tentative choice (applied):** Add DEDICATED, filter-INDEPENDENT snapshot sections — same pattern as the existing separate PATH and function-body sections — captured identically in BOTH the pre and post snapshots so they are byte-comparable without the type-class filter dropping them: (a) an OPTION-state section iterating sorted `${(@k)options}` emitting `optname=<on|off>` (via `[[ -o $opt ]]` or `${options[$opt]}`); (b) an ALIAS-body section iterating sorted `${(@k)aliases}` emitting `name<NUL>body` (like function bodies). Both sections are DETERMINISTICALLY SORTED (they iterate the same `undefined`-typed assocs C28 flagged as drift-prone, so ordering must be pinned and they must not trigger lazy-init drift). Add C28-analog meta-asserts: an injected option-drift (an option left toggled) AND an injected alias-body-change must EACH make the diff non-empty. Also add `zmodload zsh/parameter` to the residue-test harness preamble (mirroring introspect.go) and assert a known user scalar appears in the baseline snapshot (proves the `parameters` map is populated, not silently empty → an all-classes false-green). Correct the now-false plan claim that "the `$options` class is part of the byte-identical full snapshot" — options/aliases are covered by the dedicated sections, NOT the `${(@kv)parameters}` full-env section. NEW EVIDENCE claim C30 (the dedicated option-state + alias-body snapshot sections are self-stable across two no-op snapshots AND their meta-asserts fire on injected option-drift / alias-body-change) logged UNVERIFIED for pass-3.
+- **Alternatives:** (a) loosen the type-class filter to re-admit `*special*` assocs (rejected — reopens the C28 lazy-init drift / false-red the type-class filter exists to kill, and the `aliases`/`options` values still would not be byte-stable through the generic loop); (b) rely on the targeted `ll`/`extendedglob` fixture sub-checks alone (rejected — they cover only specific fixture names, not the general per-class property SPEC Req 5 requires).
+- **Impact:** HIGH — without dedicated sections, 2 of 6 residue classes (aliases, options) are blind, a false-green that contradicts SPEC Req 5's byte-identical `$aliases`/`$options` acceptance. Neutralized by the filter-independent sections + meta-asserts + the populated-map assertion.
+- **Confidence:** HIGH (mirrors the already-proven PATH/function-body dedicated-section pattern; the option/alias iteration constructs are standard zsh already used in introspect.go). Addresses review concern CH-16.
+
+## OQ-25: SetOption option-name identifier-grammar validation (from REVIEWS cycle-3 CH-17)
+
+- **Question:** Cycle-3 CH-17: the CH-9 `SetOption` apply rule emits `optname` (← `OptionSet.Name` ← parser word-literals of a `setopt`/`unsetopt` line = user-controlled) UNQUOTED into `[[ -o optname ]]`, `setopt optname`, `unsetopt optname`, and the was_on slot-name derivation — a new double-eval EoP surface. The T-01-06 injectable-NAME enumeration omits the option name; the injection/slot-name corpus never runs SetOption; C27 used only well-formed names. How is a hostile option name (`foo; touch $CANARY`, `x$(...)y`, `foo -o bar`) neutralized?
+- **Tentative choice (applied):** Validate `OptionSet.Name` against the bare-identifier grammar `^[A-Za-z_][A-Za-z0-9_]*$` (zsh option names are bare identifiers) BEFORE emitting — reject / drop-to-no-part anything failing it (builder side rejects the OptionSet; emit side emits no part for an invalid name). Run the adversarial NAME corpus through the SetOption emit path asserting no canary fires. Add the option name to the T-01-06 trust-boundary enumeration. This mirrors the existing OQ-10/C24 slot-name sanitization already applied to profile/alias names. NEW EVIDENCE claim C29 (a hostile zsh option name is either rejected by the identifier-grammar validator or emitted inert — no canary through the double-eval) logged UNVERIFIED for pass-3.
+- **Alternatives:** (a) sanitize the option name (replace illegal bytes) like the slot-name path (rejected — a sanitized option name is a DIFFERENT, likely non-existent option; for options rejection/no-part is correct because a valid zsh option name is ALWAYS a bare identifier, so any non-conforming name is illegitimate, not merely awkward); (b) quote the name into `[[ -o "optname" ]]`/`setopt "optname"` (rejected as sole barrier — reduces injection but a validated bare identifier is the tighter, precision-over-recall guard, and the slot-name derivation still needs a valid identifier).
+- **Impact:** HIGH (security) — an unvalidated option name is a shell-injection vector through the emitted double-eval'd apply code. Neutralized by the identifier-grammar validator + corpus + C29.
+- **Confidence:** HIGH (bare-identifier grammar is the exact zsh option-name shape; mirrors the proven C24 slot-name defense). Addresses review concern CH-17.
+
+## OQ-26: Cheap cycle-3 MEDIUM test-precision items (from REVIEWS cycle-3)
+
+- **Question:** Cycle-3 flagged several cheap MEDIUM precision gaps in the residue test and the SPEC-coverage fixtures. Fold them in?
+- **Tentative choice (applied):** YES — all completeness-preserving, no design change:
+  - SPEC Req 6 drift sub-check split into TWO explicit assertions: a hand-edited managed var SURVIVES deactivate; an untouched managed var IS reversed to its prior.
+  - SPEC Req 8 paired fixture added: a `gs='git status'` alias AND a `foo(){ echo hi }` function together in ONE Introspect, asserting the alias-name map AND function-name map AND the alias-body AND function-body maps are all populated in one call (not two separate single-kind fixtures).
+  - The `ZP_BASE_PATH` `${(@s.:.)}` split must drop empty fields / use a no-trailing-colon fixture so `$#path` is deterministic (a trailing colon yields an empty element and a non-deterministic count).
+  - The drift / shadow / ownership sub-checks each run in their OWN isolated `zsh -f` baseline, DISTINCT from the N-sequence byte-identical property run (so a targeted assertion failure is not conflated with a sequence-order residue).
+  - A one-line note that PATH / options / alias-bodies / function-bodies get DEDICATED sections BECAUSE their backing params are `*special*`/`*tied*` (excluded by the type-class filter) — so the reader understands why they are not covered by the generic `${(@kv)parameters}` section.
+- **Alternatives:** Leave as-is (rejected — each is a cheap precision win that removes a conflation or a false-green surface).
+- **Impact:** Low-medium — precision/coverage improvements; no mechanism change.
+- **Confidence:** HIGH. Addresses cycle-3 MEDIUMs.
