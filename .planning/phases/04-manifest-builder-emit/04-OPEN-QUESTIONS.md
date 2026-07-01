@@ -1,7 +1,7 @@
 ---
 phase: 04-manifest-builder-emit
-updated: 2026-07-01T14:13:44Z
-open_count: 12
+updated: 2026-07-01T16:00:00Z
+open_count: 18
 ---
 
 # Open Questions — Phase 4 Manifest Builder + Emit
@@ -48,11 +48,11 @@ open_count: 12
 ## OQ-5: Emitted reverse logic — call shared loader helpers vs inline per-op
 
 - **Question:** Should `emit.go` emit calls to a small fixed set of runtime helper functions (`zp_capture_env`/`zp_restore_env`/PATH-rebuild/shadow-restore, defined once by the Phase 5 loader) or inline the full reverse logic into every emitted apply/deactivate block?
-- **Tentative choice (applied):** Emit **calls to a small fixed helper set** (the `zp_*` functions from the Phase 1 reference snippet), so the per-plan emitted surface is minimal and the tricky drift-guard/`${(P)+var}` logic lives in one audited place. The helper definitions themselves are a Phase 4↔5 seam: Phase 4 emits code that calls them; whether Phase 4 also emits the helper definitions (self-contained block) or assumes the Phase 5 loader defines them is finalized in plan-phase.
+- **Tentative choice (applied):** Emit **calls to a small fixed helper set** (the `zp_*` functions from the Phase 1 reference snippet), so the per-plan emitted surface is minimal and the tricky drift-guard/`${(P)+var}` logic lives in one audited place. The helper definitions themselves are a Phase 4↔5 seam: Phase 4 emits code that calls them; whether Phase 4 also emits the helper definitions (self-contained block) or assumes the Phase 5 loader defines them is finalized in plan-phase. **See OQ-18 (pinned to bare calls, Hybrid dropped).**
 - **Alternatives:** (a) Inline every reverse op fully (self-contained emitted block, no runtime dependency — heavier emitted text, logic duplicated per profile); (b) hybrid — emit helpers once per apply block, calls thereafter.
 - **Why uncertain:** The split between "code Phase 4 emits" and "helpers the Phase 5 loader owns" is a seam boundary that firms up when the loader lands. For the Phase 4 property test to run standalone, the test harness must supply the helper definitions (or emit.go must emit a self-contained block) — a plan-phase detail.
 - **Impact:** Medium — affects emitted-code size, the emit↔loader seam contract, and how self-contained the property test's `zsh -f` input is. Reversible: helper-call vs inline is an emit-strategy change, not a data-model change.
-- **Confidence:** MEDIUM-HIGH (helper-calls match the Phase 1 reference snippet and keep the audited logic in one place). Flagged so plan-phase pins the Phase 4↔5 helper-ownership boundary. **See OQ-9** for the self-contained-block question surfaced during research.
+- **Confidence:** MEDIUM-HIGH (helper-calls match the Phase 1 reference snippet and keep the audited logic in one place). Flagged so plan-phase pins the Phase 4↔5 helper-ownership boundary. **See OQ-9 / OQ-18** for the self-contained-block question (now pinned to bare calls).
 
 ## OQ-6: Injection-safe escaping — static-quoted vs dynamic-verbatim split (T-01-06)
 
@@ -70,7 +70,7 @@ open_count: 12
 - **Alternatives:** (a) `name\tbody` single-line (simple, but breaks on any body newline — most function bodies have newlines, so this is likely wrong); (b) base64-encode each body (newline-safe, trivially parseable, but opaque in fixtures/diffs); (c) `print -rN` NUL-delimited records parsed by splitting on NUL.
 - **Why uncertain:** zsh's `${functions[name]}` returns the body with its original newlines/indentation; the encoding must round-trip that byte-for-byte (the shadow-restore acceptance is "byte-identical prior body"). The exact zsh dump construct (`print -r`, `print -rN`, `typeset -f`) and the Go-side split need a POC to confirm no truncation/mangling.
 - **Impact:** Medium — a broken encoding silently corrupts a shadowed function body, failing the byte-identical shadow-restore acceptance (SPEC req 7). Reversible: the encoding is internal to introspect+emit; changing it is localized.
-- **Confidence:** MEDIUM → **RESOLVED-DIRECTION (04-RESEARCH, POC-Z3/Go-RT):** alternative (c), NUL-delimited `print -rN -- name body` records, is VERIFIED to round-trip a body containing `\n`+`\t`+`'`+`$`+`;` byte-for-byte (zsh dump → Go split-on-`\x00` → back into `functions[name]=`). NUL is safe because a zsh string cannot contain NUL. The naive `name\tbody` (alt a) provably breaks (embedded `\n`). Parser must slice the section by header/`##END##` offsets and split the enclosed bytes on NUL (not scan line-by-line, since bodies may contain `#`).
+- **Confidence:** MEDIUM → **RESOLVED-DIRECTION (04-RESEARCH, POC-Z3/Go-RT):** alternative (c), NUL-delimited `print -rN -- name body` records, is VERIFIED to round-trip a body containing `\n`+`\t`+`'`+`$`+`;` byte-for-byte (zsh dump → Go split-on-`\x00` → back into `functions[name]=`). NUL is safe because a zsh string cannot contain NUL. The naive `name\tbody` (alt a) provably breaks (embedded `\n`). Parser must slice the section by header/`##END##` offsets and split the enclosed bytes on NUL (not scan line-by-line, since bodies may contain `#`). **See OQ-17** for the section-boundary tightening (NUL-preceded sentinel, not a bare `\n##` scan).
 
 ## OQ-8: The Phase 1 Loader Reference Snippet's shadow-restore guards are incorrect (evidence-backed correction)
 
@@ -86,10 +86,10 @@ open_count: 12
 ## OQ-9: Should `emit.go` emit a self-contained helper block?
 
 - **Question:** OQ-5 defaults to emitting *calls* to `zp_*` helpers the Phase 5 loader owns. But the Phase 4 property test (D-16) must run under `zsh -f` *without* the Phase 5 loader. Should `emit.go` optionally emit a self-contained block that also *defines* the `zp_*` helpers (Hybrid), so emitted code is testable and usable standalone?
-- **Tentative choice (applied):** For Phase 4, the property-test harness supplies the `zp_*` helper definitions inline (verified working self-contained in POC-Z8d), so `emit.go` can emit bare calls per the OQ-5 default. Recommend the planner ALSO consider a Hybrid mode (emit a helper-definition preamble once per block) as a low-cost hedge that makes emitted code self-contained without waiting for Phase 5 — decide during plan-phase.
+- **Tentative choice (applied):** For Phase 4, the property-test harness supplies the `zp_*` helper definitions inline (verified working self-contained in POC-Z8d), so `emit.go` can emit bare calls per the OQ-5 default. Recommend the planner ALSO consider a Hybrid mode (emit a helper-definition preamble once per block) as a low-cost hedge that makes emitted code self-contained without waiting for Phase 5 — decide during plan-phase. **SUPERSEDED by OQ-18: pinned to bare calls; the Hybrid option is dropped for Phase 4.**
 - **Alternatives:** (a) Bare calls only, harness supplies helpers (current default); (b) Hybrid — emit helper defs + calls; (c) fully inline every op (OQ-5 alt a).
 - **Impact:** Medium — affects whether the emitted string is runnable in isolation and the emit↔loader seam contract. Reversible (emit-strategy, not data-model).
-- **Confidence:** MEDIUM (a seam-boundary question that firms up when the Phase 5 loader lands; both shapes are proven runnable).
+- **Confidence:** MEDIUM (a seam-boundary question that firms up when the Phase 5 loader lands; both shapes are proven runnable). **See OQ-18 (pinned).**
 
 ## OQ-10: Runtime undo-slot naming must produce valid zsh identifiers
 
@@ -97,7 +97,7 @@ open_count: 12
 - **Tentative choice (applied):** `emit.go` sanitizes the `profile` + target name into a valid identifier before composing the slot name — e.g. replace every non-`[A-Za-z0-9_]` byte with `_`, or (to avoid collisions between `a/b` and `a_b`) append a short hash of the raw name. Env var names are already valid identifiers by construction (they come from `KindAssignment` names), so `__ZP_ORIG_<var>` is safe; the collision risk is in the profile-name and alias-name segments.
 - **Alternatives:** (a) Store priors in a single associative array keyed by the raw (arbitrary) name — `typeset -gA ZP_PRIOR_ALIAS; ZP_PRIOR_ALIAS[$rawname]=...` — which sidesteps identifier rules entirely and is arguably cleaner; (b) reject/skip profiles with unsanitizable names (too restrictive).
 - **Impact:** Medium — an unsanitized name aborts apply with a `typeset` error. Alternative (a), an assoc-array keyed by raw name, is likely the more robust design and worth the planner's consideration over slot-name-per-global.
-- **Confidence:** MEDIUM (the hazard is real; the assoc-array alternative may be strictly better than name-sanitization — a plan-phase design call).
+- **Confidence:** MEDIUM (the hazard is real; the assoc-array alternative may be strictly better than name-sanitization — a plan-phase design call). **Cycle-1 review MEDIUM:** the injection corpus (adversarial names) must be run through the slot-name derivation path, not only through values — covered in Plan 04-02 Task 1 behavior + Task 2 slot-name sub-check.
 
 ## OQ-11: OQ-4 resolution direction — two distinct types vs uniform map
 
@@ -120,3 +120,51 @@ open_count: 12
 - **Why uncertain:** Not uncertain — each correction is POC-proven. Logged for the returning user's audit trail.
 - **Impact:** HIGH if NOT corrected (shadow restore silently no-ops; function-body "quoting" is a false safety claim; multi-line bodies truncate). Corrected → neutralized.
 - **Confidence:** HIGH (POC-backed). Recorded as resolved, not open.
+
+## OQ-13: Multi-managed-profile PATH co-ownership is OUT OF SCOPE for single-active v2.0 (from REVIEWS CH-1)
+
+- **Question:** Cycle-1 review CH-1 (C11 refuted) flagged that `RebuildListFromBase{Additions}` carries only THIS profile's additions and `Diff(A,nil)` has no representation of OTHER active profiles, so two *managed* profiles co-owning a PATH entry under `typeset -U path` cannot be resolved by rebuild-from-base alone. Does Phase 4 need a reference-count / set-based ownership model?
+- **Tentative choice (applied):** NO — v2.0 is **single-active-profile per terminal** (Phase 3 D-13: `ZSHPRO_PROFILE` names exactly one active profile). Two simultaneously-active *managed* profiles is not a runtime state, so the C11 two-managed-owner scenario does not arise at runtime. SPEC Req 6 criterion 3's `/usr/local/bin` example is **BASE-owned** (it lives in `ZP_BASE_PATH`); rebuild-from-base inherently preserves base entries because deactivate restores `PATH="$ZP_BASE_PATH"` which already contains it. The property test's ownership sub-check is therefore rescoped to **base-ownership**: base owns `/usr/local/bin`, the profile also adds it, deactivate preserves it via rebuild-from-base — NOT two active managed profiles. Multi-managed-profile co-ownership (reference-count / active-set model) is **deferred to a later share/loader concern** (SHARE-01 / Phase 5+, where the active set actually lives).
+- **Alternatives:** (a) Build a reference-count ownership model now (rejected — no runtime state has two active managed profiles in v2.0; premature); (b) leave the ambiguity unaddressed (rejected — reintroduces C11 confusion).
+- **Impact:** Medium — correctly scopes SW-02 Req 6 to the single-active model. A future multi-profile/share milestone must add the active-set ownership model before allowing concurrent managed profiles.
+- **Confidence:** HIGH (dictated by Phase 3 D-13 single-active constraint). Addresses review concern CH-1.
+
+## OQ-14: Deactivate cleanup of per-switch runtime undo globals vs snapshot filter (from REVIEWS CH-3)
+
+- **Question:** Emitted apply creates per-switch runtime undo globals (`__ZP_ORIG_*`, `ZP_<profile>_PRIOR_*`, sentinels). A full-env (CH-2) property-test snapshot taken after apply→deactivate would see them as newly SET → spurious residue fail, unless deactivate cleans them up OR the snapshot filters the namespace. Which?
+- **Tentative choice (applied):** **Deactivate UNSETS its own per-switch undo slots** (`__ZP_ORIG_*`, `ZP_<profile>_PRIOR_*`, sentinels) as part of the reverse — the cleaner design (no silent filter hiding real residue). `ZP_BASE_PATH` is **session-persistent** by design (captured once at first activate, reused across switches per OQ-3) and stays — the property test either sets `ZP_BASE_PATH` BEFORE the baseline snapshot (so it is present in both baseline and post snapshots and nets to zero diff) OR excludes it via a single audited, documented `ZP_BASE_PATH`-only filter. The per-switch `ZP_`/`__ZP_` slots are unset by deactivate and so never appear as residue.
+- **Alternatives:** (a) Blanket-filter the whole `ZP_`/`__ZP_` namespace from the snapshot (rejected — a silent filter could hide a genuinely-leaked per-switch slot, defeating the residue test); (b) leave the slots set and filter (rejected for the same reason).
+- **Impact:** Medium — wrong choice either spuriously fails the residue test or silently hides residue. Chosen: deactivate cleans its per-switch slots; only `ZP_BASE_PATH` (session-persistent, single documented exception) is present-in-both / audited-filter.
+- **Confidence:** MEDIUM-HIGH. Addresses review concern CH-3.
+
+## OQ-15: SchemaV1 forward-compat gate — real runtime check vs bare const (from REVIEWS CH-8)
+
+- **Question:** Cycle-1 CH-8: the threat register dispositions T-04-01 "mitigate" on the basis that `SchemaV1` is "a gate checked before reverse logic," but a bare `const SchemaV1 = "v1"` with only `grep 'const SchemaV1'` as acceptance enforces nothing. Add a real check or re-disposition the threat?
+- **Tentative choice (applied):** **Add a REAL check.** The reverse-logic entry points `Diff` (and by extension the `Emit` path it feeds) refuse to operate on a manifest whose `Schema != model.SchemaV1` — `Diff` returns an error (or a sentinel) when either the `active` or `target` manifest carries an unknown schema, with a dedicated test asserting a schema-mismatch manifest is rejected. `Build` stamps `SchemaV1`; `Diff` validates it before generating any reverse op. T-04-01 is re-worded to reference the real check, not the const.
+- **Alternatives:** (a) Re-disposition T-04-01 to deferred/Phase-5 and stop calling a bare const a mitigation (rejected — the check is cheap and closes the threat now); (b) check in `Build` only (weaker — the reverse-logic entry point is `Diff`, so the guard belongs there).
+- **Impact:** Medium (security) — a future-versioned manifest is detectably rejected rather than silently mis-reversed.
+- **Confidence:** HIGH. Addresses review concern CH-8.
+
+## OQ-16: Builder PATH-split scope — full parse vs router-admitted shapes (from REVIEWS MEDIUM)
+
+- **Question:** The builder splits a `CatPath` value like `$HOME/bin:$PATH` into additions vs the base marker (D-07). Cycle-1 MEDIUM: this Go-side string parse is unvalidated for edge cases (mid-list base, no base marker, `${PATH}` brace form). Full parse or narrow scope?
+- **Tentative choice (applied):** **Narrow the builder to the router-admitted prepend/append shapes** — the builder handles exactly the shapes `core/ir/route.go` already admits as managed PATH assignments (a base self-reference `$PATH`/`$path`/`${PATH}`/`$FPATH`/`$fpath`/`${FPATH}` at the head or tail, colon-joined additions on the other side). Any `CatPath` value whose split is ambiguous (no base marker, base marker mid-list, or an unrecognized brace form) is NOT admitted as a `ListDelta` — it produces no part (routed imperative, honoring ING-02 precision-over-recall). The split must recognize both `$PATH` and `${PATH}` (and the lowercase/`fpath` forms). This is an UNVERIFIED claim (see EVIDENCE C26) — claim-validation pass 2 must prove the narrowed split against the mid-list-base, no-base-marker, and `${PATH}`-brace fixtures before execution.
+- **Alternatives:** (a) Full general PATH-expression parser now (rejected — over-scoped, unvalidated, risks misclassification residue); (b) admit everything and hope (rejected — a bad split is a zero-residue violation).
+- **Impact:** Medium — a mis-split bakes the wrong segment into `Additions`, breaking rebuild-from-base ownership. Narrowing + precision-over-recall is the safe default.
+- **Confidence:** MEDIUM (pending pass-2 validation of the narrowed split). Addresses review MEDIUM (builder PATH split).
+
+## OQ-17: NUL body-parser section boundary — offset/record-count vs `\n##` scan (from REVIEWS MEDIUM)
+
+- **Question:** Cycle-1 MEDIUM: the body-parser slices "up to the next `\n##` marker," but a function body line legally starting with `##` (a comment) could be mistaken for a section header, corrupting the parse.
+- **Tentative choice (applied):** Bound the body sections by a **NUL-preceded sentinel** rather than a bare `\n##` scan: the section is a run of `\x00`-framed `name\x00body\x00` records terminated by a distinguished end-of-section marker that is itself NUL-preceded (so a body line starting `##` — which is not NUL-preceded at a record boundary — cannot be mistaken for it), OR bound the section by a record-count/byte-offset. The parser locates the `##ALIASBODIES##`/`##FUNCTIONBODIES##` headers, then consumes NUL-framed records until the NUL-preceded section terminator — it never line-scans the body bytes for `##`.
+- **Alternatives:** (a) Keep the `\n##`-scan (rejected — a `##`-prefixed body line fools it, C23-class corruption); (b) length-prefix each record (also acceptable; either offset/count or NUL-preceded sentinel satisfies the requirement).
+- **Impact:** Medium — a fooled boundary corrupts every following section, silently dropping a shadowed body (fails byte-identical shadow restore).
+- **Confidence:** MEDIUM-HIGH. Addresses review MEDIUM (NUL body-parser boundary).
+
+## OQ-18: OQ-9 pinned — emit bare `zp_*` calls (drop Hybrid-preamble optionality) (from REVIEWS MEDIUM/simplicity)
+
+- **Question:** OQ-9 left the Hybrid self-contained-helper-preamble as an optional low-cost hedge alongside the OQ-5 default (bare `zp_*` calls). Cycle-1 simplicity MEDIUM: the optionality is heavier than SW-01/SW-02 require.
+- **Tentative choice (applied):** **PIN to bare `zp_*` calls.** `emit.go` emits bare calls to the `zp_*` helper set; the Phase 4 property test supplies the helper definitions inline (verified self-contained in POC-Z8d). Drop the Hybrid-preamble option for Phase 4 to reduce the emitted surface. The emit↔loader helper-ownership boundary firms up when the Phase 5 loader lands. Supersedes OQ-9's optionality.
+- **Alternatives:** (a) Keep Hybrid as an option (rejected — extra surface for no SW-01/SW-02 benefit); (b) fully inline every op (rejected — logic duplication per profile).
+- **Impact:** Low — emit-strategy only, reversible.
+- **Confidence:** MEDIUM-HIGH. Addresses review MEDIUM (OQ-9 pinned).
