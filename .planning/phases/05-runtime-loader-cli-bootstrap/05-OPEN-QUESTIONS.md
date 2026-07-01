@@ -1,7 +1,7 @@
 ---
 phase: 05-runtime-loader-cli-bootstrap
 updated: 2026-07-02T00:00:00Z
-open_count: 12
+open_count: 14
 ---
 
 # Open Questions — Phase 5 Runtime Loader + CLI + Bootstrap
@@ -121,3 +121,25 @@ open_count: 12
 - **Why uncertain:** Whether CI has `hyperfine` installed, and the exact fixture wiring, are environment/plan details; the measurement is a backstop, not the load-bearing guard.
 - **Impact:** Low — the structural grep is the real gate; the ms budget is a sanity backstop with a working proxy when `hyperfine` is unavailable.
 - **Confidence:** MEDIUM-HIGH.
+
+---
+
+> The following were logged by claim-validation pass 1 (2026-07-02, `05-EVIDENCE.md` — C16 REFUTED, C15 UNVERIFIABLE). Each records a plan-time/CI gate the executor must honor; corrections already applied to 05-SPEC/05-CONTEXT/05-RESEARCH.
+
+## OQ-05-13: `zp_*` helper-contract reconciliation gate — diff the loader against `emit.go`'s ACTUAL call surface once Phase 4 lands
+
+- **Question:** Claim-validation pass 1 REFUTED C16: the Phase 5 docs asserted the loader "defines EXACTLY the helper set Phase 4's `emit.go` emits bare calls to" (enumerating `zp_capture_env`/`zp_restore_env`/`zp_rebuild_path`/shadow-capture/shadow-restore). But (a) `emit.go`/`core/activate` do NOT exist on disk yet — no bare-call surface to match; (b) Phase 4 leaves emit-vs-inline as Claude's discretion (Phase 4 OQ-5/OQ-18), NOT locked; (c) Phase 4 commits by NAME only to `zp_capture_env`/`zp_restore_env` — shadows (`RestoreShadowedAlias/Func`), PATH-rebuild (`PATH="$ZP_BASE_PATH"; path=(<additions> $path)`), and options (`SetOption`/`RestoreOption` with inline `[[ -o opt ]]`→`was_on`) are documented INLINE; `zp_rebuild_path`/`zp_shadow_*` appear NOWHERE in Phase 4. What exactly does the loader guarantee, and how is the surface finalized?
+- **Tentative choice (applied):** The docs were reworded (05-SPEC Req 1 + Background + in-scope + Constraints; 05-CONTEXT deliverable 1 + in-scope + D-01 + the PATH-rebuild bullet + the shadow bullet; 05-RESEARCH Primary Recommendation + D-01 + sub-area (a) gate box/table) from a settled "exact match" FACT into a **plan-time reconciliation gate**. The loader DEFINITIVELY provides the two Phase-4-committed named env helpers (`zp_capture_env`, `zp_restore_env`) AND the per-terminal runtime STATE the Phase-4 INLINE reverse ops read/write (`ZP_BASE_PATH`, `ZP_UNSET_SENTINEL`, `__ZP_ORIG_*`, `ZP_<profile>_PRIOR_*`, per-option `was_on`). It does NOT assume `zp_rebuild_path`/`zp_shadow_*` are in the contract. **The plan's FIRST task must diff the loader's provided helpers + state against `emit.go`'s REAL emitted call/state surface once Phase 4 lands and adjust** (subsumes OQ-05-05's diff step; localized — both in `core/shell/zsh`).
+- **Alternatives:** (a) keep the "exact set" wording (rejected — overstates a not-yet-locked, largely-inline Phase 4 contract; refuted by Phase 4's own D-12/OQ-5 evidence); (b) invent the `zp_rebuild_path`/`zp_shadow_*` helpers and force Phase 4 to call them (rejected — that would re-open Phase 4's emit-vs-inline discretion; Phase 5 must consume whatever `emit.go` emits).
+- **Why uncertain:** `emit.go` does not exist yet; the exact bare-call/inline split is byte-confirmable only when both land. Every underlying zsh SEMANTIC (C4–C8) is independently PROVEN; only the contract *shape* was overstated.
+- **Impact:** Medium — a mismatch between the loader's provided surface and `emit.go`'s calls breaks activation until reconciled. Reversible (localized signature/state edit in one package); the Phase 4 zero-residue test + Phase 5 live-terminal wiring test are the backstop.
+- **Confidence:** HIGH on the runtime-state contract + the two named env helpers; the "diff against real `emit.go`" step is a plan-phase gate, not a decision.
+
+## OQ-05-14: `hyperfine` perf budget verified on CI, not locally (C15 UNVERIFIABLE here)
+
+- **Question:** Claim-validation pass 1 marked C15 UNVERIFIABLE: the < 10 ms added-startup budget is stated as gated by `hyperfine 'zsh -i -c exit'`, but `hyperfine` is ABSENT on the local box (a dev/CI tool, not a Go dep), so the stated gate could not be run. Is the budget confirmed?
+- **Tentative choice (applied):** The < 10 ms budget STANDS as the SPEC criterion; only its verification is deferred. Notes added at 05-SPEC Req 7 Acceptance and 05-CONTEXT D-17 record that the `hyperfine` millisecond budget is a **CI-machine gate** (install `hyperfine` via `brew`). The **load-bearing guarantee is the C14 zero-subprocess structural grep** (PROVEN); an in-process `EPOCHREALTIME` proxy (~0.01 ms added, ~900× under budget) is interim evidence pending the real `hyperfine` run in CI.
+- **Alternatives:** (a) drop the ms budget and rely only on the structural grep (rejected — loses the empirical backstop); (b) treat the proxy as the gate (rejected — proxy is not interactive `zsh -i -c exit` startup, so it is evidence not a gate).
+- **Why uncertain:** The absolute ms number depends on the measurement machine and needs the real tool; the structural zero-subprocess check is the true guarantee, the ms budget a sanity backstop.
+- **Impact:** Low — the structural grep is the real gate; the ms budget is a backstop with a working proxy where `hyperfine` is unavailable.
+- **Confidence:** HIGH that the budget is comfortably met (proxy ~900× under); the real `hyperfine` confirmation is a CI-machine step.

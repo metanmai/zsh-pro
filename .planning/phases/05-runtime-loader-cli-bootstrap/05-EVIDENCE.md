@@ -1,6 +1,6 @@
 ---
 phase: 05-runtime-loader-cli-bootstrap
-updated: 2026-07-01T20:02:52Z
+updated: 2026-07-02T00:00:00Z
 proven: 14
 static_validated: 0
 refuted: 1
@@ -108,6 +108,17 @@ Only REFUTED and UNVERIFIABLE claims are detailed below (PROVEN claims are locke
   `zp_rebuild_path`/`zp_shadow_*` helper is NOT guaranteed to be in the contract." Remove or conditionalize
   the `zp_rebuild_path` name in 05-CONTEXT line 32 (Phase 4 never commits to it).
 
+- **Action taken (applied 2026-07-02):** Corrected in **05-SPEC** (Background para, Req 1 Target+Acceptance, in-scope
+  helper item, Constraints `zp_*` helper contract bullet), **05-CONTEXT** (domain deliverable 1, in-scope line, D-01
+  header+intro, the PATH-rebuild bullet with the `zp_rebuild_path` name negated, and the shadow-capture/restore bullet),
+  and **05-RESEARCH** (Primary Recommendation gate line, locked-decisions D-01, sub-area (a) plan-time-gate box +
+  helper-table intro). The helper-contract claim is now a **plan-time reconciliation gate**, NOT a settled "defines
+  exactly the set emit.go calls" fact: the loader definitively provides the two Phase-4-committed named env helpers
+  (`zp_capture_env`/`zp_restore_env`) + the runtime STATE the Phase-4 INLINE reverse ops read/write (`ZP_BASE_PATH`,
+  `ZP_UNSET_SENTINEL`, `__ZP_ORIG_*`, `ZP_<profile>_PRIOR_*`, per-option `was_on`), and the plan's first task diffs that
+  against `emit.go`'s ACTUAL bare-call surface once Phase 4 lands (OQ-05-13). `zp_rebuild_path`/`zp_shadow_*` are
+  explicitly NOT assumed to be in the contract. No production `.go`/`.zsh` file was edited (planning docs only).
+
 - **Note:** This is a DOC-CONSISTENCY refutation. Every underlying zsh SEMANTIC the helpers rely on is
   independently PROVEN here (C4/C5/C6/C7/C8) and in Phase 4's ledger (C9/C21/C24/C27/C32). The loader's
   *runtime state contract* (`ZP_BASE_PATH` once-captured, `__ZP_ORIG_*`/`ZP_*_PRIOR_*` slots, sanitized slot
@@ -129,11 +140,13 @@ Only REFUTED and UNVERIFIABLE claims are detailed below (PROVEN claims are locke
   source-iterations: baseline (source empty file) 0.054 ms/iter; source the pure-function-def loader
   0.064 ms/iter → **~0.01 ms added per shell-start**, ~900× under the 10 ms budget. Pure definitions are
   effectively free, consistent with 05-RESEARCH E14's ~0.03 ms proxy.
-- **Action:** Keep the < 10 ms budget as the SPEC criterion but record that the `hyperfine` gate is a
-  CI-machine concern (install `hyperfine` via `brew`); the load-bearing guarantee is the C14 zero-subprocess
-  structural grep, with the EPOCHREALTIME proxy as an interim backstop. No doc correction needed — 05-RESEARCH
-  already documents the tool as absent with a proxy fallback; this ledger records the budget as UNVERIFIABLE
-  here so planning does not treat the ms number as confirmed on this machine.
+- **Action taken (applied 2026-07-02, deferred to CI):** Kept the < 10 ms budget as the SPEC criterion; added a
+  note at the perf-budget statement in **05-SPEC Req 7 Acceptance** and **05-CONTEXT D-17** that the `hyperfine`
+  millisecond budget is a **CI-machine gate** (install `hyperfine` via `brew`; absent locally → UNVERIFIABLE here),
+  that the load-bearing guarantee is the C14 zero-subprocess structural grep, and that the in-process `EPOCHREALTIME`
+  proxy (~0.01 ms added, ~900× under budget) is interim evidence pending the real `hyperfine` run in CI (OQ-05-14).
+  No claim reworded — the budget stands; only its verification is deferred. This ledger records the budget as
+  UNVERIFIABLE here so planning does not treat the ms number as confirmed on this machine.
 
 ## Status meanings
 - **PROVEN** — a POC/smoke test was run and confirmed the claim. Locked.
@@ -143,9 +156,9 @@ Only REFUTED and UNVERIFIABLE claims are detailed below (PROVEN claims are locke
 - **UNVERIFIABLE** — could not be checked here (needs an absent tool/hardware); assumed-but-flagged.
 - **UNVERIFIED** — extracted but not yet validated. NONE remaining.
 
-## RETURN — corrections the orchestrator must apply before planning
+## RETURN — corrections (APPLIED 2026-07-02)
 
-**1 REFUTED claim requires a doc correction (C16). 1 UNVERIFIABLE (C15) is a CI-tool gap, no doc edit.**
+**1 REFUTED claim (C16) → corrected in SPEC/CONTEXT/RESEARCH as a reconciliation gate (OQ-05-13 logged). 1 UNVERIFIABLE (C15) → CI-deferred note added to SPEC/CONTEXT (OQ-05-14 logged). No production file edited.**
 
 - **C16 (REFUTED) — owning docs: 05-SPEC Req 1, 05-CONTEXT D-01 + line 32, 05-RESEARCH sub-area (a) helper
   table.** The claim "the loader defines EXACTLY the helper set Phase 4's `emit.go` emits **bare calls** to
