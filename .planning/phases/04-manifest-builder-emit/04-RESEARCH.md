@@ -86,7 +86,7 @@ Phase 4 has **four deliverables** (a shell-agnostic `model.Manifest` + parts; a 
 
 1. **Injection (T-01-06) — HIGH severity, but SOLVED by a one-line escape.** Single-quote wrapping with the zsh `'\''` idiom makes any static value an inert literal that survives even a double `eval` layer (`loader eval "$block"`) across scalar/alias-body/function-body contexts. Verified against `'`, `;`, `$(...)`, backtick, newline, `'\''`-chains, and the kitchen-sink combo (POC-Inj, POC-Eval). The residual risk is a *misclassified* dynamic value emitted verbatim (OQ-6), not the escape function itself.
 
-2. **The Phase 1 Loader Reference Snippet has TWO restore-guard bugs the emitter must NOT reproduce (new finding → OQ-8).** (i) It restores shadowed aliases/functions with `[[ -n "$SLOT" ]]`, which silently drops a legitimately-empty prior body (`alias x=''`); the correct test is `${+name}` (set-test), the same unset-vs-empty distinction the env path already respects. (ii) The snippet writes the slot name *literally inside `${(P)+...}`*, but `(P)` indirects through the *value* of that name — so a literal-named slot must use `${+name}` (no `(P)`), or a `local slot=NAME; ${(P)+slot}`. My first end-to-end POC reproduced the snippet faithfully and it leaked residue; the corrected form is byte-identical (POC-Z8b/8c/8d/8e).
+2. **The Phase 1 Loader Reference Snippet has TWO restore-guard bugs the emitter must NOT reproduce (new finding → OQ-8).** (i) It restores shadowed aliases/functions with `[[ -n "$SLOT" ]]`, which silently drops a legitimately-empty prior body (`alias x=''`); the correct test is `${+name}` (set-test), the same unset-vs-empty distinction the env path already respects. (ii) A `${(P)+literalName}` guard writes the slot name *literally inside `${(P)+...}`*, but `(P)` indirects through the *value* of that name — so a literal-named slot must use `${+name}` (no `(P)`), or a `local slot=NAME; ${(P)+slot}`. The corrected `${+name}` full cycle is byte-identical (POC-Z8c/8d). **Failure DIRECTION (C4 refinement):** a `${(P)+literalName}` guard fails to restore the shadow, leaving it UNSET (the prior is DROPPED, not left behind); the `-n` scalar guard drops an empty-body prior only. In both failures the residue is an ABSENCE (a dropped prior), NOT a surviving/residual alias — `unalias` runs first, so the shadow body never persists (POC-Z8b/8e).
 
 3. **PATH must be rebuilt from a captured base every apply, never appended.** Rebuild-from-base holds `$#path` stable at 3 across 5 cycles; blind prepend grows it to 7 (POC-Z6). This is exactly the mutation the property test must detect.
 
@@ -101,8 +101,9 @@ Phase 4 has **four deliverables** (a shell-agnostic `model.Manifest` + parts; a 
 | Reversible record type (`Manifest`) | `core/model` (agnostic domain) | — | Domain type, stdlib-only, no shell knowledge (D-01/D-05) |
 | `Profile→Manifest` build + classify | `core/activate` (agnostic logic) | `core/model` | Reuses `route.go` shape; produces a value, no shell text (D-06) |
 | Active-vs-target diff → `Plan` | `core/activate` | — | Pure value transformation; deactivate-then-activate ordering (D-08) |
-| `Plan → zsh apply/deactivate code` | `core/shell/zsh/emit.go` | `shell.Emitter` seam | The SOLE reverse-syntax codegen site (D-11) |
-| Injection-safe quoting | `core/shell/zsh/emit.go` | — | Escaping is a zsh-syntax concern; lives with codegen (D-13) |
+| `Plan → zsh apply/deactivate code` | `core/shell/zsh/emit.go` (NEW file) | `shell.Emitter` seam | The SOLE reverse-syntax codegen site (D-11). **Distinct from the existing `regen.go`** — emit.go is ACTIVATION codegen (apply/deactivate); `regen.go` is ingest-regeneration (forward). They share no code (C7) |
+| Static-vs-dynamic emission split (Dynamic-keyed) | `core/shell/zsh/emit.go` (NEW behavior) | — | **NEW behavior emit.go must implement** — `regen.go` emits `Value` VERBATIM in every branch and never reads `Dynamic` (verified, C7). emit.go must add the `Dynamic`-keyed static-zquote / dynamic-verbatim branch |
+| Injection-safe quoting (scalar/alias VALUE contexts) | `core/shell/zsh/emit.go` | — | Escaping is a zsh-syntax concern; lives with codegen (D-13). Applies to scalar/alias values, NOT function bodies (C6) |
 | Live-prior capture + drift-guarded restore | Emitted runtime code (Phase 5 executes) | `emit.go` shapes it | The manifest records intent; the loader is the actor (D-12) |
 | Alias/function body introspection | `core/shell/zsh/introspect.go` | `core/model.IdentitySet` (additive) | zsh-specific dump; agnostic companion fields (D-14/D-15) |
 | Zero-residue snapshot instrument | `core/shell/zsh` (reuse `introspectScript`) | property test | The snapshot tool already exists; extend it (D-16) |
@@ -149,7 +150,7 @@ type OptionSet struct {
 - `Original == nil` → key omitted → "was unset" → deactivate `unset`. **Verified:** marshals to `{"name":"WORK_TOKEN","applied":"abc"}` (no `original` key).
 - `Original == &""` → `"original":""` → "was empty" → deactivate restore to empty. **Verified:** marshals to `{"name":"X","applied":"y","original":""}`.
 - `Original == &"vim"` → `"original":"vim"` → "was set to vim". **Verified.**
-- All three round-trip losslessly through `json.Unmarshal` (POC-J1). A plain `string` cannot distinguish nil from `""` — the `*string` is mandatory.
+- All three round-trip losslessly through `json.Unmarshal` (POC-J1). A plain `string` cannot distinguish nil from `""`. The `*string`+`omitempty` is the **simplest/recommended shape** for the tri-state — not the only one: `json.RawMessage`+`omitempty` and a `*struct{V string}` / custom `json.Marshaler` with a present-flag also distinguish all three (compiled counterexample, C15). `*string` is the idiomatic minimal choice; the tri-state behavior is what's load-bearing.
 
 ### OQ-4 forks — `NameSet.Added` map-vs-array (VERIFIED both ways)
 
@@ -189,6 +190,10 @@ Consume only `e.EffectiveManaged() == true`. Classify each entry by the **same s
 
 **PATH segmentation (D-07):** a `CatPath` assignment like `export PATH=$HOME/bin:$PATH` is *dynamic* (`Entry.Dynamic==true`, verified it carries `$HOME`/`$PATH`). The additions the profile *introduces* are the literal segments; `$PATH`/`$path` self-references are the base marker. The manifest carries the addition segment(s) as `Additions`; the emitted code rebuilds `path=(<additions> $path)` from the runtime `ZP_BASE_PATH`. Deletions surface only if a delta model exposes them (empty in both Phase 1 fixtures; the slot is validated present). **Landmine:** a dynamic PATH segment (`$HOME/bin`) is an *addition that must stay verbatim* (dynamic split, §4) — do not hard-quote it or `$HOME` freezes to a literal.
 
+**PATH ownership & element removal (C10/C11 — CORRECTED):** Two mechanisms the emitter must get right:
+- **Element deletion must be LITERAL-equality, not `${path:#pattern}`.** `${path:#/opt/x}` is a GLOB/pattern subtraction (C10): a PATH element (or the target) containing `? * [ ]` over-matches and deletes sibling entries (`${path:#/opt/tool?}` deleted `/opt/toolX`/`/opt/toolY`). Remove a specific element by rebuilding the array with a string-equality compare (`for e in $path; do [[ $e == $target ]] || newpath+=($e); done`, or otherwise disable pattern semantics), NOT `${path:#target}`.
+- **Ownership-aware restore needs a dedup-correct model.** With `typeset -U path` active (the project's own PATH-no-growth backstop), co-owned entries collapse to ONE physical entry — so a naive "remove one occurrence per addition" strips a shared entry another active profile/base still owns (C11: deactivating A removes the sole `/usr/local/bin` while B is active). Ownership-aware restore requires a reference-count or set-based ownership model (remove an entry only when NO other active profile/base owns it), or the rebuild-from-base + re-apply-other-actives approach — never per-addition string subtraction.
+
 ### `Plan` value type + op vocabulary (D-08)
 
 Recommended internal shape — a **tagged-union of op structs** in a single ordered slice (cleaner than an enum+payload for exhaustive `switch` in `emit.go`):
@@ -220,8 +225,14 @@ Note the `Dynamic bool` carried on `SetScalar`/`AddAlias` — this is what `emit
 
 **Diff subtlety for the panel:** a naive diff would deactivate *all* of A then activate *all* of B, re-touching names both profiles share. That is correct and safe for zero-residue (deactivate reverses to base, activate re-applies), and it is what Phase 1 validated (`apply_A; deact_A; apply_B; deact_B`). An "optimized" diff that skips shared names would be a **correctness hazard** (it would leave A's value where B's differs). Recommend the naive full-deactivate-then-full-activate; do NOT optimize.
 
-### Token-free acceptance (D-08/D-11)
-A grep test asserts `core/activate` contains no `unalias`/`unset`/`setopt`/`export`/`alias ` string literal. The op *type names* (`Unalias`, `RestoreOption`) are Go identifiers, not zsh tokens, and the grep should target zsh *syntax* (with trailing space / `-f` etc.), not the identifiers — the planner must write the grep to match `"unalias "`/`"unset -f"`/`"setopt "` string literals, not the `Unalias` type name, to avoid a false positive.
+### Token-free acceptance (D-08/D-11) — PRECISE CHECK (C22 refinement)
+A grep test asserts `core/activate` contains no reverse-op zsh syntax. The check must be **precise**, not a naive case-insensitive grep, because (a) the op *type names* (`Unalias`, `RestoreOption`, `SetOption`) are Go identifiers that a naive substring match false-hits, and (b) `alias`/`export`/`setopt`/`unsetopt` are FORWARD tokens that `regen.go` legitimately emits today, so any tree-wide gate for them false-positives on `regen.go`. Define the check as:
+- **case-sensitive** (`Unalias` ≠ `unalias`),
+- **word-boundary anchored** (`\bunalias\b`, `\bunset -f`, `\bunsetopt\b`, PATH-array-rebuild pattern),
+- **scoped to genuinely reverse tokens** (`unalias`, `unset -f`, `unsetopt`, PATH-array rebuild) — NOT the forward tokens `alias`/`export`/`setopt` which regen.go owns,
+- **excluding** Go identifier type names (`Unalias`, `SetOption`, …) and comments.
+
+The planner writes the grep against zsh *syntax* literals under those constraints, so it does not self-trigger on the Go op-type names, on comments, or on `regen.go`'s forward emission.
 
 ---
 
@@ -258,15 +269,23 @@ func zquote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) +
 | `a'\''b` (an escaped-sq chain) | literal |
 | `'; touch $CANARY; $(...) \`...\` \n rm -rf /tmp/x` (kitchen sink) | literal |
 
-Crucially, this holds **under the real threat model** — the loader does `eval "$emitted_block"`, a *double* layer — for all three value contexts: scalar `export`, `alias name=<body>`, and `functions[name]=<body>` shadow-restore (POC-Eval). The escape is applied once in the emitted source; the `eval` re-parse still sees an inert single-quoted literal.
+Crucially, this holds **under the real threat model** — the loader does `eval "$emitted_block"`, a *double* layer — for the **scalar `export`** and **`alias name=<body>`** value contexts (POC-Eval, C5). The escape is applied once in the emitted source; the `eval` re-parse still sees an inert single-quoted literal.
 
-### The static-vs-dynamic split — VERIFIED tension (D-13, OQ-6)
+**IT DOES NOT apply to `functions[name]=<body>` shadow-restore (C6 — CORRECTED).** A zsh function BODY is executable code by nature: wrapping it in single quotes only makes the edge bytes literal, and the body still runs when the function is called (`eval "functions[fv]='x; touch CF'"; fv` FIRED the canary); an adversarial single-quote in the body produces "invalid function definition"/"unmatched '". You **cannot** make a function body an inert literal with zquote.
+- **Function restore is verbatim capture-and-reassign:** `functions[name]=$capturedBody`, where the body round-trips as DATA via the NUL-delimited capture (§5, C14). The captured body is trusted live code by construction (it was already a live function in the user's environment — the same trust boundary as their `.zshrc`), not attacker-controlled emitted quoting.
+- The static-quote/dynamic-verbatim split (below, OQ-6) applies to scalar and alias VALUE contexts only — **not** to function-body reassignment.
+
+### The static-vs-dynamic split — VERIFIED behavior, NEW mechanism (D-13, OQ-6, C7)
 
 The same value `$HOME/go`:
-- emitted **verbatim** (dynamic path, `regen.go` discipline) → expands to `/Users/poc/go` (POC-Dyn). Correct for `Entry.Dynamic==true` (EVAL-01 late binding).
-- emitted **zquote'd** (static path) → stays literal `$HOME/go` (POC-Dyn). Correct for static values (injection-safe).
+- emitted **verbatim** → expands to `/Users/poc/go` (POC-Dyn). Correct for `Entry.Dynamic==true` (EVAL-01 late binding).
+- emitted **zquote'd** → stays literal `$HOME/go` (POC-Dyn). Correct for static values (injection-safe).
 
 `emit.go` keys the choice on the `Dynamic bool` carried on the op (§3). **Rule:** `if op.Dynamic { write(value) /* verbatim */ } else { write(zquote(value)) }`.
+
+**This is NEW behavior emit.go must implement — it is NOT provided by existing regen infrastructure (C7 — CORRECTED).** The existing `Provider.Regenerate` (`core/shell/zsh/regen.go`, delegated from `core/ir/regen.go`) emits the captured `Value` **VERBATIM in every branch** and never reads any `Dynamic` bool — two `model.Entry` values with identical `Value="$HOME/go"` but opposite `Dynamic` produce byte-identical output (verified). In the ingest round-trip, the static case stays literal only because the surrounding single-quotes were captured as part of `Value` (verbatim source-span capture in the parser), NOT because emission zquotes on `Dynamic`. `regen.go`'s own doc comment says it emits verbatim and diverges from the `%q` used in test-only `render.go`. So the emit.go static-literal-vs-dynamic-verbatim split is genuinely new codegen; do not assume the existing regen path already keys emission on `Dynamic`.
+
+**Precondition (still true):** the split is portable only if the value reaching emit.go is the UNEXPANDED literal `$HOME/go` (dollar preserved from the AST). If `$HOME` was eagerly expanded upstream, both branches collapse to the machine-specific path and portability breaks. The Dynamic bool is necessary but not sufficient — the pipeline must carry the raw unexpanded token (Pitfall 6 / "never freeze dynamic values").
 
 **Residual risk (OQ-6, HIGH severity, trust-bounded):** a value *classified* dynamic but authored maliciously (`export X=$(rm -rf ~)`) WILL execute at apply — but that is the profile owner's own config, the same trust boundary as their `.zshrc` (EVAL-01). The real hazard is a **misclassification** (a value that should be static gets `Dynamic==true` and is emitted verbatim). Recommend the planner add a property/unit test asserting that a *static* value with shell metacharacters is always quoted, independent of the `Dynamic` flag path. A future shared-profile milestone (SHARE-01) needs its own trust gate — out of scope here.
 
@@ -290,9 +309,9 @@ The same value `$HOME/go`:
 
 ### Body format facts — VERIFIED
 
-- `${functions[name]}` returns the body **WITHOUT** the `name() {` wrapper, **WITH** a leading tab per line, and no trailing newline in the value itself (POC-Z1a/1c). A single-line `ff() { echo hi }` yields exactly `\techo hi`.
+- `${functions[name]}` returns the body **WITHOUT** the `name() {` wrapper and with **no trailing newline** in the value itself (POC-Z1a/1c). A single-line `ff() { echo hi }` yields exactly `\techo hi`. Body lines are normally tab-indented, but **a leading tab is NOT a universal per-line invariant** (C12 refinement): heredoc content and terminator lines have NO leading tab. Do not rely on "leading tab on each line" — rely only on the no-trailing-newline + byte-identical-reassign facts.
 - `${aliases[name]}` returns the **RHS only** (`git status`), not `gs=git status` (POC-Z2a).
-- Both re-establish **byte-identical** via `functions[name]=$cap` / `alias name=$cap` (POC-Z1d/2b).
+- Both re-establish **byte-identical** via `functions[name]=$cap` / `alias name=$cap` (POC-Z1d/2b). This capture-and-reassign is also how a function BODY is restored (it is live code, not zquote'd — C6).
 
 ### Encoding fork (OQ-7) — RECOMMENDED: NUL-delimited `name\0body\0` records
 
@@ -305,25 +324,29 @@ Function bodies are multi-line by nature, so a naive `name\tbody` single-line du
 | base64 each body | YES | decode per record | no (opaque) | Reserve; heavier, opaque fixtures |
 | length-prefixed | YES | count bytes | no | Works but more fragile than NUL |
 
-**Verified round-trip (POC-Go-RT):** a function body containing a newline + tab + single-quote + `$` + `;` dumped via `print -rN`, parsed in Go by splitting the section on `\x00`, and fed back into `functions[name]=` is **byte-identical** to the original. NUL is safe because zsh (C-string) values never contain NUL.
+**Verified round-trip (POC-Go-RT):** a function body containing a newline + tab + single-quote + `$` + `;` dumped via `print -rN`, parsed in Go by splitting the section on `\x00`, and fed back into `functions[name]=` is **byte-identical** to the original. **Why NUL is safe (C14 — CORRECTED justification):** a FUNCTION BODY is reparsed by zsh, so `${functions[name]}` never carries a raw 0x00 — the delimiter is unambiguous for body records. It is NOT true that "a zsh string can never contain NUL": on zsh 5.9 an arbitrary scalar value CAN hold a literal NUL (`v=$'a\0b'` → `${#v}`=3), which would break a Go 0x00 splitter — so this encoding is scoped to reparsed function/alias bodies, not to arbitrary scalar values.
 
-### Additive `introspectScript` extension (D-14) — recommended shape
+### Additive `introspectScript` extension (D-14) — recommended shape (C23 — CORRECTED)
 
-Add NEW sections after the existing name sections, leaving the name lines untouched:
+Add NEW sections after the existing name sections, leaving the name lines untouched. The body sections **must NOT reuse the existing line-oriented `##DELIMITER##` framing** — they must use a multi-line-safe (NUL-delimited, consistent with C14) encoding:
 
 ```zsh
-print -r -- '##ALIAS_BODIES##'
+print -r -- '##ALIASBODIES##'
 for k in "${(@k)aliases}"; do print -rN -- "$k" "${aliases[$k]}"; done
 print -r -- ''                       # newline so the ##...## marker starts a line
-print -r -- '##FUNC_BODIES##'
+print -r -- '##FUNCTIONBODIES##'
 for k in "${(@k)functions}"; do print -rN -- "$k" "${functions[$k]}"; done
 print -r -- ''
 print -r -- '##END##'
 ```
 
-`parseIntrospect` gains two NUL-record parsers for the new sections; the existing line-oriented switch for `##ALIASES##`/`##FUNCTIONS##`/etc. is unchanged (D-14/D-15 additive; existing name-only tests keep passing).
+**WHY the framing must differ (C23):** the existing `parseIntrospect` is strictly **line-oriented** — it does `strings.Split(s, "\n")` and switches on the full line matching a `##…##` marker (`core/shell/zsh/introspect.go:64-85`). Reusing that line reader for body sections breaks two ways:
+1. **Multi-line body truncation** — a multi-line function body's continuation lines are not `name -> body` records, so a line parser drops everything after the first line.
+2. **Delimiter collision** — a heredoc inside a function body emits UNINDENTED lines at column 0 (zsh preserves heredoc content verbatim). A body line that happens to read `##PATH##`/`##END##` is mis-read by the line switch as a real section switch, routing subsequent bytes into the wrong section and corrupting every following ENV/PATH/OPTIONS section.
 
-**Section-boundary caveat for the parser:** because bodies contain arbitrary bytes (including `#`), the Go parser must slice the body section by the *known offsets* of the header line and the next `\n##` marker, then split the enclosed bytes on `\x00` — it must NOT scan line-by-line for `##END##` inside body bytes. The POC parser does exactly this (isolate between `##FUNC_BODIES##\n` and `\n##END##`, then split on NUL) and round-trips correctly.
+So `parseIntrospect` gains a **dedicated, non-line body parser** for the new sections: slice the body section by the *known offsets* of the header line and the next `\n##` marker, then split the enclosed bytes on `\x00` — it must NOT scan line-by-line for `##END##` inside body bytes. The existing line-oriented switch for `##ALIASES##`/`##FUNCTIONS##`/etc. is unchanged (D-14/D-15 additive; existing name-only tests keep passing).
+
+**Confirmed additive sub-claims (C23 — these stay true):** the name maps stay `map[string]bool` (untouched — verified `core/model/identityset.go`); `analyze` consumes only `ids.Available` (verified `core/analyze/analyzer.go:84`) so no caller breaks; a zsh-absent/timeout run still returns `IdentitySet{Available:false}`; all existing `IdentitySet{}` literals are keyed, so adding fields is source-compatible. Only the framing of the NEW body sections needed correcting.
 
 ### Additive `IdentitySet` companion (D-15)
 
@@ -354,7 +377,8 @@ Additive: `analyze` consumes only `Available` today (verified at `introspect.go:
 - `LookPath("zsh")` skip-guard (like `introspect_test.go:11-13`, `roundtrip_test.go:149`). Runs in the default suite; NOT a `spike` tag (D-17).
 - Build ≥2 profiles → `activate.Build` → `Manifest` → `activate.Diff` → `Plan` → `emit.Emit` → apply/deactivate zsh strings.
 - Drive N≥20 random switch sequences (default fixed N=20; `-short` may reduce but must keep the mutated-emitter negative check — D-17).
-- Snapshot the six classes via the (extended) `introspectScript` — assert **literal string equality** of pre-vs-post snapshots (the Phase 1 bar, NOT `IdentitySet` field checks), plus `$#path` element-count stable.
+- Snapshot **all six classes with full FIDELITY** via the (extended) `introspectScript` — assert **literal string equality** of pre-vs-post snapshots (the Phase 1 bar, NOT `IdentitySet` field checks), plus `$#path` element-count stable.
+- **The snapshot must capture function BODIES, not just names, and the FULL env (exported AND non-exported), or body-level and non-exported residue passes silently (C19 — CORRECTED).** A name-only functions snapshot (`${(ok)functions}`) does not catch a redefined-but-not-restored function BODY; an exported-only env snapshot (`typeset -x`) does not catch a leaked plain shell var. The zero-residue guarantee is a byte-identical snapshot across all six classes at BODY level — enumerate: alias bodies, function bodies, env (all vars in scope), options, PATH scalar, `$path` array + `$#path` count.
 - Full end-to-end zero-residue verified self-contained in POC-Z8d (byte-identical after `apply_work; deact_work` including a shadowed `ll`).
 
 ### Where the snapshot must happen — the process-boundary decision (from POC-Z9a)
@@ -419,10 +443,12 @@ Two profiles exercising all six classes with at least one shadow collision (both
 
 | Problem | Don't Build | Use Instead | Why |
 |---------|-------------|-------------|-----|
-| Shell single-quote escaping | A custom char-by-char escaper with `\` sequences | The `'\''` idiom via one `strings.ReplaceAll(s,"'",`'\''`)` | Verified injection-safe against all vectors under double `eval`; a `\`-based escaper is wrong inside single quotes |
-| Unset-vs-empty distinction | A `-n`/`-z` truthiness test | `${(P)+var}==1` (env) / `${+name}==1` (literal-named slot) | `-n` conflates unset with empty — the exact Phase 1 carry-forward 2 and the NEW OQ-8 shadow-restore bug |
-| Multi-line body encoding | `name\tbody` single-line, or ad-hoc sentinels | NUL-delimited `print -rN` records | Verified byte-identical for bodies with `\n`+`\t`+`'`; NUL can't appear in a zsh string |
-| PATH dedup/rebuild | `typeset -U` or blind append | Rebuild from captured base each apply | `typeset -U` and append both cause growth/reorder residue (Pitfall 2) |
+| Shell single-quote escaping (scalar/alias VALUE contexts only) | A custom char-by-char escaper with `\` sequences | The `'\''` idiom via one `strings.ReplaceAll(s,"'",`'\''`)` | Verified injection-safe against all vectors under double `eval` for scalar-export and alias-body values (POC-Inj/Eval, C5); a `\`-based escaper is wrong inside single quotes. **NOT for function bodies** — see the function-body row below (C6) |
+| Function-body restore | zquote-to-inert-literal (a function body cannot be made inert — it is live code by nature; calling it runs the body, and adversarial `'` breaks the definition: "invalid function definition") | Verbatim capture-and-reassign: `functions[name]=$capturedBody` (body round-trips as DATA via the NUL-delimited capture) | C6: `eval "functions[fv]='…; touch CF'"` FIRED the canary — single-quoting only makes the edge bytes literal, the body still executes. The trusted body is captured live at ingest; it is not attacker-supplied emitted quoting |
+| Unset-vs-empty set-test for a LITERAL-named slot | `-n`/`-z` truthiness, OR `${(P)+literalSlot}` | `${+name}` (NO `(P)` flag) | C1: `-n` conflates unset with empty; `${(P)+FOO}` indirects through the VALUE of `FOO` (tests the wrong parameter, always 0 for a real literal slot). `${+FOO}` is 0/1/1 (unset/empty/set). Use `(P)` ONLY when the slot NAME is stored in another variable (env path — C21) |
+| Multi-line body encoding | `name\tbody` single-line, or ad-hoc sentinels, or the existing line-oriented `##DELIMITER##` framing | NUL-delimited `print -rN` records with a dedicated (non-line) parser | Verified byte-identical for bodies with `\n`+`\t`+`'` (C14). Safe because a FUNCTION BODY is reparsed and never carries a raw 0x00 (NOT because "a zsh string can never contain NUL" — an arbitrary scalar value can). The line-oriented parser truncates multi-line bodies and mis-reads heredoc lines as section switches (C23) |
+| PATH ownership-aware element removal | `${path:#/opt/x}` pattern subtraction, OR naive "remove one occurrence per addition" | LITERAL-equality element rebuild (`[[ $e == $target ]]` string-compare) + a reference-count / set-based ownership model correct under `typeset -U` | C10: `${path:#PATTERN}` is a GLOB — an element with `? * [ ]` over-matches and deletes siblings. C11: per-addition string subtraction strips a co-owned entry under `typeset -U` (co-owners collapse to one physical entry). Rebuild-from-base + re-apply other actives is the safe model |
+| PATH dedup/rebuild | Blind append | Rebuild from captured base each apply | Append causes growth residue (Pitfall 2). Note `typeset -U` is the runtime no-growth backstop, but it collapses co-owned entries — so ownership-aware REMOVAL must not assume one-occurrence-per-owner (C11) |
 | Shell codegen templating with auto-escape | `html/template` (wrong domain) or trusting `text/template` auto-escape | `strings.Builder` + explicit `zquote()` per site | stdlib has no shell context-aware escaper; explicit per-site escaping is auditable |
 
 **Key insight:** every "clever" shortcut in this phase (a `-n` guard, a blind append, a one-line body dump, a `\`-escaper) is a *silent* correctness or security bug that only surfaces on an adversarial or edge value. The verified primitives above are boring and correct; use them.
@@ -507,8 +533,8 @@ The four medium/low-confidence DECISIONS surfaced by this research are appended 
 Every claim below was produced by running the command under `zsh 5.9`/`go 1.25.7` in a
 throwaway scratch dir (`.../scratchpad/poc`, not in the repo). Output shown is observed.
 
-**POC-Z1a — `${functions[name]}` excludes the `name(){` wrapper, includes a leading tab:**
-`zsh -f -c 'ff() { echo hi }; print -r -- "${functions[ff]}"' | od -c` → `\t e c h o   h i \n` (body only, tab-prefixed).
+**POC-Z1a — `${functions[name]}` excludes the `name(){` wrapper, no trailing newline (body lines usually tab-prefixed, but NOT universally — C12):**
+`zsh -f -c 'ff() { echo hi }; print -r -- "${functions[ff]}"' | od -c` → `\t e c h o   h i` (body only, 8 bytes, no trailing newline; the `\n` under `print` is added by print). Heredoc content/terminator lines have NO leading tab, so "leading tab per line" is not a universal invariant.
 
 **POC-Z1d — a captured function body re-establishes byte-identically:**
 `functions[ff]=$cap; [[ "${functions[ff]}" == "$cap" ]]` prints `BYTE-IDENTICAL` for a multi-line body.
@@ -522,8 +548,8 @@ throwaway scratch dir (`.../scratchpad/poc`, not in the repo). Output shown is o
 **POC-Go-RT — NUL-record encoding round-trips a multi-line body byte-for-byte (zsh→Go→zsh):**
 `go test -run TestFuncBodyRoundTrip` PASS; parsed `ff` body = `"\techo one\n\techo 'has a $quote and ; semicolon'\n\techo two"`; re-established identical.
 
-**POC-Z4a — `${(P)+var}`==1 iff SET (incl empty), else 0:**
-`unset FOO`→`0`; `FOO=""`→`1`; `FOO=bar`→`1`.
+**POC-Z4a — set-test for a LITERAL-named slot is `${+name}` (NO `(P)`) — C1 CORRECTED:**
+`${+FOO}`: `unset FOO`→`0`; `FOO=""`→`1`; `FOO=bar`→`1` (distinguishes unset/empty/set). **`${(P)+FOO}` is WRONG for a literal slot** — `(P)` indirects through the VALUE of `FOO` (`FOO=bar; ${(P)+FOO}`→`0`, tests a param named `bar`). Use `(P)` only when the slot NAME is stored in another var (`name=FOO; ${(P)+name}`→matches FOO). `-n`/`-z` cannot distinguish unset from empty (both truthy-false for `""`).
 
 **POC-Z4b — `${(P)var}` indirects through the name in `$var`:**
 `EDITOR=nvim; var=EDITOR; print ${(P)var}` → `nvim`.
@@ -534,15 +560,14 @@ plain → `EXTENDED_GLOB ON after return`; `emulate -L` → `reverted at return`
 **POC-Z6a/6b — PATH rebuild-from-base stable, blind append grows:**
 5 rebuild-from-base applies → `#path=3` (stable); 5 blind prepends → `#path=7` (residue).
 
-**POC-Z6c — deletions via `${path:#/opt/x}` remove an entry cleanly.**
+**POC-Z6c — CORRECTED (C10):** `${path:#/opt/x}` is a GLOB/pattern subtraction, NOT literal-equality. It removes metacharacter-free elements cleanly, but a PATH element (or target) containing `? * [ ]` OVER-matches and deletes siblings (`${path:#/opt/tool?}` deleted `/opt/toolX`/`/opt/toolY`). Ownership-aware element removal must use LITERAL-equality (`[[ $e == $target ]]` rebuild), not `${path:#pattern}`. And under `typeset -U` a co-owned entry collapses to one, so per-addition subtraction strips a shared entry (C11) — needs a reference-count/set-based ownership model.
 
 **POC-Z7 — `zsh -n` gate:** valid script → exit 0; unterminated-quote script → exit 1.
 
 **POC-Inj — `zquote` survives all adversarial vectors (direct source):**
 `go test -run TestInjectionVectors` PASS for `'`, `;cmd`, `$(...)`, backtick, newline+cmd, `'\''`-chain, `$HOME`-literal, kitchen-sink — no canary, byte-literal round-trip.
 
-**POC-Eval — `zquote` survives the double `eval` layer (`loader eval "$block"`) in all 3 contexts:**
-`go test -run TestEval{Scalar,Alias,FunctionBody}Context` PASS — no canary; value literal.
+**POC-Eval — CORRECTED (C6):** `zquote` survives the double `eval` layer (`loader eval "$block"`) for the **scalar-export** and **alias-body** contexts only — no canary, value literal. It DOES NOT protect the **function-body** context: a function body is live code, so `eval "functions[fv]='…; touch CF'"; fv` FIRES the canary and an adversarial `'` gives "invalid function definition". Function bodies are restored by verbatim capture-and-reassign (`functions[name]=$capturedBody`, NUL-captured — POC-Go-RT), not zquote.
 
 **POC-Dyn — the static/dynamic tension:** verbatim `x=$HOME/go` → `/Users/poc/go` (expands); `x='$HOME/go'` (zquote'd) → `$HOME/go` (literal). `go test -run TestDynamicVerbatimExpands` PASS.
 

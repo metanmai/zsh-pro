@@ -1,7 +1,7 @@
 ---
 phase: 04-manifest-builder-emit
-updated: 2026-07-01T20:30:00Z
-open_count: 11
+updated: 2026-07-01T14:13:44Z
+open_count: 12
 ---
 
 # Open Questions — Phase 4 Manifest Builder + Emit
@@ -106,3 +106,17 @@ open_count: 11
 - **Alternatives:** (a) Uniform `NameSet{Added map[string]string; Shadowed map[string]string}` for both — requires editing the fixture's `functions.added` to a map, changing what "round-trips to the shape" means (a defensible but explicit reading); (b) uniform type with a custom `UnmarshalJSON` accepting both shapes (POC-J4, over-engineered for v2.0).
 - **Impact:** Low-medium — internal type ergonomics + the round-trip acceptance reading. Reversible.
 - **Confidence:** MEDIUM (research recommends two types for byte-identical fixture match; the planner may keep a uniform map if it also edits the fixture and documents the semantic reading).
+
+## OQ-12: Claim-validation-driven CONTEXT/RESEARCH corrections (RESOLVED, POC-backed)
+
+- **Question:** Claim-validation pass 1 (24 claims, 12 REFUTED) surfaced load-bearing corrections to locked design facts. Were the locked CONTEXT decisions updated so the planner does not build a refuted mechanism?
+- **Tentative choice (applied):** YES — auto-applied from POC evidence (see `04-EVIDENCE.md`), HIGH confidence:
+  - **D-12 / canonical refs:** shadow-restore guards use `${+name}` set-tests, NOT the Phase 1 snippet's buggy `-n`/`${(P)+literalName}` guards (C1/OQ-8). The env-path `${(P)+var}` where `var` holds the name stays (C2/C21, correct).
+  - **D-13:** single-quote wrapping applies to VALUE contexts (env values, alias bodies) only; **function bodies are live code**, restored by verbatim `functions[name]=$capturedBody`, never single-quote-wrapped-to-inert (C6).
+  - **D-14/D-15:** body-dump uses NUL-delimited (or length-prefixed) framing, NOT a `name\tbody` line format (which truncates multi-line bodies; C14/C23); a NEW multi-line-safe reader parses it.
+  - **D-08:** the "no zsh token in core/activate" check is defined precisely (case-sensitive, word-boundary, string-literals only, excluding Go identifiers/comments; C22).
+  - **D-02:** `*string`+omitempty softened from "only shape" to "recommended shape" (C15).
+- **Alternatives:** Leave decisions as-authored (rejected — would instruct the planner to reproduce a proven-buggy guard, a live-code injection misconception, and a truncating encoding).
+- **Why uncertain:** Not uncertain — each correction is POC-proven. Logged for the returning user's audit trail.
+- **Impact:** HIGH if NOT corrected (shadow restore silently no-ops; function-body "quoting" is a false safety claim; multi-line bodies truncate). Corrected → neutralized.
+- **Confidence:** HIGH (POC-backed). Recorded as resolved, not open.
