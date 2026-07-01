@@ -1,7 +1,7 @@
 ---
 phase: 04-manifest-builder-emit
-updated: 2026-07-01T22:10:00Z
-open_count: 26
+updated: 2026-07-01T23:55:00Z
+open_count: 27
 ---
 
 # Open Questions — Phase 4 Manifest Builder + Emit
@@ -237,3 +237,23 @@ open_count: 26
 - **Alternatives:** Leave as-is (rejected — each is a cheap precision win that removes a conflation or a false-green surface).
 - **Impact:** Low-medium — precision/coverage improvements; no mechanism change.
 - **Confidence:** HIGH. Addresses cycle-3 MEDIUMs.
+
+## OQ-27: Alias/function NAME injection — safe-grammar validator at builder + emit (from REVIEWS cycle-4 CH-19)
+
+- **Question:** Cycle-4 CH-19 proved (Go + zsh) that unlike env-scalar names (grammar-safe — the zsh parser rejects `export FOO;x=bar`), zsh PERMITS shell metacharacters in ALIAS and FUNCTION names, and `parse.go`'s `wordLitPrefix`/`c.Name.Value` extract them RAW: `alias gs\;x='...'` → `Aliases.Added` key `gs\;x` (backslash retained); `function gs\;x { }` → `Functions.Added` key `gs\;x`. Emit renders these RAW into `unalias name`/`alias name=...`/`functions[name]=...`/`unset -f name`/RestoreShadowed*, and under the loader double-eval `eval "unalias gs;touch $CANARY"` FIRES the canary. The CH-17 identifier validation covered ONLY option names — the two name classes zsh actually allows metacharacters in were left open. How are hostile alias/function names neutralized?
+- **Tentative choice (applied):** Validate each RAW-extracted alias AND function name against the conservative safe grammar `^[A-Za-z0-9_][A-Za-z0-9_.-]*$` (rejects any shell metacharacter — `;` `&` `|` `$` backtick `(` `)` `<` `>` space newline backslash glob chars; accepts realistic names `gs`/`ll`/`git-foo`/`_helper`/`foo.bar`) at BOTH the 04-01 builder (drop-to-no-part) AND the 04-02 emit (re-validate before emitting into any command position — defense in depth). Validate on the RAW name bytes (parse.go retains the backslash). Run the adversarial NAME corpus through the AddAlias/Unalias/AddFunc/UnsetFunc/RestoreShadowedAlias/RestoreShadowedFunc emit paths asserting no canary. Add the alias/func name to the T-01-06 trust boundary (both plans, threat T-04-18). This mirrors the PROVEN C29 option-name defense and the C24 slot-name defense. NEW EVIDENCE claim C31 (a hostile alias/func name is rejected by the name-grammar validator or emitted inert — no canary through the double-eval across unalias/alias=/functions[]=/unset -f/RestoreShadowed*) logged UNVERIFIED for pass-4.
+- **Alternatives:** (a) sanitize the name (replace illegal bytes) like the slot-name path (rejected — a sanitized alias/func name is a DIFFERENT symbol; drop-to-no-part is the correct precision-over-recall guard for the DECLARATIVE add/reverse ops, and it matches the CH-17 option-name treatment); (b) quote the name into the command position (rejected as sole barrier — `unalias 'name'` / `functions[name]=` still need a valid symbol; a validated safe name is the tighter guard, and the slot-name derivation still needs a valid identifier); (c) rely on the slot-name sanitizer alone (rejected — the slot-name path sanitizes the derived slot, not the emitted `unalias <name>`/`alias <name>=` command-position name itself). Note the alias/func safe grammar is slightly broader than the option/env `^[A-Za-z_][A-Za-z0-9_]*$` bare-identifier grammar because realistic alias/func names legitimately contain `-` and `.` (`git-foo`, `foo.bar`) — the grammar admits `[A-Za-z0-9_.-]` after a leading `[A-Za-z0-9_]` while still rejecting every shell metacharacter.
+- **Impact:** HIGH (security) — an unvalidated alias/func name is a shell-injection vector through the emitted double-eval'd apply/deactivate code (proven end-to-end). Neutralized by the safe-grammar validator at builder + emit + corpus + C31.
+- **Confidence:** HIGH (the safe grammar cleanly partitions realistic names from the metacharacter corpus; mirrors the proven C29/C24 defenses; C31 UNVERIFIED pending pass-4). Addresses review concern CH-19.
+
+## OQ-28: Cheap cycle-4 MEDIUM/LOW residue-test precision items (from REVIEWS cycle-4 CH-20..CH-23)
+
+- **Question:** Cycle-4 flagged several cheap precision gaps in the residue test's dedicated sections and stale revision cruft. Fold them in?
+- **Tentative choice (applied):** YES — all completeness-preserving, no design change:
+  - **CH-20:** the dedicated option/alias snapshot sections use the SORTED `${(@ok)options}`/`${(@ok)aliases}` (the `o` sort flag matching PROVEN C30), NOT bare `${(@k)}` (hash order — non-deterministic across insert/remove between snapshots → false-red or masked residue); the acceptance grep matches `(ok)`/`(@ok)`.
+  - **CH-21:** the two dedicated SORTED sections (option-state + alias-body) are CONCATENATED into the general N-sequence byte-identical happy-path snapshot string (updating the must_have truth, the "Happy-path property" description, and an acceptance criterion) — so the alias/option classes (2 of 6) are pinned by the GENERAL zero-residue property under arbitrary switch order, not only the isolated fixture-specific sub-checks/meta-asserts (closes the residual C19-class blind spot for those 2 classes under the general run).
+  - **CH-22:** the 04-01 introspect body-dump iterates SORTED `${(@ok)functions}` (and `${(@ok)aliases}`) so the reused FUNCTIONBODIES snapshot section is deterministically ordered / byte-stable; it is included in the C30-analog self-stability assertion. Sorting is additive and does not affect the map-based name-only tests (map lookup is order-independent), keeping the introspect tests passing.
+  - **CH-23:** relabel every stale "C29/C30 NEW UNVERIFIED — pass-3 must prove" occurrence → PROVEN (EVIDENCE records both PROVEN); fix the validated_ground header range "CH-2..CH-6" → "CH-2..CH-5 + CH-11/CH-12" (CH-6 superseded); add a post-sequence assertion that `ZP_BASE_PATH` equals its baseline (session-persistent invariant); add a one-line note that `PATH`/`path` are `*tied*`/`*special*` (excluded by the type-class filter → covered by the dedicated PATH section); note the emitted `${(@s.:.)ZP_BASE_PATH}` empty-field-strip concern is a deferred Phase-5 base-capture matter (OQ-3); optionally add `$fpath`/`$#fpath` to the PATH snapshot section (renderList is name-parameterized).
+- **Alternatives:** Leave as-is (rejected — each is a cheap precision/consistency win; unsorted enumeration and stale cruft would produce false-red/masked residue and re-run finished POCs).
+- **Impact:** Low-medium — precision/coverage/consistency; no mechanism change.
+- **Confidence:** HIGH. Addresses cycle-4 CH-20..CH-23.
