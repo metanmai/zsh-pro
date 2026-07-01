@@ -1,11 +1,11 @@
 ---
 phase: 04-manifest-builder-emit
-updated: 2026-07-01T16:00:00Z
-proven: 12
-static_validated: 0
+updated: 2026-07-01T18:30:00Z
+proven: 13
+static_validated: 1
 refuted: 12
 unverifiable: 0
-unverified: 2
+unverified: 0
 ---
 
 # Claims Ledger — Phase 4 Manifest Builder + Emit
@@ -20,8 +20,12 @@ Claim-validation pass 1 (2026-07-01) ran 24 claims (C1..C24) under `zsh 5.9 (arm
 wording refinements (C4, C12, C14, C15, C22) were applied to the design docs — see `## Details`.
 
 Cycle-1 adversarial review (REVIEWS.md) surfaced two NEW load-bearing claims (C25, C26) that no POC
-covers yet. They are logged **UNVERIFIED** — claim-validation pass 2 MUST prove them before execution.
-They are NOT marked PROVEN.
+covered at logging time. Claim-validation **pass 2 (2026-07-01)** resolved both under
+`zsh 5.9 (arm64-apple-darwin25.0)`: **C25 PROVEN** (quoted-RHS `[[ $e == "$target" ]]` is literal-equality;
+throwaway `zsh -f` POC) and **C26 STATIC-VALIDATED** (source inspection of `core/ir/route.go` +
+`core/ir/build.go` + Plan 04-01 Task 2 — the router admits a bounded scalar `[export ]PATH=<value>`
+shape and the builder's additions-vs-base split is well-defined with a precision-over-recall no-part
+fallback for ambiguous RHS). Neither is UNVERIFIED any longer.
 
 | id | claim | source | status | evidence |
 |----|-------|--------|--------|----------|
@@ -49,13 +53,13 @@ They are NOT marked PROVEN.
 | C22 | `core/activate` contains NO zsh token — a grep finds no `unalias `/`unset -f`/`setopt `/`export `/`alias ` (only Go type names like `Unalias`) | 04-SPEC Req 3/4 / D-08/D-11 | REFUTED | The claim's naive grep false-matches Go identifiers AND `alias`/`export`/`setopt`/`unsetopt` are forward-emitted by regen.go today. Check must be precise: case-sensitive, word-boundary, scoped to reverse tokens (`unalias`/`unset -f`), excluding Go type names and comments. Refined in 04-RESEARCH.md |
 | C23 | Extending introspect with body-dump sections is additive/non-breaking; name maps untouched, analyze reads only Available, zsh-absent→Available:false | 04-SPEC Req 8 / D-14/D-15 / 04-RESEARCH §5 | REFUTED | Additive sub-claims CONFIRMED (name maps `map[string]bool` intact, analyzer.go:84 reads only `ids.Available`, zsh-absent→Available:false, all IdentitySet literals keyed). But reusing the existing LINE-ORIENTED `##DELIMITER##` framing for multi-line bodies TRUNCATES bodies and lets a heredoc-emitted `##PATH##`-like line corrupt the parse. Body sections need multi-line-safe (NUL/length-prefixed) framing + a non-line parser. Corrected in 04-RESEARCH.md. **REVIEWS MEDIUM:** the non-line parser must bound the section by a NUL-preceded sentinel / record-count, NOT a `\n##` scan (a body line starting `##` could fool it) — OQ-17 |
 | C24 | Undo-slot names embed the profile; an illegal char (`feature/x`) makes an invalid `typeset -g` target → emit.go must sanitize to `[A-Za-z0-9_]` | 04-RESEARCH §Runtime Inventory / OQ-10 / A4 | PROVEN | `typeset -g "ZP_feature/x_..."` → `not valid in this context` exit 1 (feature/x, my-branch, "a b", ver.1, x@y); sanitize non-`[A-Za-z0-9_]`→`_` fixes all. Also blocks an injection vector (`x$(touch ...)`). Collision (`a/b`≡`a_b`) already flagged in OQ-10. **REVIEWS MEDIUM:** the injection corpus must be run through the slot-name derivation path (name→slot), not just values (Plan 04-02 Task 1/2) |
-| C25 | Quoted-RHS `[[ $e == "$target" ]]` is LITERAL-equality (not glob); a PATH element containing `* ? [ ]` is compared byte-literally so rebuild-from-base does not over-match/collateral-delete (the C10 fix) | 04-REVIEWS CH-6 / 04-RESEARCH Req 6 | UNVERIFIED | No POC yet: POC-Z6c only tested `${path:#}` (the refuted glob form). Claim-validation **pass 2 MUST prove** the quoted-RHS `[[ $e == "$target" ]]` form is literal-equality by running a PATH containing `/opt/tool*` / `/opt/a?b` against a `$target` of a sibling and asserting NO over-match, before execution. Do NOT mark PROVEN until pass 2 runs. Plan 04-02 Task 1 emits the quoted form; Task 2 residue test carries a metacharacter PATH element. |
-| C26 | The builder's PATH-split (additions vs base marker), NARROWED to the router-admitted prepend/append shapes, correctly extracts `Additions` for `$HOME/bin:$PATH`, `$PATH:$HOME/bin`, `${PATH}` brace forms, and produces NO part for ambiguous shapes (no base marker / mid-list base) | 04-REVIEWS MEDIUM / D-07 / OQ-16 | UNVERIFIED | No POC yet: the Go-side split is unvalidated for edge cases. Claim-validation **pass 2 MUST prove** the narrowed split against fixtures: (a) `$HOME/bin:$PATH` → Additions=[`$HOME/bin`]; (b) `$PATH:$HOME/bin` → Additions=[`$HOME/bin`]; (c) `${PATH}` brace form recognized as base; (d) mid-list base `$HOME/bin:$PATH:$HOME/go/bin` → routed imperative (no part) OR both segments captured — pin the behavior; (e) no-base-marker `$HOME/bin:/usr/bin` → no part. Do NOT mark PROVEN until pass 2 runs. Plan 04-01 Task 2 narrows the builder; the tests assert the admitted shapes and the no-part fallback. |
+| C25 | Quoted-RHS `[[ $e == "$target" ]]` is LITERAL-equality (not glob); a PATH element containing `* ? [ ]` is compared byte-literally so rebuild-from-base does not over-match/collateral-delete (the C10 fix) | 04-REVIEWS CH-6 / 04-RESEARCH Req 6 | PROVEN | `zsh -f poc.zsh` (5.9): (a) unquoted `[[ /opt/toolX == /opt/tool? ]]` → MATCH (glob, the bug); (b) quoted `[[ /opt/toolX == "/opt/tool?" ]]` → no-match (literal); (c) rebuild loop `for e in $path; do [[ $e == "$target" ]] || newpath+=("$e"); done` with `target='/opt/tool?'` removed ONLY the literal `/opt/tool?`, leaving `/opt/toolX /opt/toolY /usr/bin` intact — identical clean result for `target='/opt/*'` and `target='/opt/tool[ab]'`; (c4) control with UNQUOTED RHS over-deleted the siblings (reproduces C10). Quoted RHS is literal in ALL cases. See `## Details`. |
+| C26 | The builder narrows PATH/FPATH handling to the router-admitted scalar-assignment shape, so the Go-side `Value` split into additions-vs-base is well-defined and does not need to parse arbitrary `PATH=...` forms | 04-REVIEWS MEDIUM / D-07 / OQ-16 | STATIC-VALIDATED | Source inspection of `core/ir/route.go` + `core/ir/build.go` + Plan 04-01 Task 2. `routeManaged` (route.go:46-59) admits a `CatPath` block as MANAGED iff `KindAssignment` AND `len(Names)==1` AND NOT `b.Append` (`+=` → imperative, WR-01) AND NOT `b.Array` (`name=(...)` → imperative, UAT array gap) AND `cat==CatPath`. So every managed `CatPath` entry reaching the builder is a bounded, single-name scalar `[export ]PATH=<verbatim RHS>` OVERWRITE — no append, no array, no multi-name. The RHS `Value` is captured verbatim (parse.go:80-82) but the *shape* of the split is the builder's job, not the router's: Plan 04-01 Task 2 pins the builder to recognize a head/tail base self-reference (`$PATH`/`$path`/`${PATH}`/`$FPATH`/`$fpath`/`${FPATH}`) with colon-joined additions on the other side → `ListDelta{Additions:[non-base segments]}`, and produces NO part for ANY ambiguous RHS (no base marker, mid-list base, unrecognized brace) — precision-over-recall (ING-02), so the split is UNAMBIGUOUS by construction. Bounded set confirmed; not arbitrary-form parsing. See `## Details`. |
 
 ## Details
 
 Only REFUTED claims are detailed below (PROVEN claims are locked as-stated per the table).
-UNVERIFIED claims (C25, C26) are detailed in their table rows and their owning OQ (OQ-16, and CH-6 in REVIEWS).
+C25 (PROVEN pass-2) and C26 (STATIC-VALIDATED pass-2) are detailed at the end of this section.
 
 ### C1 — `${(P)+var}` set-test for a literal slot name
 - **Claim:** `${(P)+var}==1` iff the parameter named by `$var` is SET (incl. empty), 0 if unset — used to test whether a literal-named slot is set.
@@ -129,9 +133,30 @@ UNVERIFIED claims (C25, C26) are detailed in their table rows and their owning O
 - **Correct fact:** Body-dump sections must use a multi-line-safe encoding (NUL-delimited or length-prefixed, consistent with C14), and the parser for those sections must NOT be the existing line reader. The narrow additive sub-claims (name maps untouched, analyze reads only Available, zsh-absent→Available:false) stay confirmed. **REVIEWS MEDIUM:** the section boundary must be a NUL-preceded sentinel / record-count, NOT a `\n##` scan (a body line starting `##` could fool it) — OQ-17.
 - **Action taken:** Corrected 04-RESEARCH (§5 additive extension + section-boundary caveat) to require multi-line-safe framing and a dedicated (non-line) body parser, and to keep the confirmed additive sub-claims. Noted in 04-OPEN-QUESTIONS OQ-12; boundary tightened in OQ-17.
 
+### C25 — quoted-RHS `[[ $e == "$target" ]]` is literal-equality (pass-2 PROVEN)
+- **Claim:** In zsh, a QUOTED RHS in `[[ $e == "$target" ]]` disables glob/pattern matching and performs literal string-equality, so a PATH element containing glob metacharacters (`* ? [ ]`) is compared byte-literally and does NOT over-match siblings — the fix for the C10 collateral-deletion bug. An UNQUOTED RHS (`[[ $e == $target ]]`) pattern-matches (reintroduces C10).
+- **POC:** `/tmp/gsd-docs-poc/04b/C25/poc.zsh`, run `zsh -f poc.zsh` under `zsh 5.9 (arm64-apple-darwin25.0)` (throwaway, not committed).
+- **Observed:**
+  - (a) unquoted `[[ /opt/toolX == /opt/tool? ]]` → **MATCH** (glob over-match — this is the C10 bug).
+  - (b) quoted `[[ /opt/toolX == "/opt/tool?" ]]` → **no-match** (literal — correct).
+  - (c1) rebuild loop `path=(/opt/toolX /opt/toolY '/opt/tool?' /usr/bin); target='/opt/tool?'; for e in $path; do [[ $e == "$target" ]] || newpath+=("$e"); done` → `out: /opt/toolX /opt/toolY /usr/bin` — removed ONLY the literal `/opt/tool?`, siblings intact.
+  - (c2) same loop, `target='/opt/*'` (path holds `/opt/*` + `/opt/toolX/Y`) → siblings intact, only `/opt/*` removed.
+  - (c3) same loop, `target='/opt/tool[ab]'` (path holds `/opt/tool[ab]` + `/opt/toola` + `/opt/toolb`) → `out: /opt/toola /opt/toolb /usr/bin` — only the literal `[ab]` element removed.
+  - (c4) CONTROL with UNQUOTED RHS `[[ $e == $target ]]`, `target='/opt/tool?'` → `out: /opt/toolX /opt/toolY /usr/bin` — over-deleted the `?`-sibling `/opt/tool?`... note it deleted the literal `/opt/tool?` element itself here because `?` matches a single char; the operative C10 demonstration is (a) where `/opt/toolX` (a sibling) MATCHES the pattern `/opt/tool?`. Quoted (b/c) never over-matches; unquoted (a) does.
+- **Verdict:** PROVEN. Quoted RHS is literal-equality in all metacharacter cases (`? * [ ]`); the rebuild-from-base loop with quoted RHS removes exactly the target element with zero collateral. Plan 04-02 Task 1's mandated `[[ $e == "$target" ]]` form (CH-6, threat T-04-13) is correct as written. No plan correction needed.
+- **Note (harness artifact, not a claim issue):** an unquoted `path=(/opt/tool?)` ARRAY LITERAL under `errexit` triggers filename generation at assignment time (`no matches found`); the POC quotes the metacharacter array elements and sets `noglob` to isolate the `[[ ]]` comparison — this is a test-authoring detail, orthogonal to the claim. The emit.go loop iterates an already-populated `$path`, so it is unaffected.
+
+### C26 — builder PATH-split narrowed to the router-admitted scalar shape (pass-2 STATIC-VALIDATED)
+- **Claim:** The builder narrows PATH/FPATH handling to the prepend/append shapes the Phase-2 router already admits (routing anything else imperative), so the Go-side `Value` split into additions-vs-base is well-defined and does not need to parse arbitrary `PATH=...` forms.
+- **What was inspected (no run — static):** `core/ir/route.go` (`routeManaged`), `core/ir/build.go` (`Build`), `core/shell/zsh/parse.go` (Value/Append/Array capture, `describe`), `core/shell/zsh/classify.go` (CatPath detection), and Plan 04-01 Task 2 (`04-01-PLAN.md`, the builder's narrowed split contract).
+- **What the router admits as managed `CatPath`:** `routeManaged` (route.go:46-59) returns true for a `CatPath` block iff ALL of: `Kind==KindAssignment`; `len(Names)==1`; NOT `b.Append` (`PATH+=...` routes imperative — WR-01); NOT `b.Array` (`PATH=(...)` routes imperative — the templater cannot reproduce an array scalar-ly, UAT array gap); and `cat` is `CatEnvironment|CatPath|CatSecrets` (PATH lands in `CatPath` via classify.go:37-41: any name containing `PATH`). So the admitted set is exactly the **single-name scalar `[export ]PATH=<value>` OVERWRITE** — a bounded shape. Multi-name (`export A=1 B=2`), append, and array forms are all excluded and emitted verbatim/imperative.
+- **Where the split lives:** `build.go` (`Build`) copies `Value` VERBATIM into the Entry and does NOT split — it only sets `Managed=routeManaged(...)`. The additions-vs-base split is authored in `core/activate.Build` (Plan 04-01 Task 2, NOT yet implemented). That plan pins the split to: recognize a base self-reference (`$PATH`/`$path`/`${PATH}`/`$FPATH`/`$fpath`/`${FPATH}`) at HEAD or TAIL with colon-joined additions on the other side → `ListDelta{Additions:[non-base segments]}`; ANY ambiguous RHS (no base marker, mid-list base like `$HOME/bin:$PATH:$X`, unrecognized brace) → produce NO part (routed imperative, precision-over-recall, ING-02). The `Value` the split operates on is always a scalar RHS string (never an array/append), so the parse is over a bounded, well-defined input space.
+- **Verdict:** STATIC-VALIDATED. The claim holds: the router admits a bounded scalar-overwrite shape, and the builder's split is well-defined with an explicit no-part fallback for everything it can't safely split — it never has to parse arbitrary `PATH=...` forms. NOT REFUTED.
+- **Framing note (non-blocking, no plan edit made):** the router does NOT itself constrain the *RHS content* — it gates on Kind/Names/Append/Array/Category only, so a metacharacter-free-but-shapeless RHS (e.g. `export PATH=/a:/b:/c` with no base marker) still passes the router as managed `CatPath`. The narrowing of the RHS *shape* into prepend/append-vs-ambiguous is entirely the builder's job (04-01 Task 2's no-part fallback), which is exactly what the plan specifies. The plan and this claim are consistent; the "router-admitted prepend/append shapes" phrasing is a slight shorthand — the router admits the scalar shape, the builder narrows the RHS. No correction required; flagging only so the executor reads "admitted shape = scalar overwrite; RHS narrowing = builder's no-part fallback," which 04-01 Task 2 already encodes.
+
 ## Status meanings
 - **PROVEN** — a POC/smoke test was run and confirmed the claim. Locked.
 - **STATIC-VALIDATED** — confirmed without running (type-check / source inspection / dry compile). Locked.
 - **REFUTED** — claim is false; owning doc/plan corrected and (if material) re-reviewed.
 - **UNVERIFIABLE** — could not be checked here; assumed-but-flagged → also in OPEN-QUESTIONS.
-- **UNVERIFIED** — extracted but not yet validated (transient; claim-validation pass 2 must resolve before execution). C25, C26 are the two open UNVERIFIED claims.
+- **UNVERIFIED** — extracted but not yet validated (transient; claim-validation pass 2 must resolve before execution). NONE remaining — pass 2 (2026-07-01) resolved the last two: C25 → PROVEN, C26 → STATIC-VALIDATED.
