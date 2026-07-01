@@ -1,20 +1,19 @@
 {
   "phase": "04",
-  "cycle": 5,
-  "HIGH_COUNT": 1,
+  "cycle": 6,
+  "HIGH_COUNT": 0,
   "prev_high": 1,
-  "per_lens": { "correctness": 0, "risk": 0, "requirement-coverage": 0, "security": 1, "simplicity": 0 },
-  "consensus_high": ["CH-24"],
-  "material_medium": ["CH-25"],
-  "low": ["CH-26"],
-  "converged": false,
+  "per_lens": { "correctness": 0, "risk": 0, "requirement-coverage": 0, "security": 0, "simplicity": 0 },
+  "consensus_high": [],
+  "converged": true,
   "max_cycles": 5,
-  "cap_extension": "cycle 5 HIGH (CH-24) is a NEW distinct injection surface (PATH addition segments), not a stalled repeat; extending one bounded round (cycle 6) to fix it + validate C32, then a confirming review. Stop+log-residual if cycle 6 finds another new HIGH.",
+  "cap_extension": "cycle 6 was a bounded 1-round extension past the nominal 5-cap to fix CH-24 (a NEW distinct injection surface: PATH addition segments), not a stalled repeat; it converged to 0 HIGH.",
   "history": [
     { "cycle": 1, "HIGH_COUNT": 16 },
     { "cycle": 2, "HIGH_COUNT": 11 },
     { "cycle": 3, "HIGH_COUNT": 4 },
     { "cycle": 4, "HIGH_COUNT": 1, "note": "CH-19 alias/func name injection" },
-    { "cycle": 5, "HIGH_COUNT": 1, "note": "CH-24 PATH-addition injection (new distinct surface)" }
+    { "cycle": 5, "HIGH_COUNT": 1, "note": "CH-24 PATH-addition injection (new distinct surface)" },
+    { "cycle": 6, "HIGH_COUNT": 0, "note": "converged" }
   ]
 }

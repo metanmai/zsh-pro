@@ -110,3 +110,11 @@ Per-lens HIGH: correctness=0, risk=0, security=1, requirement-coverage=0, simpli
 **Cap decision:** cycle 5 is the nominal `--max-review-cycles`. HIGH did not decrease (1→1), but CH-24 is a NEW distinct injection surface (not a stalled repeat), cheaply fixable, and closing it makes the injection boundary uniform/complete — convergence, not divergence. Extending ONE round (cycle 6) to fix CH-24/25/26 + validate C32, then a confirming review. If cycle 6 surfaces yet another NEW distinct HIGH, stop and log residual to OPEN-QUESTIONS per the cap rule.
 
 **HIGH_COUNT = 1 → proceed to a bounded final replan (cycle 5 revision).**
+
+## Cycle 6 (confirming — reviewing the cycle-5 revision)
+
+Per-lens HIGH: correctness=0, risk=0, security=0, requirement-coverage=0, simplicity=0 → **HIGH_COUNT=0. CONVERGED ✓**
+
+Trajectory: 16 → 11 → 4 → 1 → 1 → **0**. All cycle-5 fixes (CH-24/25/26) verified landed. C32 PROVEN (pass-5). The injection boundary is UNIFORM and COMPLETE — every user-controlled datum reaching emit's eval'd code has a PROVEN defense: VALUES (env scalar / alias body zquote-static-or-verbatim-dynamic C5/C7; function body verbatim-live-code C6), NAMES (env parser-grammar-safe; alias/func C31; option C29; slot/profile C24), LIST-ADDITION SEGMENTS (PATH additions C32). SPEC Req 5 is pinned in the GENERAL N-sequence property for all six classes (env, PATH/path-contents, aliases, functions, options). EVIDENCE: 32 claims, proven:19 static_validated:1 refuted:12 unverified:0.
+
+Residual LOW/MEDIUM items found in cycle 6 (C32 label relabel + three `$#path`-only descriptive spots incl. the `<done>` block) were cleaned in the final cleanup commit — no HIGH, no residual carried to OPEN-QUESTIONS. Full coverage matrix (SW-01/SW-02, D-01..D-17, SPEC Req 1-8 + acceptance, OQ-13..OQ-29) confirmed complete; no over-engineering or Phase-5 leakage; executable 2-plan / 5-task / 18-file phase with correct wave+dependency ordering (04-01 wave 1 → 04-02 wave 2).
