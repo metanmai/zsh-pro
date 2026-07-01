@@ -1,7 +1,7 @@
 ---
 phase: 04-manifest-builder-emit
-updated: 2026-07-01T16:00:00Z
-open_count: 18
+updated: 2026-07-01T20:00:00Z
+open_count: 23
 ---
 
 # Open Questions — Phase 4 Manifest Builder + Emit
@@ -168,3 +168,43 @@ open_count: 18
 - **Alternatives:** (a) Keep Hybrid as an option (rejected — extra surface for no SW-01/SW-02 benefit); (b) fully inline every op (rejected — logic duplication per profile).
 - **Impact:** Low — emit-strategy only, reversible.
 - **Confidence:** MEDIUM-HIGH. Addresses review MEDIUM (OQ-9 pinned).
+
+## OQ-19: SetOption apply-side live-option capture (from REVIEWS cycle-2 CH-9)
+
+- **Question:** CH-7 moved `was_on` to a runtime-captured fact and specified the DEACTIVATE side (`RestoreOption` reads the slot), but the APPLY per-op rendering (SetScalar/AddAlias/AddFunc capture rules) OMITTED `SetOption` — nothing captured the live option before `setopt`/`unsetopt`, so `RestoreOption` reads an unwritten slot and option restore silently fails. Add a `SetOption` apply-capture rule?
+- **Tentative choice (applied):** YES — add a `SetOption` apply rule to emit.go (Plan 04-02 Task 1) mirroring SetScalar/AddAlias: a `${+slot}`-guarded idempotent capture of the LIVE option state via the zsh live-option test `[[ -o optname ]]` into a per-switch was_on slot, emitted BEFORE the `setopt`/`unsetopt`. Deactivate's `RestoreOption` reads that captured slot and restores the exact prior. A functional option-drift fixture is added to the residue property test (Task 2), and a NEW EVIDENCE claim C27 (live option capture/restore round-trip) is logged UNVERIFIED for pass-2.
+- **Alternatives:** (a) leave option capture to the Phase 5 loader (rejected — RestoreOption is emitted here and would read an unwritten slot, a zero-residue violation on the options class shipped in this phase); (b) author was_on into the manifest (rejected — D-06/CH-7 forbid the builder authoring was_on).
+- **Impact:** HIGH for the options class — without it, every option restore silently no-ops. Neutralized by the apply-capture rule + fixture + C27.
+- **Confidence:** HIGH (the fix mirrors the proven SetScalar/AddAlias capture; the round-trip is C27 UNVERIFIED pending pass-2). Addresses review concern CH-9.
+
+## OQ-20: Full-env snapshot self-stability — volatile-param allowlist + fd-capture (from REVIEWS cycle-2 CH-10)
+
+- **Question:** The CH-2 full-env `${(@kv)parameters}` instrument iterates ALL params including volatile specials (SECONDS, RANDOM, LINENO, funcstack, pipestatus, `_`) and the harness's own snapshot/loop vars, so two identical snapshots differ (false-red) — or an unaudited filter re-opens the C19 false-green. How is the instrument made self-stable without blinding it?
+- **Tentative choice (applied):** Define an AUDITED, documented exclusion allowlist of volatile/read-only special params + named harness vars (or snapshot only user-scope params via a `typeset +`-style filter), and capture each snapshot by REDIRECTING to a temp file / dedicated fd — NOT `$(...)` command-substitution (which itself forks and perturbs `_`/pipestatus/funcstack). A self-stability meta-test asserts two consecutive no-op snapshots diff to EMPTY under the SAME allowlist that still lets the leak/value-change meta-tests fire. NEW EVIDENCE claim C28 logged UNVERIFIED for pass-2.
+- **Alternatives:** (a) blanket-filter the whole namespace (rejected — masks real residue, re-opens C19); (b) name-only snapshot (rejected — that IS the C19 false-green CH-2 exists to close).
+- **Impact:** HIGH — a non-self-stable instrument false-reds every run; an over-broad allowlist false-greens a real leak. The dual meta-test (self-stability AND leak-fire under one allowlist) is the guard.
+- **Confidence:** MEDIUM-HIGH (the exact allowlist membership is a pass-2 detail; the mechanism — audited allowlist + fd-capture — is sound). C28 UNVERIFIED. Addresses review concern CH-10.
+
+## OQ-21: Deactivate = full rebuild-to-base; quoted-RHS element removal is reserved (from REVIEWS cycle-2 CH-11+CH-12)
+
+- **Question:** CH-1c defined deactivate's list op as pure rebuild-to-base (`PATH="$ZP_BASE_PATH"`), but the plan ALSO mandated the quoted-RHS per-element removal loop (CH-6) and cited C25 + a metacharacter fixture against it. In single-active v2.0 deactivate has no `$target` to remove — the loop is dead code. Reconcile?
+- **Tentative choice (applied):** State deactivate list reversal is a FULL rebuild-to-base and REMOVE the per-element quoted-RHS removal loop from the deactivate op rendering. DOCUMENT the quoted-RHS `[[ $e == "$target" ]]` form (C25 PROVEN) in an emit.go comment as the CORRECT form RESERVED for element-level removal WHEN needed (future `ListDelta.Deletions` / multi-managed) — currently unexercised, exactly like `ListDelta.Deletions` (04-01). With a runtime-VARIABLE `$target` and GLOB_SUBST off (zsh default), quoting is a robustness/GLOB_SUBST guard, NOT the sole barrier — do NOT present a functional test as pinning the C10 fix. Change the metacharacter residue sub-check to assert base-restore DROPS a profile-added `/opt/tool*` (an addition absent from base), which is what actually happens.
+- **Alternatives:** (a) keep the removal loop on the deactivate path (rejected — dead code in single-active v2.0, and the CH-6 functional test was non-discriminating per CH-11); (b) drop the quoted-RHS form entirely (rejected — it is the correct reserved form for future deletion, worth documenting).
+- **Impact:** Medium — removes dead code (simplicity) and corrects a non-discriminating test; the metacharacter fixture now asserts the real single-active behavior.
+- **Confidence:** HIGH (dictated by single-active v2.0 + C25 PROVEN). Addresses review concerns CH-11, CH-12.
+
+## OQ-22: Balanced switch-sequence generator (from REVIEWS cycle-2 CH-14)
+
+- **Question:** If the residue harness generates two applies without an intervening deactivate (A then B both shadow `ll`), B captures A's `ll` (not base's) → deactivate-B restores A's `ll` → residue vs base (a harness artifact, not an emit bug). How is the harness constrained?
+- **Tentative choice (applied):** The residue property-test generator produces only BALANCED sequences — model the real single-active checkout as deactivate-current-then-activate-next, so each apply is matched by its deactivate before a different profile applies (at most one active profile at any point). Add a generator meta-check (pure Go, no zsh) asserting the invariant on every generated sequence: two applies of different profiles never nest without an intervening deactivate.
+- **Alternatives:** (a) guard emit's apply to re-capture correctly when a different profile is already active (rejected for Phase 4 — that is the multi-active concern deferred with OQ-13; single-active v2.0 never nests applies); (b) leave the generator unconstrained (rejected — false-red residue from a harness artifact).
+- **Impact:** Medium — an unbalanced generator produces false-red residue; the balanced generator + invariant meta-check models the real runtime.
+- **Confidence:** HIGH (single-active v2.0 checkout is inherently balanced). Addresses review concern CH-14.
+
+## OQ-23: Base-ownership sub-check strengthened past tautology (from REVIEWS cycle-2 CH-15)
+
+- **Question:** The rescoped base-ownership sub-check asserted `/usr/local/bin` (base + profile-added) "survives" deactivate — trivially true for ANY base entry regardless of whether the profile's addition was mishandled; it did NOT prove ownership-awareness. Strengthen?
+- **Tentative choice (applied):** Strengthen the sub-check to assert, after apply→deactivate: (a) `$#path` is BYTE-IDENTICAL to baseline (guards strip AND duplicate) AND (b) `/usr/local/bin` appears EXACTLY once (guards strip and duplicate). Add a THIRD negative-control mutant (a renderList variant that strips base entries) that MUST fail this sub-check — so the sub-check is proven discriminating, not tautological.
+- **Alternatives:** (a) keep the "still present" assertion (rejected — tautology); (b) assert only exactly-once (rejected — misses a compensating strip+duplicate that keeps count wrong).
+- **Impact:** Medium — a tautological sub-check gives false confidence; the strengthened count+exactly-once + base-strip mutant makes it a real ownership guard.
+- **Confidence:** HIGH. Addresses review concern CH-15.

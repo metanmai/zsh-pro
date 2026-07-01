@@ -1,11 +1,11 @@
 ---
 phase: 04-manifest-builder-emit
-updated: 2026-07-01T18:30:00Z
+updated: 2026-07-01T20:00:00Z
 proven: 13
 static_validated: 1
 refuted: 12
 unverifiable: 0
-unverified: 0
+unverified: 2
 ---
 
 # Claims Ledger — Phase 4 Manifest Builder + Emit
@@ -26,6 +26,14 @@ throwaway `zsh -f` POC) and **C26 STATIC-VALIDATED** (source inspection of `core
 `core/ir/build.go` + Plan 04-01 Task 2 — the router admits a bounded scalar `[export ]PATH=<value>`
 shape and the builder's additions-vs-base split is well-defined with a precision-over-recall no-part
 fallback for ambiguous RHS). Neither is UNVERIFIED any longer.
+
+Cycle-2 adversarial review (REVIEWS.md §"Cycle 2", CH-9..CH-15) surfaced two NEW load-bearing claims
+(C27, C28) that no POC covers at logging time — both marked **UNVERIFIED**: C27 (emit.go's `SetOption`
+apply-side live-option capture and exact `RestoreOption` round-trip — CH-9) and C28 (the full-env
+`${(@kv)parameters}` snapshot instrument is self-stable under an audited volatile-param allowlist +
+fd-capture AND its meta-assert still fires on a non-exported leak and an exported value-only change —
+CH-10). A future claim-validation pass 2 (cycle-2) must POC-prove both before execution, exactly as
+pass-2 resolved C25/C26.
 
 | id | claim | source | status | evidence |
 |----|-------|--------|--------|----------|
@@ -55,6 +63,8 @@ fallback for ambiguous RHS). Neither is UNVERIFIED any longer.
 | C24 | Undo-slot names embed the profile; an illegal char (`feature/x`) makes an invalid `typeset -g` target → emit.go must sanitize to `[A-Za-z0-9_]` | 04-RESEARCH §Runtime Inventory / OQ-10 / A4 | PROVEN | `typeset -g "ZP_feature/x_..."` → `not valid in this context` exit 1 (feature/x, my-branch, "a b", ver.1, x@y); sanitize non-`[A-Za-z0-9_]`→`_` fixes all. Also blocks an injection vector (`x$(touch ...)`). Collision (`a/b`≡`a_b`) already flagged in OQ-10. **REVIEWS MEDIUM:** the injection corpus must be run through the slot-name derivation path (name→slot), not just values (Plan 04-02 Task 1/2) |
 | C25 | Quoted-RHS `[[ $e == "$target" ]]` is LITERAL-equality (not glob); a PATH element containing `* ? [ ]` is compared byte-literally so rebuild-from-base does not over-match/collateral-delete (the C10 fix) | 04-REVIEWS CH-6 / 04-RESEARCH Req 6 | PROVEN | `zsh -f poc.zsh` (5.9): (a) unquoted `[[ /opt/toolX == /opt/tool? ]]` → MATCH (glob, the bug); (b) quoted `[[ /opt/toolX == "/opt/tool?" ]]` → no-match (literal); (c) rebuild loop `for e in $path; do [[ $e == "$target" ]] || newpath+=("$e"); done` with `target='/opt/tool?'` removed ONLY the literal `/opt/tool?`, leaving `/opt/toolX /opt/toolY /usr/bin` intact — identical clean result for `target='/opt/*'` and `target='/opt/tool[ab]'`; (c4) control with UNQUOTED RHS over-deleted the siblings (reproduces C10). Quoted RHS is literal in ALL cases. See `## Details`. |
 | C26 | The builder narrows PATH/FPATH handling to the router-admitted scalar-assignment shape, so the Go-side `Value` split into additions-vs-base is well-defined and does not need to parse arbitrary `PATH=...` forms | 04-REVIEWS MEDIUM / D-07 / OQ-16 | STATIC-VALIDATED | Source inspection of `core/ir/route.go` + `core/ir/build.go` + Plan 04-01 Task 2. `routeManaged` (route.go:46-59) admits a `CatPath` block as MANAGED iff `KindAssignment` AND `len(Names)==1` AND NOT `b.Append` (`+=` → imperative, WR-01) AND NOT `b.Array` (`name=(...)` → imperative, UAT array gap) AND `cat==CatPath`. So every managed `CatPath` entry reaching the builder is a bounded, single-name scalar `[export ]PATH=<verbatim RHS>` OVERWRITE — no append, no array, no multi-name. The RHS `Value` is captured verbatim (parse.go:80-82) but the *shape* of the split is the builder's job, not the router's: Plan 04-01 Task 2 pins the builder to recognize a head/tail base self-reference (`$PATH`/`$path`/`${PATH}`/`$FPATH`/`$fpath`/`${FPATH}`) with colon-joined additions on the other side → `ListDelta{Additions:[non-base segments]}`, and produces NO part for ANY ambiguous RHS (no base marker, mid-list base, unrecognized brace) — precision-over-recall (ING-02), so the split is UNAMBIGUOUS by construction. Bounded set confirmed; not arbitrary-form parsing. See `## Details`. |
+| C27 | emit.go's `SetOption` apply rule can capture the LIVE option on/off state (`[[ -o optname ]]`) into a `${+slot}`-guarded was_on slot BEFORE `setopt`/`unsetopt`, and deactivate's `RestoreOption` can restore it EXACTLY (setopt/unsetopt on the captured value), incl. unset-vs-set-vs-toggled (was-on→profile-off→restored-on; was-off→profile-on→restored-off; was-on→profile-on→restored-on) | 04-REVIEWS CH-9 / Plan 04-02 Task 1/2 | UNVERIFIED | NEW claim from cycle-2 CH-9. No POC has yet exercised the live-option capture/restore round-trip under `zsh -f`. Pass-2 must POC-prove it (like C25 did for the quoted-RHS form): assert `[[ -o extendedglob ]]` captures the live state, a `${+slot}` guard makes capture idempotent across a double-apply, and RestoreOption returns the option to its exact prior across all three cases. The option-drift fixture in Plan 04-02 Task 2 is the runtime backstop; this claim gates trusting the SetOption apply rule. |
+| C28 | The full-env `${(@kv)parameters}` snapshot instrument yields a byte-identical EMPTY diff across two no-op snapshots (self-stable) under an audited volatile-param exclusion allowlist + fd/temp-file capture (not `$(...)`), AND its meta-assert still FIRES on a non-exported-var leak (`typeset localonly=x`) and an exported value-only change (`export EXISTING=changed`) | 04-REVIEWS CH-10 / Plan 04-02 Task 2 | UNVERIFIED | NEW claim from cycle-2 CH-10. `${(@kv)parameters}` includes volatile specials (SECONDS, RANDOM, LINENO, funcstack, pipestatus, `_`, HISTCMD, EPOCHSECONDS) + harness vars, so a naive instrument is not self-stable (false-red), and an over-broad filter re-opens the C19 false-green (CH-2's whole reason to exist). Pass-2 must POC-prove BOTH halves under `zsh -f`: (a) two consecutive no-op snapshots diff to empty under the allowlist + fd-capture; (b) the SAME allowlist still lets a non-exported leak and an exported value-only change fire the diff. This claim gates trusting the residue-test snapshot instrument. |
 
 ## Details
 
@@ -159,4 +169,4 @@ C25 (PROVEN pass-2) and C26 (STATIC-VALIDATED pass-2) are detailed at the end of
 - **STATIC-VALIDATED** — confirmed without running (type-check / source inspection / dry compile). Locked.
 - **REFUTED** — claim is false; owning doc/plan corrected and (if material) re-reviewed.
 - **UNVERIFIABLE** — could not be checked here; assumed-but-flagged → also in OPEN-QUESTIONS.
-- **UNVERIFIED** — extracted but not yet validated (transient; claim-validation pass 2 must resolve before execution). NONE remaining — pass 2 (2026-07-01) resolved the last two: C25 → PROVEN, C26 → STATIC-VALIDATED.
+- **UNVERIFIED** — extracted but not yet validated (transient; claim-validation pass 2 must resolve before execution). Cycle-1's C25/C26 were resolved (C25 → PROVEN, C26 → STATIC-VALIDATED). TWO remaining from cycle-2: **C27** (SetOption live-option capture/restore round-trip — CH-9) and **C28** (self-stable full-env snapshot instrument — CH-10). A cycle-2 claim-validation pass must POC-prove both before execution.
