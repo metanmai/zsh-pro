@@ -1,7 +1,7 @@
 ---
 phase: 04-manifest-builder-emit
-updated: 2026-07-01T23:55:00Z
-open_count: 27
+updated: 2026-07-02T00:00:00Z
+open_count: 28
 ---
 
 # Open Questions — Phase 4 Manifest Builder + Emit
@@ -257,3 +257,11 @@ open_count: 27
 - **Alternatives:** Leave as-is (rejected — each is a cheap precision/consistency win; unsorted enumeration and stale cruft would produce false-red/masked residue and re-run finished POCs).
 - **Impact:** Low-medium — precision/coverage/consistency; no mechanism change.
 - **Confidence:** HIGH. Addresses cycle-4 CH-20..CH-23.
+
+## OQ-29: PATH addition segments follow the value static/dynamic split (from REVIEWS cycle-5 CH-24)
+
+- **Question:** Cycle-5 CH-24 (HIGH, security) found that `renderList` spliced each user-controlled PATH/FPATH addition SEGMENT RAW into the eval'd `path=(<additions> $path)` array literal — with no static-quote / dynamic-verbatim discipline (unlike scalar/alias VALUE contexts, D-13/C7). Because a managed PATH prepend/append necessarily carries the `$PATH`/`$path` base self-reference, `Entry.Dynamic==true`, so EVERY segment was emitted verbatim — e.g. `export PATH=/opt/x$(touch $CANARY):$PATH` would run the command-sub on apply under the loader double-eval. The addition segment is a THIRD injectable class alongside values (C5/C6/C7) and names (C24/C29/C31), with no EVIDENCE claim covering apply-side segment inertness. How is a hostile PATH addition segment neutralized?
+- **Tentative choice (applied — auto-applied from review):** Mirror the `renderValue` split for list additions at BOTH the builder and emit. **At the 04-01 builder:** classify each split-out addition segment by the SAME `Entry.Dynamic` signal the value path uses (DYNAMIC = contains a `$`/`${...}`/`$(...)`/backtick construct; STATIC otherwise) — keep a DYNAMIC self-reference segment (`$HOME/bin`, `$PATH`) VERBATIM in `Additions` (portability, D-05/D-10 — do NOT hard-quote it, that would freeze `$HOME`), keep a static glob (`/opt/tool*`) as a plain Addition for emit to zquote, but DROP the WHOLE entry to no-part if ANY static segment carries a shell metacharacter/command-sub that cannot be safely represented (`;` `&` `|` backtick `(` `)` `<` `>` space newline, or a non-self-reference `$(...)`) — drop-to-no-part, precision-over-recall. **At the 04-02 emit `renderList`:** apply the SAME per-segment static-zquote / dynamic-verbatim split (a dynamic self-reference stays verbatim, a static segment is zquote'd inert) — the sole-codegen-seam enforcement (defense in depth over the builder drop). Add the PATH addition segment to the T-01-06 trust-boundary enumeration in both plans; add an addition-segment injection test through the `ApplyListDelta` emit path (static metacharacter/command-sub segment fires no canary when sourced under `zsh -f`; dynamic `$HOME/bin` segment expands late-bound); add a PROVEN-pending EVIDENCE claim C32 (UNVERIFIED — pass-5). This makes the injection boundary UNIFORM/complete: values (C5/C6/C7), names (C24/C29/C31), and now addition segments (C32).
+- **Alternatives:** (a) hard-quote every segment including the dynamic self-reference (rejected — freezes `$HOME`/`$PATH`, breaks EVAL-01 portability, D-05/D-10); (b) rely on the builder drop alone without the emit-side split (rejected — emit is the sole reverse-syntax codegen seam, so it must enforce the split for defense in depth, exactly as it re-validates names per CH-19); (c) leave segments raw and trust the router-admitted shapes (rejected — a command-sub inside an admitted prepend/append RHS still reaches the array literal, the exact CH-24 hazard).
+- **Impact:** HIGH (security) — an unquoted static metacharacter/command-sub PATH addition segment is a shell-injection vector through the emitted double-eval'd apply code (`export PATH=/opt/x$(touch $CANARY):$PATH`). Neutralized by the builder drop + emit per-segment split + corpus test + C32. Completes the uniform injection boundary.
+- **Confidence:** HIGH (the split mirrors the PROVEN renderValue/C5 value discipline exactly; the builder drop mirrors the C29/C31 name defenses; C32 UNVERIFIED pending pass-5). Addresses review concern CH-24.
