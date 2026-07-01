@@ -1,7 +1,7 @@
 ---
 phase: 05-runtime-loader-cli-bootstrap
 updated: 2026-07-02T00:00:00Z
-open_count: 10
+open_count: 12
 ---
 
 # Open Questions — Phase 5 Runtime Loader + CLI + Bootstrap
@@ -102,3 +102,22 @@ open_count: 10
 - **Why uncertain:** Seam naming/placement only; the invariant (const in `core/shell/zsh`, `core/cli` zsh-text-free) is firm.
 - **Impact:** Low. Reversible.
 - **Confidence:** HIGH on the invariant; MEDIUM-HIGH on `HookScript()` on the Provider.
+
+
+## OQ-05-11: Structural zero-subprocess grep must exclude verb function BODIES, not just the stub
+
+- **Question:** Requirement 7's acceptance greps the shell-start path for `$(...)`/`git`/`zsh-pro`. But the cached loader that the stub sources DEFINES the verb functions, whose bodies legitimately contain `$(zsh-pro emit …)` and (via the store) `git`. A naive whole-file grep of the cached loader would false-fail. What exactly does the zero-subprocess assertion grep?
+- **Tentative choice (applied):** The assertion targets the **start path only** = the installed stub block + the loader's top-level (sourced-at-load) statements, EXCLUDING the verb function bodies (which execute only on explicit invocation, never at source time). Concretely: grep the stub block (must be clean) and assert that no `$(`/backtick/`git`/bare-`zsh-pro`-command appears at the loader's top level outside a `funcname(){ … }` body. Verified (RESEARCH E13) that the stub block itself is clean; the loader's top level is pure `typeset`/function-definition. Sourcing a function definition does NOT execute its body — so a `$(zsh-pro …)` inside `activate(){ … }` is never run at start.
+- **Alternatives:** (a) whole-file grep of the cached loader (rejected — false-fails on legitimate verb-body subprocess calls); (b) run the loader under a `zsh` trap that fails on any `exec`/command-substitution at source time (heavier; the grep-of-top-level is simpler and equally load-bearing).
+- **Why uncertain:** The precise grep expression (how to reliably delimit "top level" vs "inside a function body" in the emitted loader text) is an implementation detail; a structural check that only inspects the stub + asserts the loader top-level is definitions-only is the safe form.
+- **Impact:** Low-medium — a wrong grep either false-fails CI or misses a real subprocess. The `hyperfine` budget (< 10 ms) is the empirical backstop either way.
+- **Confidence:** MEDIUM-HIGH. The invariant (no subprocess executes at source time) is firm and verified; only the exact grep encoding is open.
+
+## OQ-05-12: `hyperfine` measurement fixture — how to install-vs-not-install a `.zshrc` block hermetically
+
+- **Question:** `hyperfine 'zsh -i -c exit'` must compare startup WITH vs WITHOUT the managed block, without mutating the developer's real `~/.zshrc`. `hyperfine` is ABSENT locally (a dev/CI tool). How is the comparison staged?
+- **Tentative choice (applied):** Use a throwaway `ZDOTDIR` pointing at a fixture dir containing a `.zshrc` with the block (and its cached loader) vs an empty `.zshrc`, e.g. `hyperfine 'ZDOTDIR=<with> zsh -i -c exit' 'ZDOTDIR=<without> zsh -i -c exit'`. This never touches the real `~/.zshrc`. Where `hyperfine` is absent (local dev, this research), an in-process `EPOCHREALTIME` loop over N sources of the cached loader is the proxy (RESEARCH E14 measured ~0.03 ms added, 380× under the 10 ms budget). The `hyperfine` run is a CI gate gated on the tool being present; the structural zero-subprocess grep (OQ-05-11) is the primary guarantee.
+- **Alternatives:** (a) mutate `~/.zshrc` under test then restore (fragile, risks clobbering a real config); (b) skip `hyperfine` entirely and rely only on the structural grep (loses the empirical backstop). The `ZDOTDIR` fixture is the hermetic, reversible choice.
+- **Why uncertain:** Whether CI has `hyperfine` installed, and the exact fixture wiring, are environment/plan details; the measurement is a backstop, not the load-bearing guard.
+- **Impact:** Low — the structural grep is the real gate; the ms budget is a sanity backstop with a working proxy when `hyperfine` is unavailable.
+- **Confidence:** MEDIUM-HIGH.
