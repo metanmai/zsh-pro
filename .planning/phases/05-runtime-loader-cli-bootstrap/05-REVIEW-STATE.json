@@ -6,6 +6,7 @@
   "converged": false,
   "max_cycles": 5,
   "status": "cycle-1-replan-complete-cycle-2-review-pending",
+  "resume_hint": "PAUSED on session rate limit 2026-07-02 ~19:48 IST (cycle-2 5-lens panel died before returning; 0 findings captured — RE-RUN cycle 2 from scratch). BEFORE re-review: the replan (633d5ce) referenced 05-CONTRACT.md (the C2 blocking re-diff obligation for the CLI->emit seam) in 05-01/05-02/05-OPEN-QUESTIONS but NEVER created the file — create 05-CONTRACT.md (or the cycle-2 correctness/coverage lens will HIGH-flag the dangling reference). Do NOT re-run the planner (plans are committed + refined). Then run cycle-2 review; if 0 HIGH -> 3h test-design; else replan cycle 2.",
   "lens_high": {
     "correctness": 3,
     "risk": 4,
