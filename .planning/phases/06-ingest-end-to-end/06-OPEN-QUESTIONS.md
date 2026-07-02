@@ -24,7 +24,25 @@ The SPEC gate passed on the initial assessment (ambiguity 0.16, all dimensions a
 - **Impact:** Medium — determines where imperative content is written and how re-ingest idempotency + out-of-block detection are implemented. Reversible: the routing target is a plan-time wiring decision, and the SPEC pins the *behavior* (imperative verbatim, never dropped; managed block byte-identical; out-of-block content preserved) independent of the exact file layout.
 - **Confidence:** Medium — behavior is locked by REQUIREMENTS/ROADMAP; the physical seam depends on Phase 5's landed installer, so treat as a plan-time reconciliation gate against the actual Phase 5 marker contract.
 
+## OQ-06-03 — Ingest `--json` output shape (dedicated DTO/renderer vs inline struct)
+
+- **Question:** Does the `ingest` verb's `--json` output get a dedicated `core/dto` type + `core/render` renderer (like `analyze`), or a smaller inline JSON struct emitted from the CLI?
+- **Tentative choice:** A small ingest-result DTO in `core/dto` rendered via a thin `core/render` path — consistent with the existing domain→DTO separation and the `analyze` precedent (`core/render/json.go` + `core/dto/envelope.go`). Fields: managed-entry count, master-block line count, withheld list (name + line, NO value), out-of-block-warning list, ok/exit_code.
+- **Alternatives:** An inline `map[string]any`/anonymous struct marshaled directly in the CLI (lighter, but diverges from the established render/DTO seam and risks leaking store types onto the wire); reusing the `fail` envelope shape for success too (conflates error and success envelopes).
+- **Why uncertain:** UX/serialization-surface choice; both satisfy the agent contract (exactly one JSON object on stdout). The `analyze` path establishes the DTO+renderer pattern, but ingest's payload is small enough that an inline struct is defensible.
+- **Impact:** Low — the wire shape is trivially changeable; no requirement depends on the exact JSON structure, only that withheld + counts + warnings are present and no secret value / zsh text / store type reaches the wire.
+- **Confidence:** Medium-High (the render/DTO seam is the established pattern; safe default follows it).
+
+## OQ-06-04 — Seam for reading Phase 5 marker constants in the out-of-block scan
+
+- **Question:** How does the out-of-block-append detector obtain Phase 5's BEGIN/END marker strings without duplicating them or crossing the composition-root layering line?
+- **Tentative choice:** Co-locate the out-of-block detector with the Phase 5 installer (the package that already owns the marker sentinels + the `~/.zshrc` read-modify-write), so the marker text has a single source of truth; the ingest orchestration invokes it. If the detector must live in the ingest path and cross a package boundary, expose the marker/scan via a narrow seam (mirroring the `shell.Regenerator`/`shell.Hooker` provider-seam pattern) so `core/cli` holds no marker/zsh text.
+- **Alternatives:** Re-declare the marker constants in the ingest package (rejected: two sources of truth — a marker drift silently breaks detection); read markers from a config value (over-engineered for two fixed constants).
+- **Why uncertain:** Phase 5's installer package layout is not yet on disk (planned, not executed), so the exact package that will own the markers — and whether it exposes a scan/detect entry point — is a forward reference reconciled at plan time (same gate as OQ-06-02 / CONTEXT D-07).
+- **Impact:** Low-Medium — determines where the detector lives and how it reaches the marker text; the BEHAVIOR (detect-and-warn, leave byte-identical) is locked independent of the seam. Reversible.
+- **Confidence:** Medium (behavior locked; physical seam depends on Phase 5's landed installer package).
+
 ---
 
 *Phase: 06-ingest-end-to-end*
-*Logged: 2026-07-02 (--auto SPEC generation)*
+*Logged: 2026-07-02 (--auto SPEC generation); OQ-06-03/OQ-06-04 added 2026-07-02 (autonomous smart-discuss)*
