@@ -143,3 +143,43 @@ open_count: 14
 - **Why uncertain:** The absolute ms number depends on the measurement machine and needs the real tool; the structural zero-subprocess check is the true guarantee, the ms budget a sanity backstop.
 - **Impact:** Low — the structural grep is the real gate; the ms budget is a backstop with a working proxy where `hyperfine` is unavailable.
 - **Confidence:** HIGH that the budget is comfortably met (proxy ~900× under); the real `hyperfine` confirmation is a CI-machine step.
+
+---
+
+> The following were logged during the `--reviews` replan (2026-07-02, cycle 1 → addressing `05-REVIEWS.md` C1–C13 + M0–M10). Unattended mode: recommended/safest-reversible defaults chosen silently; the medium/low-confidence ones are recorded here.
+
+## OQ-05-15: CLI→emit seam shape — `Emitter` interface vs re-using `Store.Read` (C2)
+
+- **Question:** C2 requires `core/cli` to reach Phase 4's emit path WITHOUT importing `core/shell/zsh` (D-19). Should the seam be a dedicated `Emitter` interface, or should the CLI derive emitted code from `Store.Read(profile)` + the provider's `Regenerator`?
+- **Tentative choice (applied):** A dedicated narrow `cli.Emitter` interface (`Emit(ctx, mode, name) (string, error)`) injected at the composition root, with a `notReadyEmitter` stub for the pre-Phase-4 window (compile-time seam present; runtime `fail` "emit path not yet available"; never fake apply code). Mirrors the `Store`/`Provider` injection discipline.
+- **Alternatives:** (a) `Store.Read` + `Regenerator` in the CLI (rejected — pushes emit orchestration/ordering into `core/cli`, duplicating Phase 4's emit logic and widening the CLI's responsibility); (b) let the sourced verb shell out to `zsh-pro emit` and have the CLI never model emit at all (rejected — the CLI still needs a production `emit` verb handler; the seam is where Phase 4 plugs in).
+- **Why uncertain:** Phase 4's `emit.go` public entry-point shape is not yet on disk; the `Emit(mode,name)` signature is the expected contract but is a RE-DIFF obligation (05-CONTRACT.md, BLOCKING phase-exit).
+- **Impact:** Medium — reversible (a one-package interface swap) but load-bearing for Requirement 2; the RE-DIFF gate is the backstop.
+- **Confidence:** MEDIUM-HIGH.
+
+## OQ-05-16: Runtime-failure recovery depth — re-apply last-good vs report-only (C11)
+
+- **Question:** C11 requires a runtime-error-mid-`eval` path (readonly-var assignment, `path=()` glob failure under `no_unset`, etc.) to not be silently swallowed. Should the verb attempt an automatic re-apply of `ZP_LAST_GOOD_PROFILE`, or only report and instruct the user?
+- **Tentative choice (applied):** The plan permits EITHER — re-derive+re-apply last-good when safe, OR emit a clear "switch failed; shell may be partially changed; run `checkout <last-good>`" report — and the test asserts the recovery/report path FIRES (not silent success). The honest contract wording is downgraded from "atomic / no half-apply" to "syntax-validated + emit-gated + best-effort with runtime-failure recovery/report".
+- **Alternatives:** (a) claim true atomicity via a full declarative-state snapshot/rollback around every eval (rejected for this phase — a general shell-state snapshot is heavy and out of scope; deferred as a possible Phase 6 hardening); (b) report-only with no recovery attempt (acceptable fallback, allowed by the plan).
+- **Why uncertain:** True runtime atomicity needs a save-point/rollback design that Phase 4's emit shape has not settled; the safest honest stance is best-effort + explicit recovery + truthful wording.
+- **Impact:** Medium — affects the strength of the Requirement-6 guarantee; reversible (recovery depth can be strengthened later without changing the seam).
+- **Confidence:** MEDIUM. Deferred-with-reason: full snapshot/rollback atomicity is explicitly out of Phase 5 scope (heavyweight, Phase-4-shape-dependent); logged as a candidate future hardening.
+
+## OQ-05-17: `command -v zsh-pro` guard placement — stub vs verb bodies (C9 / D-11 vs D-13)
+
+- **Question:** D-11 mandates a `command -v zsh-pro` guard in the stub; D-13 mandates the stub source a CACHED loader with zero subprocess (the binary is not invoked on the hot path). C9 flagged the guard was dropped. Where does the guard live so both hold?
+- **Tentative choice (applied):** KEEP the `command -v zsh-pro` guard IN the stub (it is a builtin, zero-subprocess — satisfies D-13's no-`$(...)`/no-binary-exec constraint) as an AND-condition with the `[[ -r <cached> ]]` readability guard, AND the verb bodies (which DO shell out) remain the place the binary is actually invoked. This honors D-11's SPEC-locked guard without re-opening D-13. No SPEC amendment needed — both decisions are satisfied simultaneously.
+- **Alternatives:** (a) relocate the guard solely to the verb bodies + amend 05-SPEC that D-13 supersedes the stub guard (rejected — unnecessary; `command -v` is a builtin and does not violate the zero-subprocess invariant, so the stub can keep it); (b) drop it entirely (rejected — that is the C9 defect).
+- **Why uncertain:** Low — `command -v` being a zsh builtin (no fork) is well-established; the structural grep asserts no `$(`/binary-exec, which `command -v` does not trip.
+- **Impact:** Low — reversible; the fail-open test now exercises the real guard.
+- **Confidence:** HIGH.
+
+## OQ-05-18: `05-CONTRACT.md` as a durable read_first source (C2/C16 + LOW concern)
+
+- **Question:** The review's LOW concern noted the C16 contract table lived in the SUMMARY (written at completion) but Task 2 read_first depended on it — a SUMMARY cannot be a read_first input. Where does the durable contract live?
+- **Tentative choice (applied):** Task 1 now writes a dedicated durable `05-CONTRACT.md` IMMEDIATELY (both the loader helper/state contract AND the CLI→emit subcommand/seam contract), with a `[ ] RE-DIFF ... (BLOCKING phase-exit)` checkbox obligation. Task 2/3 read_first cite `05-CONTRACT.md`; the SUMMARY links to it. This makes the re-diff a durably-recorded blocking obligation, not a SUMMARY note.
+- **Alternatives:** (a) keep it in the SUMMARY (rejected — the read_first-timing defect); (b) inline the contract in each downstream task's read_first prose (rejected — drift risk across two plans).
+- **Why uncertain:** Low.
+- **Impact:** Low — improves traceability and closes the read_first-ordering gap.
+- **Confidence:** HIGH.

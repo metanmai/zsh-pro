@@ -5,7 +5,7 @@
   "prev_high": 9999,
   "converged": false,
   "max_cycles": 5,
-  "status": "cycle-1-complete-replan-pending",
+  "status": "cycle-1-replan-complete-cycle-2-review-pending",
   "lens_high": {
     "correctness": 3,
     "risk": 4,
