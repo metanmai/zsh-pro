@@ -13,6 +13,10 @@ In a fresh **Opus** session at the repo root, run:
 
 It is sentinel-resumable: it will **skip Phase 4** (has `04-DOCS-COMPLETE.md`) and **resume Phase 5 at the adversarial review** (the seeded `05-REVIEW-STATE.json` routes step 3f→3g so the planner does NOT re-run and clobber the committed plans). Then it continues to Phase 6.
 
+> **Model routing (user preference, 2026-07-02):** use **Opus** for most work (planning/replanning, orchestration-level corrections); dispatch the **adversarial review panel and deep claim-validation on Fable** (thorough analysis/review); use **Sonnet** for miscellaneous/mechanical tasks (cleanup edits, doc-writers, simple commits). Pass these via the Agent `model=` arg (overrides the workflow's default all-Opus-via-inherit). Fable agents run in the background/async — launch the full panel, then await completion notifications.
+>
+> **In-flight when checkpointed:** Phase 5 review cycle-1 correctness+risk lenses were launched on Fable but had not returned; review agents write nothing to disk, so nothing is lost — a resumed run restarts cycle-1 review cleanly (05-REVIEWS.md still absent, REVIEW-STATE still cycle 0).
+>
 > Config note: the unattended config is still set (`model_profile=inherit`, `workflow.text_mode=true`, `workflow.auto_advance=false`, `_auto_chain_active=false`); the backup sidecar `.planning/.docs-autonomous-config-backup.json` (original: `model_profile=quality`, `text_mode=false`, `auto_advance=false`) survives and is restored only at CLEAN completion (all phases done). Leave it in place while resuming.
 
 ## Status by phase
