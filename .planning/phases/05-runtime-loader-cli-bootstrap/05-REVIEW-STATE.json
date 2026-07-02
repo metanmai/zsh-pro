@@ -1,10 +1,17 @@
 {
   "phase": "05",
-  "cycle": 0,
-  "HIGH_COUNT": null,
+  "cycle": 1,
+  "HIGH_COUNT": 17,
   "prev_high": 9999,
   "converged": false,
   "max_cycles": 5,
-  "status": "plans-committed-review-not-started",
-  "note": "Plans 05-01-PLAN.md / 05-02-PLAN.md are COMMITTED (25a66c3); the C16 reconciliation gate is Task 1 in 05-01. Claim-validation pass 1 is done (14 PROVEN, C16 REFUTED→corrected, C15 hyperfine UNVERIFIABLE→CI-deferred). The adversarial review loop (workflow step 3g) has NOT started for Phase 5 — cycle 1 (the 5-lens panel over 05-01/05-02) is the NEXT step. This seed file exists so a resumed /gsd-docs-autonomous routes to 3g and does NOT re-run the planner (the 3f resume guard: PLAN present + REVIEW-STATE present → skip to 3g). Do NOT re-plan; the committed plans are complete and well-formed."
+  "status": "cycle-1-complete-replan-pending",
+  "lens_high": {
+    "correctness": 3,
+    "risk": 4,
+    "requirement-coverage": 4,
+    "security": 3,
+    "simplicity": 3
+  },
+  "note": "Cycle 1: 5-lens panel (with redundant 2nd correctness+risk runs) over 05-01/05-02-PLAN.md. Consolidated into 13 consensus HIGH concerns C1-C13 + M0-M10 in 05-REVIEWS.md. Dominant themes: (C1) ZSHPRO_PROFILE lifecycle + checkout verb path unowned/untested (D-05/06/07); (C2) CLI->emit seam undefined - needs shell.Emitter sub-interface + defined Case-B stub (NOT descope: Phase 4 executes before Phase 5, emit.go exists at execute time); (C3) binary-error/empty-emit not gated before eval; (C4) unbalanced managed-block markers -> data loss; (C5) atomic .zshrc write needs fsync+symlink handling; (C6) ZSHPRO_DISABLE inline return truncates .zshrc; (C7) cached-loader perms 0700/0600; (C8) secrets in shell history; (C9) command -v zsh-pro guard dropped w/o rationale; (C10) store-init typed-nil panic; (C11) runtime-error mid-eval breaks atomicity (syntax-only zsh -n); (C12) single validated block vs two emit subcommands; (C13) fail-open stub tests in wrong package (layering). Next: 3g-iv replan (gsd-plan-phase --reviews) addressing every HIGH, then cycle 2 re-review."
 }
