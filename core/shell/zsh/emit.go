@@ -166,9 +166,7 @@ func emitActivate(b *strings.Builder, op activate.Op) error {
 		}
 		slot := "ZP_PRIOR_FUNC_" + sanitizeSlot(x.Name)
 		fmt.Fprintf(b, "  if (( ! ${+%s} )); then if (( ${+functions[%s]} )); then typeset -g \"%s=${functions[%s]}\"; else typeset -g %s=__ZP_UNSET__; fi; fi\n", slot, x.Name, slot, x.Name, slot)
-		if x.Body != "" {
-			fmt.Fprintf(b, "  functions[%s]=%s\n", x.Name, quoteFunctionBody(x.Body))
-		}
+		fmt.Fprintf(b, "  functions[%s]=%s\n", x.Name, quoteFunctionBody(x.Body))
 	case activate.SetOption:
 		if !safeOptionName(x.Name) {
 			return nil
