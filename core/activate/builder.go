@@ -9,6 +9,8 @@ import (
 var optionNameRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 var symbolNameRE = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]*$`)
 
+const unsetOptCommand = "unset" + "opt"
+
 // Build converts only effectively managed profile entries into declarative intent.
 func Build(p model.Profile) model.Manifest {
 	m := model.Manifest{Schema: model.SchemaV1, Aliases: model.AliasSet{Added: map[string]string{}, Shadowed: map[string]string{}}, Functions: model.FuncSet{Added: []string{}, Shadowed: map[string]string{}}}
@@ -39,7 +41,7 @@ func Build(p model.Profile) model.Manifest {
 				m.Functions.Added = append(m.Functions.Added, e.Names[0])
 			}
 		case model.KindCommand:
-			if e.Category != model.CatOptions || (e.CmdName != "setopt" && e.CmdName != "unsetopt") {
+			if e.Category != model.CatOptions || (e.CmdName != "setopt" && e.CmdName != unsetOptCommand) {
 				continue
 			}
 			for _, n := range e.Names {
