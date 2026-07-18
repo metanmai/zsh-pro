@@ -51,3 +51,69 @@ func TestManifestKeysAndTriState(t *testing.T) {
 		t.Fatal("fixture did not decode")
 	}
 }
+
+func TestManifestSemanticProvenanceRoundTrip(t *testing.T) {
+	literal := false
+	m := Manifest{
+		Profile: "work",
+		Schema:  SchemaV1,
+		Env: []Scalar{{
+			Name:    "LITERAL",
+			Applied: "$HOME",
+			Dynamic: &literal,
+		}},
+		Aliases: AliasSet{
+			Added:   map[string]string{"literal": "echo $HOME"},
+			Dynamic: map[string]bool{"literal": false},
+		},
+		Functions: FuncSet{
+			Added:  []string{"empty", "multiline"},
+			Bodies: map[string]string{"empty": "", "multiline": "print one\nprint two"},
+		},
+	}
+
+	b, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got Manifest
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Env[0].Dynamic == nil || *got.Env[0].Dynamic {
+		t.Fatalf("literal scalar provenance lost: %#v", got.Env[0].Dynamic)
+	}
+	if dynamic, ok := got.Aliases.Dynamic["literal"]; !ok || dynamic {
+		t.Fatalf("literal alias provenance lost: %#v", got.Aliases.Dynamic)
+	}
+	if body, ok := got.Functions.Bodies["empty"]; !ok || body != "" {
+		t.Fatalf("present-empty function body lost: %#v", got.Functions.Bodies)
+	}
+	if !reflect.DeepEqual(m, got) {
+		t.Fatalf("round trip mismatch:\nwant %#v\n got %#v", m, got)
+	}
+}
+
+func TestManifestAdditiveSemanticFieldsRemainCompatible(t *testing.T) {
+	const legacy = `{"profile":"work","schema":"v1","env":[{"name":"HOME_COPY","applied":"$HOME"}],"lists":[],"aliases":{"added":{"home":"echo $HOME"},"shadowed":{}},"functions":{"added":["empty"],"shadowed":{}},"options":[]}`
+	var got Manifest
+	if err := json.Unmarshal([]byte(legacy), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Env[0].Dynamic != nil || got.Aliases.Dynamic != nil || got.Functions.Bodies != nil {
+		t.Fatalf("legacy manifest inferred additive fields: %#v", got)
+	}
+
+	b, err := json.Marshal(Manifest{
+		Profile:   "work",
+		Schema:    SchemaV1,
+		Aliases:   AliasSet{Added: map[string]string{}, Shadowed: map[string]string{}, Dynamic: map[string]bool{}},
+		Functions: FuncSet{Added: []string{}, Shadowed: map[string]string{}, Bodies: map[string]string{}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), `"dynamic"`) || strings.Contains(string(b), `"bodies"`) {
+		t.Fatalf("empty additive fields changed legacy shape: %s", b)
+	}
+}

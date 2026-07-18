@@ -58,3 +58,73 @@ func TestDiffRestoreDerivedFromAdded(t *testing.T) {
 		t.Fatal(p)
 	}
 }
+
+func TestDiffUsesExplicitDynamicProvenance(t *testing.T) {
+	literal := false
+	dynamic := true
+	target := &model.Manifest{
+		Schema: model.SchemaV1,
+		Env: []model.Scalar{
+			{Name: "LITERAL", Applied: "$HOME", Dynamic: &literal},
+			{Name: "DYNAMIC", Applied: "plain", Dynamic: &dynamic},
+			{Name: "LEGACY", Applied: "$HOME"},
+		},
+		Aliases: model.AliasSet{
+			Added:   map[string]string{"literal": "echo $HOME", "dynamic": "echo plain", "legacy": "echo $HOME"},
+			Dynamic: map[string]bool{"literal": false, "dynamic": true},
+		},
+	}
+	p, err := Diff(nil, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var scalars map[string]bool = map[string]bool{}
+	var aliases map[string]bool = map[string]bool{}
+	for _, op := range p.Activate {
+		switch op := op.(type) {
+		case SetScalar:
+			scalars[op.Name] = op.Dynamic
+		case AddAlias:
+			aliases[op.Name] = op.Dynamic
+		}
+	}
+	if scalars["LITERAL"] || !scalars["DYNAMIC"] || !scalars["LEGACY"] {
+		t.Fatalf("scalar provenance=%#v", scalars)
+	}
+	if aliases["literal"] || !aliases["dynamic"] || !aliases["legacy"] {
+		t.Fatalf("alias provenance=%#v", aliases)
+	}
+}
+
+func TestDiffFunctionBodyPresence(t *testing.T) {
+	target := &model.Manifest{
+		Schema:    model.SchemaV1,
+		Functions: model.FuncSet{Added: []string{"empty", "multiline"}, Bodies: map[string]string{"empty": "", "multiline": "print one\nprint two"}},
+	}
+	p, err := Diff(nil, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]string = map[string]string{}
+	for _, op := range p.Activate {
+		if fn, ok := op.(AddFunc); ok {
+			got[fn.Name] = fn.Body
+		}
+	}
+	if body, ok := got["empty"]; !ok || body != "" || got["multiline"] != "print one\nprint two" {
+		t.Fatalf("function bodies=%#v", got)
+	}
+
+	active := &model.Manifest{Schema: model.SchemaV1, Env: []model.Scalar{{Name: "OLD", Applied: "x"}}}
+	bad := &model.Manifest{Schema: model.SchemaV1, Functions: model.FuncSet{Added: []string{"missing"}}}
+	p, err = Diff(active, bad)
+	if err == nil || len(p.Deactivate) != 0 || len(p.Activate) != 0 {
+		t.Fatalf("missing target body did not reject whole plan: %#v %v", p, err)
+	}
+
+	legacyActive := &model.Manifest{Schema: model.SchemaV1, Functions: model.FuncSet{Added: []string{"old"}}}
+	p, err = Diff(legacyActive, nil)
+	if err != nil || len(p.Deactivate) != 2 || len(p.Activate) != 0 {
+		t.Fatalf("legacy deactivation blocked: %#v %v", p, err)
+	}
+}
