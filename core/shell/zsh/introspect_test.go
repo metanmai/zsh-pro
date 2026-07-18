@@ -47,3 +47,33 @@ func TestIntrospectMissingFileDegrades(t *testing.T) {
 		t.Fatal("inconsistent: no error but Available=false")
 	}
 }
+
+func TestIntrospectCapturesBodies(t *testing.T) {
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("zsh not installed")
+	}
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "rc.zsh")
+	body := "\tprint -r -- 'one'\n\tprint -r -- \"$HOME\""
+	if err := os.WriteFile(cfg, []byte("alias gs='git status'\nfoo() {"+body+";}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ids, err := (Provider{}).Introspect(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ids.AliasBodies["gs"] != "git status" {
+		t.Fatalf("alias body=%q", ids.AliasBodies["gs"])
+	}
+	if ids.FunctionBodies["foo"] != body {
+		t.Fatalf("function body=%q want %q", ids.FunctionBodies["foo"], body)
+	}
+}
+
+func TestParseIntrospectBodyBoundary(t *testing.T) {
+	s := "##ALIASBODIES##\ngs\x00git status\x00##FUNCTIONBODIES##\nfoo\x00\tprint hi\n## not a header\x00##END##\n"
+	ids := (Provider{}).parseIntrospect(s)
+	if ids.FunctionBodies["foo"] != "\tprint hi\n## not a header" {
+		t.Fatalf("body=%q", ids.FunctionBodies["foo"])
+	}
+}

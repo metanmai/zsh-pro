@@ -34,6 +34,10 @@ print -r -- '##PATH##'
 for p in $path; do print -r -- "$p"; done
 print -r -- '##OPTIONS##'
 for k in "${(@k)options}"; do [[ "${options[$k]}" == on ]] && print -r -- "$k"; done
+print -r -- '##ALIASBODIES##'
+for k in "${(@ok)aliases}"; do print -rN -- "$k" "${aliases[$k]}"; done
+print -r -- '##FUNCTIONBODIES##'
+for k in "${(@ok)functions}"; do print -rN -- "$k" "${functions[$k]}"; done
 print -r -- '##END##'
 `
 
@@ -54,16 +58,19 @@ func (p Provider) Introspect(path string) (model.IdentitySet, error) {
 
 func (Provider) parseIntrospect(s string) model.IdentitySet {
 	ids := model.IdentitySet{
-		Aliases:   map[string]bool{},
-		Functions: map[string]bool{},
-		Env:       map[string]bool{},
-		Options:   map[string]bool{},
+		Aliases:     map[string]bool{},
+		Functions:   map[string]bool{},
+		Env:         map[string]bool{},
+		Options:     map[string]bool{},
+		AliasBodies: map[string]string{}, FunctionBodies: map[string]string{},
 		Available: true,
 	}
+	parseBodies(s, "##ALIASBODIES##", "##FUNCTIONBODIES##", ids.AliasBodies)
+	parseBodies(s, "##FUNCTIONBODIES##", "##END##", ids.FunctionBodies)
 	section := ""
 	for _, line := range strings.Split(s, "\n") {
 		switch line {
-		case "##ALIASES##", "##FUNCTIONS##", "##ENV##", "##PATH##", "##OPTIONS##", "##END##":
+		case "##ALIASES##", "##FUNCTIONS##", "##ENV##", "##PATH##", "##OPTIONS##", "##ALIASBODIES##", "##FUNCTIONBODIES##", "##END##":
 			section = line
 			continue
 		}
@@ -81,6 +88,8 @@ func (Provider) parseIntrospect(s string) model.IdentitySet {
 			ids.Path = append(ids.Path, line)
 		case "##OPTIONS##":
 			ids.Options[line] = true
+		case "##ALIASBODIES##", "##FUNCTIONBODIES##":
+			// Body sections are parsed separately with NUL framing.
 		}
 	}
 	// v1 scoping: the engine consumes only ids.Available (see analyze.Analyzer.Analyze).
@@ -88,4 +97,30 @@ func (Provider) parseIntrospect(s string) model.IdentitySet {
 	// for a backlogged enrichment — env-isolated introspection plus opaque-init
 	// identity detection — and are intentionally not yet wired into the report.
 	return ids
+}
+
+// parseBodies reads NUL-framed name/body pairs. The section boundary is a NUL
+// followed by the next newline-framed sentinel, so body lines beginning ## are safe.
+func parseBodies(s, start, end string, dst map[string]string) {
+	startAt := strings.Index(s, start)
+	if startAt < 0 {
+		return
+	}
+	startAt = strings.IndexByte(s[startAt:], '\n')
+	if startAt < 0 {
+		return
+	}
+	startAt += strings.Index(s, start)
+	data := s[startAt+1:]
+	marker := "\x00" + end
+	if i := strings.Index(data, marker); i >= 0 {
+		data = data[:i]
+	}
+	parts := strings.Split(data, "\x00")
+	for i := 0; i+1 < len(parts); i += 2 {
+		if parts[i] == "" {
+			continue
+		}
+		dst[parts[i]] = parts[i+1]
+	}
 }
