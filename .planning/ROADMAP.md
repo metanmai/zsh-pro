@@ -134,9 +134,11 @@ Plans:
   3. Restore is ownership-aware: deactivate removes only what this profile added (drift guard — restore a value only if the live value still equals what was applied) and never strips base/unmanaged state a profile merely also added (e.g. `/usr/local/bin`).
   4. A shadowed prior alias/function is captured before override and re-established on deactivate; PATH is stored as a delta against the captured base, never a wholesale overwrite.
 
-**Plans**: 2 plans
+**Plans**: 2/3 plans executed
 
 Plans:
+
+- [ ] 04-UAT-PLAN.md
 
 **Wave 1**
 
@@ -144,7 +146,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1)*
 
-- [ ] 04-02-PLAN.md — `core/shell/zsh/emit.go` reverse codegen (injection-safe `zquote`/verbatim-dynamic split, drift-guarded `${(P)+var}`, ownership-aware PATH rebuild-from-base, `${+name}` shadow guards, verbatim function-body restore); `shell.Emitter` seam + composition-root wiring; zero-residue property test (N≥20, mutated-emitter negative check)
+- [x] 04-02-PLAN.md — `core/shell/zsh/emit.go` reverse codegen (injection-safe `zquote`/verbatim-dynamic split, drift-guarded `${(P)+var}`, ownership-aware PATH rebuild-from-base, `${+name}` shadow guards, verbatim function-body restore); `shell.Emitter` seam + composition-root wiring; zero-residue property test (N≥20, mutated-emitter negative check)
 
 ### Phase 5: Runtime Loader + CLI + Bootstrap
 
@@ -194,7 +196,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 | 1. SPIKE — Zero-Residue Live Hot-Switch | 2/2 | Complete   | 2026-06-25 |
 | 2. IR + Partial Evaluation | 3/3 | Complete   | 2026-06-26 |
 | 3. Git-Backed Store | 3/3 | Complete   | 2026-06-27 |
-| 4. Manifest Builder + Emit | 0/2 | Planned | - |
+| 4. Manifest Builder + Emit | 2/3 | In Progress|  |
 | 5. Runtime Loader + CLI + Bootstrap | 0/2 | Not started | - |
 | 6. Ingest End-to-End | 0/2 | Not started | - |
 
