@@ -2,14 +2,17 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Branchable Shell Environments
+current_phase: 04
+current_phase_name: manifest-builder-emit
 status: executing
 stopped_at: Completed 03-02-PLAN.md (core/store orchestrator + round-trip pin)
-last_updated: "2026-07-01T14:30:27.684Z"
-last_activity: 2026-07-01 -- Phase 04 planning complete
+last_updated: "2026-07-18T15:19:24.257Z"
+last_activity: 2026-07-18
+last_activity_desc: Phase 04 execution started
 progress:
   total_phases: 6
   completed_phases: 3
-  total_plans: 10
+  total_plans: 13
   completed_plans: 8
   percent: 50
 ---
@@ -21,14 +24,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-25)
 
 **Core value:** `checkout <branch>` gives you a different, trustworthy shell environment — declarative state (aliases/env/PATH/functions/options) applies and reverses cleanly with zero residue, while portability is preserved (dynamic values like `$HOME`/`$(...)` stay late-bound, never frozen to one machine).
-**Current focus:** Phase 4 — manifest builder + emit
+**Current focus:** Phase 04 — manifest-builder-emit
 
 ## Current Position
 
-Phase: 4
-Plan: Not started
-Status: Ready to execute
-Last activity: 2026-07-01 -- Phase 04 planning complete
+Phase: 04 (manifest-builder-emit) — EXECUTING
+Plan: 2 of 2
+Status: Executing Phase 04 (04-01 complete; 04-02 ready)
+Last activity: 2026-07-18 — Completed 04-01-PLAN.md (manifest, activation plan, body introspection)
 
 Progress: [██████████] 100%
 
@@ -118,6 +121,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-06-27T14:47:02.323Z
-Stopped at: Completed 03-02-PLAN.md (core/store orchestrator + round-trip pin)
+Last session: 2026-07-16T09:01:38Z
+Stopped at: Completed 04-01-PLAN.md; 04-02-PLAN.md is ready to execute
 Resume file: None

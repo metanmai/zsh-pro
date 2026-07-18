@@ -140,7 +140,7 @@ Plans:
 
 **Wave 1**
 
-- [ ] 04-01-PLAN.md — `model.Manifest` + four parts (Fork A two-type split, tri-state `Original`, `SchemaV1`); `core/activate` builder + agnostic `Plan` + differ (token-free, deactivate-then-activate); additive NUL-framed introspect body-dump + `IdentitySet` companions
+- [x] 04-01-PLAN.md — `model.Manifest` + four parts (Fork A two-type split, tri-state `Original`, `SchemaV1`); `core/activate` builder + agnostic `Plan` + differ (token-free, deactivate-then-activate); additive NUL-framed introspect body-dump + `IdentitySet` companions (completed 2026-07-18)
 
 **Wave 2** *(blocked on Wave 1)*
 
