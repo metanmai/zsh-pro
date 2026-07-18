@@ -160,3 +160,100 @@ func TestBuildDynamicIsOrthogonal(t *testing.T) {
 		t.Errorf("a dynamic env assignment should still route managed (orthogonal axes)")
 	}
 }
+
+// TestBuildCopiesRuntimeValueContract pins the additive parse-to-store semantic
+// contract. In particular, a present empty RuntimeValue must remain distinct
+// from a missing value, and Build must not alias the source pointer.
+func TestBuildCopiesRuntimeValueContract(t *testing.T) {
+	empty := ""
+	literal := "decoded value"
+	cases := []struct {
+		name        string
+		mode        model.ValueMode
+		runtime     *string
+		wantRuntime *string
+	}{
+		{name: "legacy missing", mode: model.ValueModeLegacy},
+		{name: "literal empty", mode: model.ValueModeLiteral, runtime: &empty, wantRuntime: &empty},
+		{name: "literal value", mode: model.ValueModeLiteral, runtime: &literal, wantRuntime: &literal},
+		{name: "dynamic missing", mode: model.ValueModeDynamic},
+		{name: "unsupported missing", mode: model.ValueModeUnsupported},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			blocks := []model.Block{{
+				Kind:         model.KindAssignment,
+				Names:        []string{"VALUE"},
+				ValueMode:    tc.mode,
+				RuntimeValue: tc.runtime,
+			}}
+			p := Build(blocks, stubClassifier{cat: model.CatEnvironment})
+			got := p.Entries[0]
+
+			if got.ValueMode != tc.mode {
+				t.Fatalf("ValueMode = %q, want %q", got.ValueMode, tc.mode)
+			}
+			if tc.wantRuntime == nil {
+				if got.RuntimeValue != nil {
+					t.Fatalf("RuntimeValue = %q, want nil", *got.RuntimeValue)
+				}
+				return
+			}
+			if got.RuntimeValue == nil || *got.RuntimeValue != *tc.wantRuntime {
+				t.Fatalf("RuntimeValue = %v, want present %q", got.RuntimeValue, *tc.wantRuntime)
+			}
+			if got.RuntimeValue == tc.runtime {
+				t.Fatal("RuntimeValue pointer aliases the source Block")
+			}
+			*got.RuntimeValue = "mutated"
+			if *tc.runtime != *tc.wantRuntime {
+				t.Fatalf("mutating Entry.RuntimeValue changed Block.RuntimeValue to %q", *tc.runtime)
+			}
+		})
+	}
+}
+
+// TestBuildCopiesFunctionBodyContract pins nil-vs-present body semantics for
+// empty and multiline functions without sharing pointers across the IR seam.
+func TestBuildCopiesFunctionBodyContract(t *testing.T) {
+	empty := ""
+	multiline := "\n\tprint one\n\tprint two\n"
+	cases := []struct {
+		name string
+		body *string
+	}{
+		{name: "missing"},
+		{name: "empty", body: &empty},
+		{name: "multiline", body: &multiline},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			blocks := []model.Block{{
+				Kind:         model.KindFuncDecl,
+				Names:        []string{"demo"},
+				FunctionBody: tc.body,
+			}}
+			p := Build(blocks, stubClassifier{cat: model.CatFunctions})
+			got := p.Entries[0].FunctionBody
+
+			if tc.body == nil {
+				if got != nil {
+					t.Fatalf("FunctionBody = %q, want nil", *got)
+				}
+				return
+			}
+			if got == nil || *got != *tc.body {
+				t.Fatalf("FunctionBody = %v, want present %q", got, *tc.body)
+			}
+			if got == tc.body {
+				t.Fatal("FunctionBody pointer aliases the source Block")
+			}
+			*got = "mutated"
+			if *tc.body == "mutated" {
+				t.Fatal("mutating Entry.FunctionBody changed Block.FunctionBody")
+			}
+		})
+	}
+}
