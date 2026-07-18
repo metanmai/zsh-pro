@@ -26,7 +26,7 @@ Requirements for this milestone. Each maps to a roadmap phase.
 ### Switch / Activation
 
 - [x] **SW-01**: A profile's declarative state is applied to the current shell via a **sourced loader that `eval`s emitted shell code** (a child process cannot mutate its parent shell). All zsh syntax lives in one emit path.
-- [ ] **SW-02**: Switching profiles **deactivates** the prior profile's managed state (reverse-diff manifest: `unalias`, `unset -f`, restore env to captured prior values, rebuild PATH from a captured base) then **activates** the new one — with **zero residue**: no leftover aliases/functions/options, no PATH growth, and base/unmanaged state left untouched (ownership-aware, Lmod-style — don't remove `/usr/local/bin` just because a profile also added it).
+- [x] **SW-02**: Switching profiles **deactivates** the prior profile's managed state (reverse-diff manifest: `unalias`, `unset -f`, restore env to captured prior values, rebuild PATH from a captured base) then **activates** the new one — with **zero residue**: no leftover aliases/functions/options, no PATH growth, and base/unmanaged state left untouched (ownership-aware, Lmod-style — don't remove `/usr/local/bin` just because a profile also added it).
 - [x] **SW-03**: *(Frontier)* Switching works **live in an already-open terminal**, not just new shells — validated by the Phase-1 spike asserting a byte-identical environment after `activate → switch → switch-back` on a no-op round-trip (env **and** aliases/functions/options).
 
 ### Bootstrap / Reliability
@@ -78,7 +78,7 @@ Which phases cover which requirements. Populated during roadmap creation.
 | PROF-01 | Phase 3 — Git-Backed Store | Complete |
 | PROF-02 | Phase 3 — Git-Backed Store | Complete |
 | SW-01 | Phase 4 — Manifest Builder + Emit | Complete |
-| SW-02 | Phase 4 — Manifest Builder + Emit | Pending |
+| SW-02 | Phase 4 — Manifest Builder + Emit | Complete |
 | BOOT-01 | Phase 5 — Runtime Loader + CLI + Bootstrap | Pending |
 | BOOT-02 | Phase 5 — Runtime Loader + CLI + Bootstrap | Pending |
 | PROF-03 | Phase 3 (store-side exclusion + reference) → Phase 4/5 (runtime deref) → Phase 6 (end-to-end ingest) | In progress (started Phase 3) |
