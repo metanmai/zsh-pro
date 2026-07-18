@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 
 	"zsh-pro/core/cli"
+	"zsh-pro/core/shell"
 	"zsh-pro/core/shell/zsh"
 	"zsh-pro/core/store"
 )
@@ -16,7 +17,10 @@ import (
 func main() {
 	// The concrete zsh provider is the engine's Parser/Classifier/Introspector AND the
 	// shell.Regenerator the store uses to derive profile.zsh (D-03).
+	// It also supplies the shell.Emitter seam for Phase 5's runtime loader.
 	provider := zsh.Provider{}
+	var emitter shell.Emitter = provider
+	_ = emitter // Phase 5 will drive this seam from the runtime loader.
 
 	// Construct + wire the git-backed store: zsh.Provider{} as the Regenerator and a
 	// runtime-selected keychain driver (security on macOS / secret-tool on Linux /

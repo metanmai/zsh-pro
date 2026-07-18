@@ -4,7 +4,10 @@
 // it needs.
 package shell
 
-import "zsh-pro/core/model"
+import (
+	"zsh-pro/core/activate"
+	"zsh-pro/core/model"
+)
 
 // Parser turns source into ordered, structurally-described blocks.
 type Parser interface {
@@ -32,6 +35,12 @@ type Introspector interface {
 // verbatim Text so it is total — no Kind ever yields undefined/empty output.
 type Regenerator interface {
 	Regenerate(e model.Entry) string
+}
+
+// Emitter is the sole reverse-zsh code-generation seam. Implementations turn
+// the shell-agnostic activation plan into apply and deactivate loader blocks.
+type Emitter interface {
+	Emit(p activate.Plan) (apply, deactivate string, err error)
 }
 
 // Provider composes the four concerns for convenient wiring.
