@@ -244,3 +244,53 @@ func TestParseOpaqueOnUnparseable(t *testing.T) {
 		t.Fatalf("want one opaque block, got %+v", blocks)
 	}
 }
+
+// TestParseCapturesFunctionBody pins assignment-ready body extraction without
+// changing Value's full-declaration regeneration contract.
+func TestParseCapturesFunctionBody(t *testing.T) {
+	cases := []struct {
+		name     string
+		src      string
+		wantBody string
+	}{
+		{name: "empty block", src: `foo(){}`, wantBody: ""},
+		{
+			name: "multiline plain block",
+			src: `foo() {
+  print one
+  # braces in comments stay data: { }
+  if true; then
+    print '}'
+  fi
+}`,
+			wantBody: "\n  print one\n  # braces in comments stay data: { }\n  if true; then\n    print '}'\n  fi\n",
+		},
+		{name: "subshell body", src: `foo() ( print hi )`, wantBody: `( print hi )`},
+		{name: "redirected block body", src: `foo() { print hi; } >file`, wantBody: `{ print hi; } >file`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			blocks, err := (Provider{}).Parse([]byte(tc.src))
+			if err != nil {
+				t.Fatalf("Parse error: %v", err)
+			}
+			if len(blocks) != 1 {
+				t.Fatalf("got %d blocks, want 1", len(blocks))
+			}
+			got := blocks[0]
+			if got.Kind != model.KindFuncDecl {
+				t.Fatalf("Kind = %q, want func", got.Kind)
+			}
+			if got.Value != tc.src {
+				t.Errorf("Value = %q, want full declaration %q", got.Value, tc.src)
+			}
+			if got.FunctionBody == nil {
+				t.Fatal("FunctionBody = nil, want present")
+			}
+			if *got.FunctionBody != tc.wantBody {
+				t.Errorf("FunctionBody = %q, want %q", *got.FunctionBody, tc.wantBody)
+			}
+		})
+	}
+}
