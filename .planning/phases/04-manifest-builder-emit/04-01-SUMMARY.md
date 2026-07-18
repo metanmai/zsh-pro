@@ -86,6 +86,7 @@ status: complete
 ## Task Commits
 
 1. **Tasks 1–3: manifest, activation plan, and body introspection** - `df5d2f9`
+2. **Token-free acceptance scan fix** - `e61568f`
 
 ## Deviations from Plan
 
