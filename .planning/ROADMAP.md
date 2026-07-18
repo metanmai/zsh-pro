@@ -134,7 +134,7 @@ Plans:
   3. Restore is ownership-aware: deactivate removes only what this profile added (drift guard — restore a value only if the live value still equals what was applied) and never strips base/unmanaged state a profile merely also added (e.g. `/usr/local/bin`).
   4. A shadowed prior alias/function is captured before override and re-established on deactivate; PATH is stored as a delta against the captured base, never a wholesale overwrite.
 
-**Plans**: 2/3 plans executed
+**Plans**: 2/6 plans executed (3 checker-approved gap-closure plans ready)
 
 Plans:
 
@@ -147,6 +147,18 @@ Plans:
 **Wave 2** *(blocked on Wave 1)*
 
 - [x] 04-02-PLAN.md — `core/shell/zsh/emit.go` reverse codegen (injection-safe `zquote`/verbatim-dynamic split, drift-guarded `${(P)+var}`, ownership-aware PATH rebuild-from-base, `${+name}` shadow guards, verbatim function-body restore); `shell.Emitter` seam + composition-root wiring; zero-residue property test (N≥20, mutated-emitter negative check)
+
+**Wave 3** *(gap closure; blocked on Wave 2)*
+
+- [ ] 04-03-PLAN.md — explicit legacy/literal/dynamic/unsupported runtime-value contract; AST-only fail-closed decoding; empty/multiline/compound/redirected function-body capture; IR/store compatibility
+
+**Wave 4** *(gap closure; blocked on Wave 3)*
+
+- [ ] 04-04-PLAN.md — backward-compatible manifest dynamic provenance + function body map; ValueMode-aware Build/Diff; empty-function emission; real source-to-live-zsh regression pipeline
+
+**Wave 5** *(gap closure; blocked on Wave 4)*
+
+- [ ] 04-05-PLAN.md — deterministic balanced N≥20 zero-residue property; type-aware collision-safe full-state oracle; self-tests and three independent emitter mutants
 
 ### Phase 5: Runtime Loader + CLI + Bootstrap
 

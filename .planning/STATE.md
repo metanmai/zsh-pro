@@ -6,9 +6,9 @@ current_phase: 04
 current_phase_name: manifest-builder-emit
 status: executing
 stopped_at: Completed 03-02-PLAN.md (core/store orchestrator + round-trip pin)
-last_updated: "2026-07-18T15:19:24.257Z"
+last_updated: "2026-07-18T16:53:06.930Z"
 last_activity: 2026-07-18
-last_activity_desc: Phase 04 execution started
+last_activity_desc: Phase 04 gap-closure planning complete — 3 plans ready
 progress:
   total_phases: 6
   completed_phases: 3
@@ -24,14 +24,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-25)
 
 **Core value:** `checkout <branch>` gives you a different, trustworthy shell environment — declarative state (aliases/env/PATH/functions/options) applies and reverses cleanly with zero residue, while portability is preserved (dynamic values like `$HOME`/`$(...)` stay late-bound, never frozen to one machine).
-**Current focus:** Phase 04 — manifest-builder-emit (verification gaps)
+**Current focus:** Phase 04 — manifest-builder-emit (gap-closure plans ready)
 
 ## Current Position
 
-Phase: 04 (manifest-builder-emit) — EXECUTING
-Plan: 2 of 2
-Status: Implementation complete; verification blocked on 3 integration/property gaps
-Last activity: 2026-07-18 — Phase 4 verification scored 8/11; gap closure required
+Phase: 04 (manifest-builder-emit) — GAP CLOSURE READY
+Plan: 04-03 next (3 gap-closure plans; 04-03 through 04-05)
+Status: Ready to execute
+Last activity: 2026-07-18 — Phase 4 gap-closure plans created and checker-approved
 
 Progress: [██████████] 100%
 
