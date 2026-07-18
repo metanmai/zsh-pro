@@ -86,3 +86,36 @@ func TestEmitAppliesAndRestoresShadowAndOption(t *testing.T) {
 		t.Fatalf("restore output=%q", out)
 	}
 }
+
+func TestEmitDefinesEmptyAndMultilineFunctions(t *testing.T) {
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("zsh not available")
+	}
+	p := activate.Plan{Activate: []activate.Op{
+		activate.AddFunc{Name: "zp04_empty", Body: ""},
+		activate.AddFunc{Name: "zp04_multiline", Body: "print -r -- line-one\nprint -r -- line-two"},
+	}}
+	apply, _, err := (Provider{}).Emit(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(apply, `functions[zp04_empty]=""`) {
+		t.Fatalf("empty function assignment missing:\n%s", apply)
+	}
+
+	check := exec.Command("zsh", "-n")
+	check.Stdin = strings.NewReader(apply)
+	if out, err := check.CombinedOutput(); err != nil {
+		t.Fatalf("syntax: %v\n%s\n%s", err, out, apply)
+	}
+
+	script := apply + `
+zp_apply
+(( ${+functions[zp04_empty]} )) || exit 11
+zp04_empty || exit 12
+[[ "$(zp04_multiline)" == $'line-one\nline-two' ]] || exit 13
+`
+	if out, err := exec.Command("zsh", "-f", "-c", script).CombinedOutput(); err != nil {
+		t.Fatalf("zsh: %v\n%s\n%s", err, out, script)
+	}
+}
