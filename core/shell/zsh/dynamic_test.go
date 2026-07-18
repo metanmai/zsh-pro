@@ -134,8 +134,8 @@ func TestParseRuntimeValueModes(t *testing.T) {
 		{name: "single quoted", src: `FOO='single quoted'`, wantValue: "'single quoted'", wantMode: model.ValueModeLiteral, wantRuntime: stringPtr("single quoted")},
 		{name: "double quoted", src: `FOO="double quoted"`, wantValue: `"double quoted"`, wantMode: model.ValueModeLiteral, wantRuntime: stringPtr("double quoted")},
 		{name: "concatenated parts", src: `FOO=a' b'"c"`, wantValue: `a' b'"c"`, wantMode: model.ValueModeLiteral, wantRuntime: stringPtr("a bc")},
-		{name: "escaped space", src: `FOO=hello\ world`, wantValue: `hello\ world`, wantMode: model.ValueModeLiteral, wantRuntime: stringPtr("hello world")},
-		{name: "escaped quote", src: `FOO=it\'s`, wantValue: `it\'s`, wantMode: model.ValueModeLiteral, wantRuntime: stringPtr("it's")},
+		{name: "escaped space", src: `FOO=hello\ world`, wantValue: `hello\ world`, wantMode: model.ValueModeLiteral, wantRuntime: stringPtr(`hello\ world`)},
+		{name: "escaped quote", src: `FOO=it\'s`, wantValue: `it\'s`, wantMode: model.ValueModeLiteral, wantRuntime: stringPtr(`it\'s`)},
 		{name: "empty literal", src: `FOO=''`, wantValue: "''", wantMode: model.ValueModeLiteral, wantRuntime: &empty},
 		{name: "quoted dollar literal", src: `alias x='$HOME'`, wantValue: "'$HOME'", wantMode: model.ValueModeLiteral, wantRuntime: stringPtr("$HOME")},
 		{name: "alias equals body", src: `alias x='a=b=c'`, wantValue: "'a=b=c'", wantMode: model.ValueModeLiteral, wantRuntime: stringPtr("a=b=c")},
@@ -176,8 +176,10 @@ func TestParseRuntimeValueModes(t *testing.T) {
 				}
 				return
 			}
-			if got.RuntimeValue == nil || *got.RuntimeValue != *tc.wantRuntime {
-				t.Errorf("RuntimeValue = %v, want present %q", got.RuntimeValue, *tc.wantRuntime)
+			if got.RuntimeValue == nil {
+				t.Errorf("RuntimeValue = nil, want present %q", *tc.wantRuntime)
+			} else if *got.RuntimeValue != *tc.wantRuntime {
+				t.Errorf("RuntimeValue = %q, want present %q", *got.RuntimeValue, *tc.wantRuntime)
 			}
 		})
 	}

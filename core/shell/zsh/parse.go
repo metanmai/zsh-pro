@@ -79,7 +79,7 @@ func (p Provider) describe(stmt *syntax.Stmt, b *model.Block, src []byte) {
 				}
 				if a.Value != nil {
 					b.Value = sliceSrc(src, a.Value.Pos().Offset(), a.Value.End().Offset())
-					b.Dynamic = b.Dynamic || wordIsDynamic(a.Value)
+					captureWordSemantics(b, a.Value, "")
 				}
 				// Array-valued (`name=(...)`): mvdan/sh populates a.Array and leaves
 				// a.Value nil, so the scalar branch above is skipped and b.Value stays
@@ -90,6 +90,7 @@ func (p Provider) describe(stmt *syntax.Stmt, b *model.Block, src []byte) {
 					b.Array = true
 				}
 			}
+			ensureExplicitValueMode(b)
 			return
 		}
 		name := c.Args[0].Lit()
@@ -111,8 +112,10 @@ func (p Provider) describe(stmt *syntax.Stmt, b *model.Block, src []byte) {
 					b.Flagged = true
 					continue
 				}
+				prefix := ""
 				if i := strings.IndexByte(lit, '='); i > 0 {
 					b.Names = append(b.Names, lit[:i])
+					prefix = lit[:i+1]
 				}
 				// Value is the text AFTER the first '=' in the word's verbatim
 				// source span, quotes preserved (no re-quoting). Alias args are
@@ -121,8 +124,11 @@ func (p Provider) describe(stmt *syntax.Stmt, b *model.Block, src []byte) {
 				if i := strings.IndexByte(span, '='); i >= 0 {
 					b.Value = span[i+1:]
 				}
-				b.Dynamic = b.Dynamic || wordIsDynamic(w)
+				if prefix != "" {
+					captureWordSemantics(b, w, prefix)
+				}
 			}
+			ensureExplicitValueMode(b)
 		case "export", "typeset", "declare", "local", "readonly":
 			b.Kind = model.KindAssignment
 			b.Exported = name == "export"
@@ -135,12 +141,13 @@ func (p Provider) describe(stmt *syntax.Stmt, b *model.Block, src []byte) {
 				}
 				if a.Value != nil {
 					b.Value = sliceSrc(src, a.Value.Pos().Offset(), a.Value.End().Offset())
-					b.Dynamic = b.Dynamic || wordIsDynamic(a.Value)
+					captureWordSemantics(b, a.Value, "")
 				}
 				if a.Array != nil {
 					b.Array = true // `export ARR=(x y)`: keep out of the templated path (UAT array gap)
 				}
 			}
+			ensureExplicitValueMode(b)
 			for _, w := range c.Args[1:] {
 				lit := p.wordLitPrefix(w)
 				if lit == "" || strings.HasPrefix(lit, "-") {
@@ -186,12 +193,13 @@ func (p Provider) describe(stmt *syntax.Stmt, b *model.Block, src []byte) {
 			}
 			if a.Value != nil {
 				b.Value = sliceSrc(src, a.Value.Pos().Offset(), a.Value.End().Offset())
-				b.Dynamic = b.Dynamic || wordIsDynamic(a.Value)
+				captureWordSemantics(b, a.Value, "")
 			}
 			if a.Array != nil {
 				b.Array = true // `typeset -a arr=(p q)` parses as a DeclClause (UAT array gap)
 			}
 		}
+		ensureExplicitValueMode(b)
 	case *syntax.FuncDecl:
 		b.Kind = model.KindFuncDecl
 		if c.Name != nil {
@@ -206,6 +214,7 @@ func (p Provider) describe(stmt *syntax.Stmt, b *model.Block, src []byte) {
 		// Capture the FULL `name() { ... }` span verbatim (NOT just the
 		// brace-body) — the pinned convention 02-02's templater emits unchanged.
 		b.Value = sliceSrc(src, stmt.Pos().Offset(), stmt.End().Offset())
+		b.FunctionBody = captureFunctionBody(c.Body, src)
 	case *syntax.IfClause, *syntax.ForClause, *syntax.WhileClause,
 		*syntax.CaseClause, *syntax.Block, *syntax.Subshell:
 		b.Kind = model.KindCompound
@@ -215,6 +224,174 @@ func (p Provider) describe(stmt *syntax.Stmt, b *model.Block, src []byte) {
 	default:
 		b.Kind = model.KindOther
 	}
+}
+
+// ensureExplicitValueMode prevents newly parsed scalar and alias blocks from
+// sharing the zero-value legacy fallback. Shapes without one safely modeled
+// word (bare declarations, arrays, flags, or multiple values) fail closed.
+func ensureExplicitValueMode(b *model.Block) {
+	if b.ValueMode == model.ValueModeLegacy {
+		b.ValueMode = model.ValueModeUnsupported
+		b.RuntimeValue = nil
+	}
+}
+
+// captureWordSemantics assigns one explicit semantic mode while preserving the
+// caller-owned verbatim Value. prefix is empty for assignments and the decoded
+// "name=" prefix for aliases, where only that exact prefix is removed.
+func captureWordSemantics(b *model.Block, w *syntax.Word, prefix string) {
+	if b.ValueMode != model.ValueModeLegacy {
+		// A Block has only one Value/RuntimeValue slot. Multiple assignment or
+		// alias words are routed imperative; mark their aggregate unsupported
+		// rather than attach one word's semantics to another word's source.
+		b.ValueMode = model.ValueModeUnsupported
+		b.RuntimeValue = nil
+		b.Dynamic = b.Dynamic || wordIsDynamic(w)
+		return
+	}
+
+	if wordIsDynamic(w) {
+		b.Dynamic = true
+		b.ValueMode = model.ValueModeDynamic
+		b.RuntimeValue = nil
+		return
+	}
+
+	decoded, ok := decodeLiteralWord(w, prefix)
+	if !ok {
+		b.ValueMode = model.ValueModeUnsupported
+		b.RuntimeValue = nil
+		return
+	}
+	if prefix != "" {
+		if !strings.HasPrefix(decoded, prefix) {
+			b.ValueMode = model.ValueModeUnsupported
+			return
+		}
+		decoded = strings.TrimPrefix(decoded, prefix)
+	}
+	b.ValueMode = model.ValueModeLiteral
+	b.RuntimeValue = &decoded
+}
+
+// decodeLiteralWord decodes only AST forms whose runtime data semantics are
+// explicitly modeled. It does no expansion, environment lookup, filesystem
+// access, or execution. prefix identifies the unquoted alias "name=" portion
+// so a tilde immediately after it is still recognized as a leading expansion.
+func decodeLiteralWord(w *syntax.Word, prefix string) (string, bool) {
+	if w == nil {
+		return "", false
+	}
+
+	word := *w
+	word.Parts = append([]syntax.WordPart(nil), w.Parts...)
+	// Brace expansion begins life inside Lit nodes. SplitBraces upgrades valid
+	// forms to BraceExp nodes so the allowlist rejects them instead of treating
+	// their expansion syntax as inert data.
+	syntax.SplitBraces(&word)
+
+	if len(word.Parts) > 0 {
+		if lit, ok := word.Parts[0].(*syntax.Lit); ok {
+			leading := lit.Value
+			if prefix != "" {
+				if !strings.HasPrefix(leading, prefix) {
+					return "", false
+				}
+				leading = strings.TrimPrefix(leading, prefix)
+			}
+			if strings.HasPrefix(leading, "~") {
+				return "", false
+			}
+		}
+	}
+	if containsUnquotedExtglob(word.Parts) {
+		return "", false
+	}
+
+	var out strings.Builder
+	if !decodeLiteralParts(&out, word.Parts, true) {
+		return "", false
+	}
+	return out.String(), true
+}
+
+func decodeLiteralParts(out *strings.Builder, parts []syntax.WordPart, rejectExtglob bool) bool {
+	for _, part := range parts {
+		switch p := part.(type) {
+		case *syntax.Lit:
+			if rejectExtglob && containsExtglobSyntax(p.Value) {
+				return false
+			}
+			out.WriteString(p.Value)
+		case *syntax.SglQuoted:
+			if p.Dollar {
+				return false
+			}
+			out.WriteString(p.Value)
+		case *syntax.DblQuoted:
+			if p.Dollar || !decodeLiteralParts(out, p.Parts, false) {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// mvdan/sh's zsh variant retains some extended-glob spellings inside Lit
+// nodes. They are still expansion syntax at runtime, so fail closed instead of
+// treating them as inert data. Quoted Lit nodes bypass this check.
+func containsExtglobSyntax(s string) bool {
+	for i := 0; i+1 < len(s); i++ {
+		if s[i+1] != '(' {
+			continue
+		}
+		switch s[i] {
+		case '@', '+', '*', '?', '!':
+			return true
+		}
+	}
+	return false
+}
+
+func containsUnquotedExtglob(parts []syntax.WordPart) bool {
+	var run strings.Builder
+	flush := func() bool {
+		unsupported := containsExtglobSyntax(run.String())
+		run.Reset()
+		return unsupported
+	}
+	for _, part := range parts {
+		if lit, ok := part.(*syntax.Lit); ok {
+			run.WriteString(lit.Value)
+			continue
+		}
+		if flush() {
+			return true
+		}
+	}
+	return flush()
+}
+
+// captureFunctionBody returns assignment-ready body text. Only a plain,
+// unmodified brace block loses its outer braces; all other statement forms keep
+// their complete source span so redirects, parentheses, and keywords survive.
+func captureFunctionBody(body *syntax.Stmt, src []byte) *string {
+	if body == nil || body.Cmd == nil {
+		return nil
+	}
+	if block, ok := body.Cmd.(*syntax.Block); ok && plainFunctionBlock(body) {
+		value := sliceSrc(src, block.Lbrace.Offset()+1, block.Rbrace.Offset())
+		return &value
+	}
+	value := sliceSrc(src, body.Pos().Offset(), body.End().Offset())
+	return &value
+}
+
+func plainFunctionBlock(body *syntax.Stmt) bool {
+	return len(body.Redirs) == 0 &&
+		!body.Negated && !body.Background && !body.Coprocess && !body.Disown
 }
 
 // sliceSrc returns the verbatim source text spanning [start, end), clamped to
