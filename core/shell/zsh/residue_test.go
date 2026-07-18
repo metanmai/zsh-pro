@@ -389,3 +389,42 @@ func TestZeroResidueFullStateProperty(t *testing.T) {
 		t.Fatalf("seed=%d trace=%s: missing PASS marker: %q", residueSeed, trace, run.output)
 	}
 }
+
+func TestSnapshotOracleMetaSensitivity(t *testing.T) {
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("zsh not installed")
+	}
+	mutations := []string{
+		"non-exported scalar",
+		"exported scalar value",
+		"indexed-array element",
+		"associative-array value",
+		"alias body",
+		"function body",
+		"option toggle",
+		"count-preserving PATH reorder",
+	}
+	for _, mutation := range mutations {
+		t.Run(mutation, func(t *testing.T) {
+			t.Fatalf("snapshot sensitivity not implemented for %s", mutation)
+		})
+	}
+}
+
+func TestSnapshotEscapesEmbeddedNULWithoutCollision(t *testing.T) {
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("zsh not installed")
+	}
+	t.Fatal("embedded-NUL snapshot guard not implemented")
+}
+
+func TestResidueRendererMutants(t *testing.T) {
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("zsh not installed")
+	}
+	for _, mutant := range []string{"blind PATH append", "dropped static quoting", "base stripping"} {
+		t.Run(mutant, func(t *testing.T) {
+			t.Fatalf("negative-control mutant not implemented: %s", mutant)
+		})
+	}
+}
