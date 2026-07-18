@@ -6,7 +6,8 @@ import (
 )
 
 func TestBuildAdmittedAndGuards(t *testing.T) {
-	p := model.Profile{Entries: []model.Entry{{Category: model.CatEnvironment, Kind: model.KindAssignment, Names: []string{"EDITOR"}, Value: "nvim", Managed: true}, {Category: model.CatPath, Kind: model.KindAssignment, Names: []string{"PATH"}, Value: "$HOME/bin:$PATH", Managed: true}, {Category: model.CatAliases, Kind: model.KindAlias, Names: []string{"gs"}, Value: "git status", Managed: true}, {Category: model.CatFunctions, Kind: model.KindFuncDecl, Names: []string{"foo"}, Managed: true}, {Category: model.CatOptions, Kind: model.KindCommand, CmdName: "setopt", Names: []string{"extendedglob"}, Managed: true}, {Category: model.CatEnvironment, Kind: model.KindAssignment, Names: []string{"BAD"}, Value: "x", Managed: true, Override: model.OverrideUnmanaged}}}
+	body := "print ok"
+	p := model.Profile{Entries: []model.Entry{{Category: model.CatEnvironment, Kind: model.KindAssignment, Names: []string{"EDITOR"}, Value: "nvim", Managed: true}, {Category: model.CatPath, Kind: model.KindAssignment, Names: []string{"PATH"}, Value: "$HOME/bin:$PATH", Managed: true}, {Category: model.CatAliases, Kind: model.KindAlias, Names: []string{"gs"}, Value: "git status", Managed: true}, {Category: model.CatFunctions, Kind: model.KindFuncDecl, Names: []string{"foo"}, Managed: true, FunctionBody: &body}, {Category: model.CatOptions, Kind: model.KindCommand, CmdName: "setopt", Names: []string{"extendedglob"}, Managed: true}, {Category: model.CatEnvironment, Kind: model.KindAssignment, Names: []string{"BAD"}, Value: "x", Managed: true, Override: model.OverrideUnmanaged}}}
 	m := Build(p)
 	if len(m.Env) != 1 || len(m.Lists) != 1 || len(m.Aliases.Added) != 1 || len(m.Functions.Added) != 1 || len(m.Options) != 1 {
 		t.Fatalf("manifest=%#v", m)

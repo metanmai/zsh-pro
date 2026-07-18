@@ -20,6 +20,9 @@ type Scalar struct {
 	Name     string  `json:"name"`               // variable name
 	Applied  string  `json:"applied"`            // profile value
 	Original *string `json:"original,omitempty"` // runtime-reconciled prior value
+	// Dynamic is present on newly built manifests. A nil pointer identifies a
+	// legacy manifest whose provenance must be inferred for compatibility.
+	Dynamic *bool `json:"dynamic,omitempty"`
 }
 
 // ListDelta records additions and deletions relative to the runtime base. Deletions
@@ -36,6 +39,9 @@ type ListDelta struct {
 type AliasSet struct {
 	Added    map[string]string `json:"added"`    // profile aliases
 	Shadowed map[string]string `json:"shadowed"` // runtime prior bodies
+	// Dynamic records provenance for every alias in a newly built manifest.
+	// Key absence identifies a legacy alias entry.
+	Dynamic map[string]bool `json:"dynamic,omitempty"`
 }
 
 // FuncSet separates function names (an array in the wire contract) from runtime
@@ -43,6 +49,9 @@ type AliasSet struct {
 type FuncSet struct {
 	Added    []string          `json:"added"`    // profile function names
 	Shadowed map[string]string `json:"shadowed"` // runtime prior bodies
+	// Bodies uses key presence to distinguish an empty function from a legacy
+	// manifest or malformed target that has no activation body.
+	Bodies map[string]string `json:"bodies,omitempty"`
 }
 
 // OptionSet records the desired option state. WasOn is a runtime-captured fact;

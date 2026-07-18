@@ -13,7 +13,19 @@ const unsetOptCommand = "unset" + "opt"
 
 // Build converts only effectively managed profile entries into declarative intent.
 func Build(p model.Profile) model.Manifest {
-	m := model.Manifest{Schema: model.SchemaV1, Aliases: model.AliasSet{Added: map[string]string{}, Shadowed: map[string]string{}}, Functions: model.FuncSet{Added: []string{}, Shadowed: map[string]string{}}}
+	m := model.Manifest{
+		Schema: model.SchemaV1,
+		Aliases: model.AliasSet{
+			Added:    map[string]string{},
+			Shadowed: map[string]string{},
+			Dynamic:  map[string]bool{},
+		},
+		Functions: model.FuncSet{
+			Added:    []string{},
+			Shadowed: map[string]string{},
+			Bodies:   map[string]string{},
+		},
+	}
 	for _, e := range p.Entries {
 		if !e.EffectiveManaged() {
 			continue
@@ -24,7 +36,11 @@ func Build(p model.Profile) model.Manifest {
 				continue
 			}
 			if e.Category == model.CatEnvironment || e.Category == model.CatSecrets {
-				m.Env = append(m.Env, model.Scalar{Name: e.Names[0], Applied: e.Value})
+				value, dynamic, ok := activationValue(e)
+				if !ok {
+					continue
+				}
+				m.Env = append(m.Env, model.Scalar{Name: e.Names[0], Applied: value, Dynamic: boolPtr(dynamic)})
 				continue
 			}
 			if e.Category == model.CatPath {
@@ -34,11 +50,17 @@ func Build(p model.Profile) model.Manifest {
 			}
 		case model.KindAlias:
 			if len(e.Names) == 1 && symbolNameRE.MatchString(e.Names[0]) {
-				m.Aliases.Added[e.Names[0]] = e.Value
+				value, dynamic, ok := activationValue(e)
+				if !ok {
+					continue
+				}
+				m.Aliases.Added[e.Names[0]] = value
+				m.Aliases.Dynamic[e.Names[0]] = dynamic
 			}
 		case model.KindFuncDecl:
-			if len(e.Names) == 1 && symbolNameRE.MatchString(e.Names[0]) {
+			if len(e.Names) == 1 && symbolNameRE.MatchString(e.Names[0]) && e.FunctionBody != nil {
 				m.Functions.Added = append(m.Functions.Added, e.Names[0])
+				m.Functions.Bodies[e.Names[0]] = *e.FunctionBody
 			}
 		case model.KindCommand:
 			if e.Category != model.CatOptions || (e.CmdName != "setopt" && e.CmdName != unsetOptCommand) {
@@ -53,6 +75,31 @@ func Build(p model.Profile) model.Manifest {
 	}
 	return m
 }
+
+// activationValue selects activation data solely from the semantic contract.
+// Only legacy entries may use the historical Value/Dynamic fallback.
+func activationValue(e model.Entry) (value string, dynamic, ok bool) {
+	switch e.ValueMode {
+	case model.ValueModeLegacy:
+		return e.Value, e.Dynamic, true
+	case model.ValueModeLiteral:
+		if e.RuntimeValue == nil {
+			return "", false, false
+		}
+		return *e.RuntimeValue, false, true
+	case model.ValueModeDynamic:
+		if !e.Dynamic {
+			return "", false, false
+		}
+		return e.Value, true, true
+	case model.ValueModeUnsupported:
+		return "", false, false
+	default:
+		return "", false, false
+	}
+}
+
+func boolPtr(v bool) *bool { return &v }
 
 func pathDelta(name, value string) (model.ListDelta, bool) {
 	if name != "PATH" && name != "path" && name != "FPATH" && name != "fpath" {

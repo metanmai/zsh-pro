@@ -15,6 +15,13 @@ func Diff(active, target *model.Manifest) (Plan, error) {
 	if target != nil && target.Schema != model.SchemaV1 {
 		return Plan{}, fmt.Errorf("target manifest schema %q unsupported", target.Schema)
 	}
+	if target != nil {
+		for _, name := range target.Functions.Added {
+			if _, ok := target.Functions.Bodies[name]; !ok {
+				return Plan{}, fmt.Errorf("target function %q has no activation body", name)
+			}
+		}
+	}
 	var p Plan
 	if active != nil {
 		p.Deactivate = deactivate(*active)
@@ -55,7 +62,11 @@ func deactivate(m model.Manifest) []Op {
 func activate(m model.Manifest) []Op {
 	var out []Op
 	for _, s := range m.Env {
-		out = append(out, SetScalar{Name: s.Name, Applied: s.Applied, Dynamic: containsDynamic(s.Applied)})
+		dynamic := containsDynamic(s.Applied)
+		if s.Dynamic != nil {
+			dynamic = *s.Dynamic
+		}
+		out = append(out, SetScalar{Name: s.Name, Applied: s.Applied, Dynamic: dynamic})
 	}
 	for _, l := range m.Lists {
 		out = append(out, ApplyListDelta{Name: l.Name, Additions: l.Additions, Deletions: l.Deletions})
@@ -67,10 +78,14 @@ func activate(m model.Manifest) []Op {
 	sort.Strings(keys)
 	for _, k := range keys {
 		v := m.Aliases.Added[k]
-		out = append(out, AddAlias{Name: k, Body: v, Dynamic: containsDynamic(v)})
+		dynamic, ok := m.Aliases.Dynamic[k]
+		if !ok {
+			dynamic = containsDynamic(v)
+		}
+		out = append(out, AddAlias{Name: k, Body: v, Dynamic: dynamic})
 	}
 	for _, k := range m.Functions.Added {
-		out = append(out, AddFunc{Name: k})
+		out = append(out, AddFunc{Name: k, Body: m.Functions.Bodies[k]})
 	}
 	for _, o := range m.Options {
 		out = append(out, SetOption{Name: o.Name, Enabled: o.Enabled})
