@@ -134,7 +134,7 @@ Plans:
   3. Restore is ownership-aware: deactivate removes only what this profile added (drift guard — restore a value only if the live value still equals what was applied) and never strips base/unmanaged state a profile merely also added (e.g. `/usr/local/bin`).
   4. A shadowed prior alias/function is captured before override and re-established on deactivate; PATH is stored as a delta against the captured base, never a wholesale overwrite.
 
-**Plans**: 2/6 plans executed (3 checker-approved gap-closure plans ready)
+**Plans**: 3/6 plans executed
 
 Plans:
 
@@ -150,7 +150,7 @@ Plans:
 
 **Wave 3** *(gap closure; blocked on Wave 2)*
 
-- [ ] 04-03-PLAN.md — explicit legacy/literal/dynamic/unsupported runtime-value contract; AST-only fail-closed decoding; empty/multiline/compound/redirected function-body capture; IR/store compatibility
+- [x] 04-03-PLAN.md — explicit legacy/literal/dynamic/unsupported runtime-value contract; AST-only fail-closed decoding; empty/multiline/compound/redirected function-body capture; IR/store compatibility
 
 **Wave 4** *(gap closure; blocked on Wave 3)*
 
@@ -208,7 +208,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 | 1. SPIKE — Zero-Residue Live Hot-Switch | 2/2 | Complete   | 2026-06-25 |
 | 2. IR + Partial Evaluation | 3/3 | Complete   | 2026-06-26 |
 | 3. Git-Backed Store | 3/3 | Complete   | 2026-06-27 |
-| 4. Manifest Builder + Emit | 2/3 | In Progress|  |
+| 4. Manifest Builder + Emit | 3/6 | In Progress|  |
 | 5. Runtime Loader + CLI + Bootstrap | 0/2 | Not started | - |
 | 6. Ingest End-to-End | 0/2 | Not started | - |
 

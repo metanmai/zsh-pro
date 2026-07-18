@@ -5,15 +5,15 @@ milestone_name: Branchable Shell Environments
 current_phase: 04
 current_phase_name: manifest-builder-emit
 status: executing
-stopped_at: Completed 03-02-PLAN.md (core/store orchestrator + round-trip pin)
-last_updated: "2026-07-18T16:53:06.930Z"
+stopped_at: Completed 04-03-PLAN.md
+last_updated: "2026-07-18T18:23:35.960Z"
 last_activity: 2026-07-18
-last_activity_desc: Phase 04 gap-closure planning complete — 3 plans ready
+last_activity_desc: Phase 04 execution started
 progress:
   total_phases: 6
   completed_phases: 3
-  total_plans: 13
-  completed_plans: 8
+  total_plans: 16
+  completed_plans: 11
   percent: 50
 ---
 
@@ -24,16 +24,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-25)
 
 **Core value:** `checkout <branch>` gives you a different, trustworthy shell environment — declarative state (aliases/env/PATH/functions/options) applies and reverses cleanly with zero residue, while portability is preserved (dynamic values like `$HOME`/`$(...)` stay late-bound, never frozen to one machine).
-**Current focus:** Phase 04 — manifest-builder-emit (gap-closure plans ready)
+**Current focus:** Phase 04 — manifest-builder-emit
 
 ## Current Position
 
-Phase: 04 (manifest-builder-emit) — GAP CLOSURE READY
-Plan: 04-03 next (3 gap-closure plans; 04-03 through 04-05)
+Phase: 04 (manifest-builder-emit) — EXECUTING
+Plan: 2 of 6
 Status: Ready to execute
-Last activity: 2026-07-18 — Phase 4 gap-closure plans created and checker-approved
+Last activity: 2026-07-18 — Phase 04 execution started
 
-Progress: [██████████] 100%
+Progress: [███████░░░] 69%
 
 ## Performance Metrics
 
@@ -64,6 +64,11 @@ Progress: [██████████] 100%
 | Phase 03 P01 | 9 | 3 tasks | 8 files |
 | Phase 03 P02 | 9 | 2 tasks | 6 files |
 | Phase 03 P03 | 35 | 4 tasks | 5 files |
+**Per-Plan Metrics:**
+
+| Plan | Duration | Tasks | Files |
+|------|----------|-------|-------|
+| Phase 04 P03 | 13min | 3 tasks | 11 files |
 
 ## Accumulated Context
 
@@ -93,6 +98,10 @@ Recent decisions affecting current work:
 - [Phase ?]: [03-03] excludeSecrets removes the literal from BOTH Entry.Text AND Entry.Value — Text is the JSON text field + the Regenerator empty-Value fallback, so clearing only Value leaked into profile.json AND profile.zsh (T-03-03 Rule 1 fix); both get an inert kind:key placeholder, Secret is authoritative
 - [Phase ?]: [03-03] SecretRef.Kind = kc.Kind() from the live backend (not hardcoded) so the vault fallback yields a file-kind reference Ph4/5 derefs from the vault (T-03-09)
 - [Phase ?]: [03-03] D-08 literal-vs-dynamic split reuses the shipped CatSecrets verdict + parser Dynamic flag (no new regex/AST); store stays shell-agnostic; main.go is the sole core/shell/zsh importer; PROF-03 store-side half done, completes Ph6
+- [Phase 04]: ValueModeLegacy is the only state allowed to use the historical Value and Dynamic fallback. — New parser output is always explicit, while older stored profiles remain backward compatible.
+- [Phase 04]: Literal decoding uses an AST allowlist and marks every unmodeled static form Unsupported. — Fail-closed parsing prevents source syntax from being mistaken for safe runtime data.
+- [Phase 04]: Function bodies use pointer presence and strip braces only for plain unmodified block statements. — Empty bodies stay distinct from missing bodies and behavior-bearing modifiers remain intact.
+- [Phase 04]: Secret exclusion clears RuntimeValue and marks redacted entries Unsupported while SecretRef remains authoritative. — Decoded literals must not bypass the existing store redaction boundary or activate placeholders.
 
 ### Pending Todos
 
@@ -121,6 +130,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-18T00:00:00Z
-Stopped at: Phase 4 verification found quoted-value, function-body, and residue-property gaps
+Last session: 2026-07-18T18:23:35.953Z
+Stopped at: Completed 04-03-PLAN.md
 Resume file: None
