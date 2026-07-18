@@ -114,7 +114,9 @@ ZP__snapshot() {
     for ZP__name in "${(@ok)parameters}"; do
       [[ "$ZP__name" == ZP__* ]] && continue
       ZP__type="${parameters[$ZP__name]}"
-      [[ "$ZP__type" == (*special*|*tied*|*hide*|undefined) ]] && continue
+      if [[ "$ZP__type" == *special* || "$ZP__type" == *tied* || "$ZP__type" == *hide* || "$ZP__type" == undefined ]]; then
+        continue
+      fi
       case "$ZP__type" in
         scalar*|integer*|float*)
           ZP__scalar="${(P)ZP__name}"
@@ -372,6 +374,54 @@ func snapshotDifference(a, b []byte) string {
 	return fmt.Sprintf("line count: before=%d after=%d", len(aLines), len(bLines))
 }
 
+const residueMetaSetup = `
+PATH=/meta/one:/meta/two
+ZP_BASE_PATH=$PATH
+typeset ZP_META_LOCAL=known-scalar
+export ZP_META_EXPORT=known-export
+typeset -a ZP_META_ARRAY=(first known-array)
+typeset -A ZP_META_ASSOC
+ZP_META_ASSOC=(key known-assoc other stable)
+typeset ZP_META_NUL_SCALAR=$'visible\0tail\n\\'
+typeset ZP_META_PLAIN_SCALAR=$'visibletail\n\\'
+typeset -a ZP_META_NUL_ARRAY=($'visible\0tail\n\\' $'visibletail\n\\')
+alias ZP_META_ALIAS='print -r -- known-alias'
+ZP_META_FUNC() { print -r -- known-function; }
+unsetopt bareglobqual
+`
+
+func runSnapshotMutation(t *testing.T, setup, mutation string) residueRun {
+	t.Helper()
+	tmp := t.TempDir()
+	warmupPath := filepath.Join(tmp, "warmup.snapshot")
+	beforePath := filepath.Join(tmp, "before.snapshot")
+	noopPath := filepath.Join(tmp, "noop.snapshot")
+	afterPath := filepath.Join(tmp, "after.snapshot")
+
+	var script strings.Builder
+	script.WriteString("zmodload zsh/parameter 2>/dev/null || exit 90\n")
+	script.WriteString(residueSnapshotFunction)
+	script.WriteString(setup)
+	script.WriteString("\nZP__snapshot " + zquote(warmupPath) + " || exit $?\n")
+	script.WriteString("ZP__snapshot " + zquote(beforePath) + " || exit $?\n")
+	script.WriteString("ZP__snapshot " + zquote(noopPath) + " || exit $?\n")
+	script.WriteString(mutation)
+	script.WriteString("\nZP__snapshot " + zquote(afterPath) + " || exit $?\n")
+
+	out, err := exec.Command("zsh", "-f", "-c", script.String()).CombinedOutput()
+	if err != nil {
+		t.Fatalf("snapshot mutation failed: %v\n%s\nscript:\n%s", err, out, script.String())
+	}
+	read := func(path string) []byte {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		return b
+	}
+	return residueRun{before: read(beforePath), noop: read(noopPath), after: read(afterPath), output: out}
+}
+
 func TestZeroResidueFullStateProperty(t *testing.T) {
 	if _, err := exec.LookPath("zsh"); err != nil {
 		t.Skip("zsh not installed")
@@ -394,19 +444,42 @@ func TestSnapshotOracleMetaSensitivity(t *testing.T) {
 	if _, err := exec.LookPath("zsh"); err != nil {
 		t.Skip("zsh not installed")
 	}
-	mutations := []string{
-		"non-exported scalar",
-		"exported scalar value",
-		"indexed-array element",
-		"associative-array value",
-		"alias body",
-		"function body",
-		"option toggle",
-		"count-preserving PATH reorder",
+	stable := runSnapshotMutation(t, residueMetaSetup, ":\n")
+	if diff := snapshotDifference(stable.before, stable.noop); diff != "" {
+		t.Fatalf("no-op snapshots differ: %s", diff)
+	}
+	if diff := snapshotDifference(stable.before, stable.after); diff != "" {
+		t.Fatalf("no-op mutation changed snapshot: %s", diff)
+	}
+	for _, value := range []string{"known-scalar", "known-array", "known-assoc"} {
+		encoded := []byte("$'" + value + "'")
+		if !bytes.Contains(stable.before, encoded) {
+			t.Fatalf("snapshot lacks dereferenced fixture value %q", value)
+		}
+	}
+
+	mutations := []struct {
+		name   string
+		script string
+	}{
+		{name: "non-exported scalar", script: "ZP_META_LOCAL=changed-local\n"},
+		{name: "exported scalar value", script: "ZP_META_EXPORT=changed-export\n"},
+		{name: "indexed-array element", script: "ZP_META_ARRAY[2]=changed-array\n"},
+		{name: "associative-array value", script: "ZP_META_ASSOC[key]=changed-assoc\n"},
+		{name: "alias body", script: "alias ZP_META_ALIAS='print -r -- changed-alias'\n"},
+		{name: "function body", script: "functions[ZP_META_FUNC]='print -r -- changed-function'\n"},
+		{name: "option toggle", script: "setopt bareglobqual\n"},
+		{name: "count-preserving PATH reorder", script: "path=($path[2] $path[1])\n"},
 	}
 	for _, mutation := range mutations {
-		t.Run(mutation, func(t *testing.T) {
-			t.Fatalf("snapshot sensitivity not implemented for %s", mutation)
+		t.Run(mutation.name, func(t *testing.T) {
+			run := runSnapshotMutation(t, residueMetaSetup, mutation.script)
+			if diff := snapshotDifference(run.before, run.noop); diff != "" {
+				t.Fatalf("oracle was not self-stable before %s: %s", mutation.name, diff)
+			}
+			if diff := snapshotDifference(run.before, run.after); diff == "" {
+				t.Fatalf("oracle missed %s", mutation.name)
+			}
 		})
 	}
 }
@@ -415,16 +488,115 @@ func TestSnapshotEscapesEmbeddedNULWithoutCollision(t *testing.T) {
 	if _, err := exec.LookPath("zsh"); err != nil {
 		t.Skip("zsh not installed")
 	}
-	t.Fatal("embedded-NUL snapshot guard not implemented")
+	run := runSnapshotMutation(t, residueMetaSetup, ":\n")
+	if diff := snapshotDifference(run.before, run.noop); diff != "" {
+		t.Fatalf("NUL-bearing snapshot was not self-stable: %s", diff)
+	}
+	if diff := snapshotDifference(run.before, run.after); diff != "" {
+		t.Fatalf("NUL-bearing no-op snapshot changed: %s", diff)
+	}
+	if bytes.ContainsRune(run.before, 0) {
+		t.Fatal("snapshot contains a raw NUL delimiter")
+	}
+	nulField := []byte(`$'visible\0tail\n\\'`)
+	plainField := []byte(`$'visibletail\n\\'`)
+	if bytes.Equal(nulField, plainField) {
+		t.Fatal("test instrumentation conflated NUL and non-NUL fields")
+	}
+	if bytes.Count(run.before, nulField) < 2 {
+		t.Fatalf("NUL-bearing scalar and array fields missing: %q", nulField)
+	}
+	if bytes.Count(run.before, plainField) < 2 {
+		t.Fatalf("visible non-NUL scalar and array fields missing: %q", plainField)
+	}
 }
 
 func TestResidueRendererMutants(t *testing.T) {
 	if _, err := exec.LookPath("zsh"); err != nil {
 		t.Skip("zsh not installed")
 	}
-	for _, mutant := range []string{"blind PATH append", "dropped static quoting", "base stripping"} {
-		t.Run(mutant, func(t *testing.T) {
-			t.Fatalf("negative-control mutant not implemented: %s", mutant)
-		})
+	t.Run("blind PATH append", func(t *testing.T) {
+		production := renderList
+		t.Cleanup(func() { renderList = production })
+		renderList = func(_ string, additions []string, _ bool) string {
+			parts := make([]string, 0, len(additions))
+			for _, addition := range additions {
+				parts = append(parts, renderValue(addition, dynamicSegment(addition)))
+			}
+			return fmt.Sprintf("path=(%s $path)", strings.Join(parts, " "))
+		}
+		plan := activate.Plan{Activate: []activate.Op{
+			activate.ApplyListDelta{Name: "PATH", Additions: []string{"/usr/local/bin"}},
+		}}
+		apply, _, err := (Provider{}).Emit(plan)
+		if err != nil {
+			t.Fatal(err)
+		}
+		setup := "PATH=/usr/local/bin:/usr/bin\nZP_BASE_PATH=$PATH\n" + apply
+		mutation := "zp_apply\nzp_apply\n(( $#path > 2 )) || exit 71\nprint -r -- MUTANT_BLIND_APPEND\n"
+		run := runSnapshotMutation(t, setup, mutation)
+		if diff := snapshotDifference(run.before, run.after); diff == "" {
+			t.Fatal("blind-append mutant did not grow or reorder PATH")
+		}
+		if !bytes.Contains(run.output, []byte("MUTANT_BLIND_APPEND")) {
+			t.Fatalf("blind-append mutant failed for the wrong reason: %q", run.output)
+		}
+	})
+
+	t.Run("dropped static quoting", func(t *testing.T) {
+		production := renderValue
+		t.Cleanup(func() { renderValue = production })
+		renderValue = func(applied string, _ bool) string { return applied }
+		canary := filepath.Join(t.TempDir(), "quote-canary")
+		payload := "literal; : > " + canary
+		plan := activate.Plan{Activate: []activate.Op{
+			activate.SetScalar{Name: "ZP_MUTANT_VALUE", Applied: payload, Dynamic: false},
+		}}
+		apply, _, err := (Provider{}).Emit(plan)
+		if err != nil {
+			t.Fatal(err)
+		}
+		setup := "PATH=/usr/bin\nZP_BASE_PATH=$PATH\nZP_MUTANT_VALUE=base\n" + apply
+		mutation := "zp_apply\n[[ -e " + zquote(canary) + " ]] || exit 72\n[[ \"$ZP_MUTANT_VALUE\" != " + zquote(payload) + " ]] || exit 73\nprint -r -- MUTANT_DROPPED_ZQUOTE\n"
+		run := runSnapshotMutation(t, setup, mutation)
+		if diff := snapshotDifference(run.before, run.after); diff == "" {
+			t.Fatal("dropped-zquote mutant preserved an exact literal value")
+		}
+		if !bytes.Contains(run.output, []byte("MUTANT_DROPPED_ZQUOTE")) {
+			t.Fatalf("dropped-zquote mutant failed for the wrong reason: %q", run.output)
+		}
+	})
+
+	t.Run("base stripping", func(t *testing.T) {
+		production := renderList
+		t.Cleanup(func() { renderList = production })
+		renderList = func(name string, _ []string, _ bool) string {
+			return name + "=" + zquote("/usr/bin")
+		}
+		plan := activate.Plan{Activate: []activate.Op{
+			activate.ApplyListDelta{Name: "PATH", Additions: []string{"/opt/profile"}},
+		}}
+		apply, _, err := (Provider{}).Emit(plan)
+		if err != nil {
+			t.Fatal(err)
+		}
+		setup := "PATH=/usr/local/bin:/usr/bin\nZP_BASE_PATH=$PATH\n" + apply
+		mutation := "zp_apply\n[[ \"$PATH\" == /usr/bin ]] || exit 74\n(( $#path == 1 )) || exit 75\nprint -r -- MUTANT_BASE_STRIP\n"
+		run := runSnapshotMutation(t, setup, mutation)
+		if diff := snapshotDifference(run.before, run.after); diff == "" {
+			t.Fatal("base-strip mutant did not lose a baseline PATH entry")
+		}
+		if !bytes.Contains(run.output, []byte("MUTANT_BASE_STRIP")) {
+			t.Fatalf("base-strip mutant failed for the wrong reason: %q", run.output)
+		}
+	})
+
+	// Subtest cleanups restore both package seams before this final real-emitter
+	// property run. Keeping it here prevents a false green caused by leaked
+	// mutable renderer state.
+	actions := generateBalancedActions(rand.New(rand.NewSource(residueSeed)), residueActionCount, 2)
+	run := runResidueSequence(t, actions)
+	if diff := snapshotDifference(run.before, run.after); diff != "" {
+		t.Fatalf("production emitter failed after mutant cleanup: %s", diff)
 	}
 }
