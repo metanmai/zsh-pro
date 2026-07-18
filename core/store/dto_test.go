@@ -195,6 +195,120 @@ func TestUnmarshalNamesNotAliased(t *testing.T) {
 	}
 }
 
+// TestRoundTripSemanticFields pins the additive parser contract through the
+// store, including pointer-present empty strings and modes without values.
+func TestRoundTripSemanticFields(t *testing.T) {
+	empty := ""
+	literal := "decoded"
+	multiline := "\n\tprint one\n\tprint two\n"
+	in := model.Profile{Entries: []model.Entry{
+		{Text: "FOO=''", Value: "''", ValueMode: model.ValueModeLiteral, RuntimeValue: &empty},
+		{Text: "FOO='decoded'", Value: "'decoded'", ValueMode: model.ValueModeLiteral, RuntimeValue: &literal},
+		{Text: "FOO=$HOME", Value: "$HOME", Dynamic: true, ValueMode: model.ValueModeDynamic},
+		{Text: "FOO=$'\\n'", Value: "$'\\n'", ValueMode: model.ValueModeUnsupported},
+		{Text: "empty(){}", Value: "empty(){}", FunctionBody: &empty},
+		{Text: "multi() {\n\tprint one\n\tprint two\n}", Value: "multi() {\n\tprint one\n\tprint two\n}", FunctionBody: &multiline},
+	}}
+
+	b, err := MarshalProfile(in)
+	if err != nil {
+		t.Fatalf("MarshalProfile: %v", err)
+	}
+	for _, key := range []string{`"valueMode"`, `"runtimeValue"`, `"functionBody"`} {
+		if !bytes.Contains(b, []byte(key)) {
+			t.Errorf("semantic JSON key %s missing from payload:\n%s", key, b)
+		}
+	}
+	if !bytes.Contains(b, []byte(`"runtimeValue": ""`)) {
+		t.Errorf("present empty RuntimeValue disappeared from JSON:\n%s", b)
+	}
+	if !bytes.Contains(b, []byte(`"functionBody": ""`)) {
+		t.Errorf("present empty FunctionBody disappeared from JSON:\n%s", b)
+	}
+
+	out, err := UnmarshalProfile(b)
+	if err != nil {
+		t.Fatalf("UnmarshalProfile: %v", err)
+	}
+	if !reflect.DeepEqual(out, in) {
+		t.Fatalf("semantic round-trip mismatch:\n in=%+v\nout=%+v", in, out)
+	}
+	a, err := MarshalProfile(out)
+	if err != nil {
+		t.Fatalf("MarshalProfile repeat: %v", err)
+	}
+	if !bytes.Equal(a, b) {
+		t.Errorf("semantic profile marshal not deterministic:\n#1=%s\n#2=%s", b, a)
+	}
+}
+
+// TestUnmarshalLegacySemanticFields proves old profile.json bytes acquire only
+// the explicit zero-value legacy mode; no runtime/body presence is invented.
+func TestUnmarshalLegacySemanticFields(t *testing.T) {
+	legacy := []byte(`{
+  "entries": [
+    {
+      "text": "export EDITOR=nvim",
+      "startLine": 1,
+      "category": "environment",
+      "kind": "assignment",
+      "cmdName": "export",
+      "names": ["EDITOR"],
+      "value": "nvim",
+      "exported": true,
+      "managed": true,
+      "override": "auto",
+      "dynamic": false
+    }
+  ]
+}
+`)
+
+	out, err := UnmarshalProfile(legacy)
+	if err != nil {
+		t.Fatalf("UnmarshalProfile legacy: %v", err)
+	}
+	if len(out.Entries) != 1 {
+		t.Fatalf("entries = %d, want 1", len(out.Entries))
+	}
+	got := out.Entries[0]
+	if got.ValueMode != model.ValueModeLegacy {
+		t.Errorf("legacy ValueMode = %q, want zero legacy", got.ValueMode)
+	}
+	if got.RuntimeValue != nil || got.FunctionBody != nil {
+		t.Errorf("legacy entry invented semantic presence: RuntimeValue=%v FunctionBody=%v", got.RuntimeValue, got.FunctionBody)
+	}
+	if got.Value != "nvim" || got.Dynamic {
+		t.Errorf("legacy Value/Dynamic changed: Value=%q Dynamic=%v", got.Value, got.Dynamic)
+	}
+}
+
+// TestSemanticPointersNotAliased pins defensive copies in both DTO directions.
+func TestSemanticPointersNotAliased(t *testing.T) {
+	runtimeValue := "runtime"
+	functionBody := "\n\tprint body\n"
+	in := model.Entry{RuntimeValue: &runtimeValue, FunctionBody: &functionBody}
+	dto := toEntryDTO(in)
+	if dto.RuntimeValue == in.RuntimeValue || dto.FunctionBody == in.FunctionBody {
+		t.Fatal("toEntryDTO aliased semantic pointers")
+	}
+	*dto.RuntimeValue = "dto runtime"
+	*dto.FunctionBody = "dto body"
+	if *in.RuntimeValue != "runtime" || *in.FunctionBody != "\n\tprint body\n" {
+		t.Fatal("mutating DTO semantic pointers changed model Entry")
+	}
+
+	out := fromEntryDTO(dto)
+	if out.RuntimeValue == dto.RuntimeValue || out.FunctionBody == dto.FunctionBody {
+		t.Fatal("fromEntryDTO aliased semantic pointers")
+	}
+	*out.RuntimeValue = "entry runtime"
+	*out.FunctionBody = "entry body"
+	if *dto.RuntimeValue != "dto runtime" || *dto.FunctionBody != "dto body" {
+		t.Fatal("mutating decoded Entry semantic pointers changed DTO")
+	}
+}
+
 func tail(b []byte) []byte {
 	if len(b) <= 12 {
 		return b
