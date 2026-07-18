@@ -33,13 +33,26 @@ func Build(blocks []model.Block, c shell.Classifier) model.Profile {
 			// straight through would make the Entry and the source Block share a
 			// backing array, so a later mutation of either silently corrupts the
 			// other. A fresh slice severs that aliasing at the IR boundary.
-			Names:    append([]string(nil), b.Names...),
-			Value:    b.Value,
-			Exported: b.Exported,
-			Managed:  routeManaged(b, cat),
-			Override: model.OverrideAuto,
-			Dynamic:  b.Dynamic,
+			Names:     append([]string(nil), b.Names...),
+			Value:     b.Value,
+			Exported:  b.Exported,
+			Managed:   routeManaged(b, cat),
+			Override:  model.OverrideAuto,
+			Dynamic:   b.Dynamic,
+			ValueMode: b.ValueMode,
+			// The Block remains independently reusable after Build. Copy pointed-to
+			// values instead of sharing mutable storage across the IR boundary.
+			RuntimeValue: cloneString(b.RuntimeValue),
+			FunctionBody: cloneString(b.FunctionBody),
 		})
 	}
 	return p
+}
+
+func cloneString(s *string) *string {
+	if s == nil {
+		return nil
+	}
+	v := *s
+	return &v
 }

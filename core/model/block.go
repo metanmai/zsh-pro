@@ -39,4 +39,12 @@ type Block struct {
 	Append    bool       // assignment used `+=` (append, not overwrite) — kept out of the templated path so it is never rewritten to `=` (WR-01)
 	Flagged   bool       // alias carried a type flag (`-g`/`-s`/...) — kept out of the templated path so the flag is never dropped (WR-02)
 	Array     bool       // assignment is array-valued (`name=(...)`): mvdan/sh populates a.Array and leaves a.Value nil, so the scalar templater cannot reproduce it; kept out of the templated path so the array value is never dropped (UAT array gap, same class as WR-01/WR-02)
+	ValueMode ValueMode  // semantic meaning of Value for activation; parser-owned, additive to the verbatim source contract
+	// RuntimeValue is the AST-decoded scalar or alias value when ValueMode is
+	// ValueModeLiteral. Pointer presence distinguishes a decoded empty string
+	// from a value that was not decoded.
+	RuntimeValue *string
+	// FunctionBody is assignment-ready function body text. Pointer presence
+	// distinguishes an empty function body from a body that was not captured.
+	FunctionBody *string
 }

@@ -1,5 +1,25 @@
 package model
 
+// ValueMode records how a parsed scalar or alias Value may be consumed at
+// activation time without changing Value's verbatim source-text contract.
+type ValueMode string
+
+const (
+	// ValueModeLegacy is the zero value for entries created before the semantic
+	// contract existed. Only legacy entries may use the historical
+	// Value/Dynamic fallback.
+	ValueModeLegacy ValueMode = ""
+	// ValueModeLiteral means RuntimeValue contains AST-decoded data, including a
+	// present pointer to an empty string.
+	ValueModeLiteral ValueMode = "literal"
+	// ValueModeDynamic means Value remains verbatim late-bound shell syntax and
+	// RuntimeValue is nil.
+	ValueModeDynamic ValueMode = "dynamic"
+	// ValueModeUnsupported means the parser recognized static syntax it cannot
+	// safely model. It must never use the legacy fallback.
+	ValueModeUnsupported ValueMode = "unsupported"
+)
+
 // ManagedOverride is an explicit per-entry override of the auto managed/imperative
 // verdict. It is an orthogonal axis to the Dynamic flag (D-05): an entry may be
 // dynamic yet managed, or static yet forced unmanaged.
@@ -33,6 +53,13 @@ type Entry struct {
 	Override  ManagedOverride // explicit override of the auto verdict (D-07); defaults OverrideAuto
 	Dynamic   bool            // value contains a non-literal AST part ($HOME/$(...)/...) — orthogonal axis (D-05)
 	Secret    *SecretRef      // non-nil iff this entry is a secret-replaced literal (D-07); the literal Value is cleared when set so the secret never round-trips
+	ValueMode ValueMode       // parser-owned semantic mode; zero remains backward-compatible legacy
+	// RuntimeValue is the AST-decoded scalar or alias value for literal mode.
+	// Pointer presence distinguishes decoded empty from missing.
+	RuntimeValue *string
+	// FunctionBody is assignment-ready function body text. Pointer presence
+	// distinguishes a parsed empty function from a missing body.
+	FunctionBody *string
 }
 
 // EffectiveManaged reports whether the entry is treated as managed (declarative,
