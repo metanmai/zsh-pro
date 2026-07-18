@@ -36,6 +36,10 @@ type entryDTO struct {
 	Override  model.ManagedOverride `json:"override"`
 	Dynamic   bool                  `json:"dynamic"`
 	Secret    *model.SecretRef      `json:"secret,omitempty"`
+	ValueMode model.ValueMode       `json:"valueMode,omitempty"`
+	// Pointer presence preserves decoded/parsed empty strings through JSON.
+	RuntimeValue *string `json:"runtimeValue,omitempty"`
+	FunctionBody *string `json:"functionBody,omitempty"`
 }
 
 // profileDTO is the top-level wire shape of a serialized profile.
@@ -85,18 +89,21 @@ func UnmarshalProfile(b []byte) (model.Profile, error) {
 // DTO never aliases the caller's backing array.
 func toEntryDTO(e model.Entry) entryDTO {
 	return entryDTO{
-		Text:      e.Text,
-		StartLine: e.StartLine,
-		Category:  e.Category,
-		Kind:      e.Kind,
-		CmdName:   e.CmdName,
-		Names:     cloneNames(e.Names),
-		Value:     e.Value,
-		Exported:  e.Exported,
-		Managed:   e.Managed,
-		Override:  e.Override,
-		Dynamic:   e.Dynamic,
-		Secret:    e.Secret,
+		Text:         e.Text,
+		StartLine:    e.StartLine,
+		Category:     e.Category,
+		Kind:         e.Kind,
+		CmdName:      e.CmdName,
+		Names:        cloneNames(e.Names),
+		Value:        e.Value,
+		Exported:     e.Exported,
+		Managed:      e.Managed,
+		Override:     e.Override,
+		Dynamic:      e.Dynamic,
+		Secret:       e.Secret,
+		ValueMode:    e.ValueMode,
+		RuntimeValue: cloneStringPointer(e.RuntimeValue),
+		FunctionBody: cloneStringPointer(e.FunctionBody),
 	}
 }
 
@@ -104,18 +111,21 @@ func toEntryDTO(e model.Entry) entryDTO {
 // the decoded Profile never shares a backing array with the DTO.
 func fromEntryDTO(d entryDTO) model.Entry {
 	return model.Entry{
-		Text:      d.Text,
-		StartLine: d.StartLine,
-		Category:  d.Category,
-		Kind:      d.Kind,
-		CmdName:   d.CmdName,
-		Names:     cloneNames(d.Names),
-		Value:     d.Value,
-		Exported:  d.Exported,
-		Managed:   d.Managed,
-		Override:  d.Override,
-		Dynamic:   d.Dynamic,
-		Secret:    d.Secret,
+		Text:         d.Text,
+		StartLine:    d.StartLine,
+		Category:     d.Category,
+		Kind:         d.Kind,
+		CmdName:      d.CmdName,
+		Names:        cloneNames(d.Names),
+		Value:        d.Value,
+		Exported:     d.Exported,
+		Managed:      d.Managed,
+		Override:     d.Override,
+		Dynamic:      d.Dynamic,
+		Secret:       d.Secret,
+		ValueMode:    d.ValueMode,
+		RuntimeValue: cloneStringPointer(d.RuntimeValue),
+		FunctionBody: cloneStringPointer(d.FunctionBody),
 	}
 }
 
@@ -128,4 +138,12 @@ func cloneNames(in []string) []string {
 	out := make([]string, len(in))
 	copy(out, in)
 	return out
+}
+
+func cloneStringPointer(in *string) *string {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	return &out
 }

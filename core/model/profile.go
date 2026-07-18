@@ -15,8 +15,9 @@ const (
 	// ValueModeDynamic means Value remains verbatim late-bound shell syntax and
 	// RuntimeValue is nil.
 	ValueModeDynamic ValueMode = "dynamic"
-	// ValueModeUnsupported means the parser recognized static syntax it cannot
-	// safely model. It must never use the legacy fallback.
+	// ValueModeUnsupported means no safe runtime value is available (for example,
+	// the parser rejected a static shape or the store redacted a literal secret).
+	// It must never use the legacy fallback.
 	ValueModeUnsupported ValueMode = "unsupported"
 )
 

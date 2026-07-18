@@ -140,13 +140,20 @@ export API_KEY="`+secretLiteral+`"
 	if apiEntry.Secret.Kind != model.SecretRefFile {
 		t.Errorf("SecretRef.Kind = %q, want %q (vault fallback => file, not keychain)", apiEntry.Secret.Kind, model.SecretRefFile)
 	}
-	// The literal must be gone from BOTH derived text fields (Value feeds the
-	// profile.zsh emit; Text is the JSON "text" field + the Regenerator fallback).
+	// The literal must be gone from both derived text fields and the decoded runtime
+	// field. Unsupported mode prevents activation from treating the inert placeholder
+	// as a legacy runtime value while SecretRef is authoritative.
 	if strings.Contains(apiEntry.Value, secretLiteral) {
 		t.Errorf("API_KEY entry Value = %q still contains the literal %q after exclusion", apiEntry.Value, secretLiteral)
 	}
 	if strings.Contains(apiEntry.Text, secretLiteral) {
 		t.Errorf("API_KEY entry Text = %q still contains the literal %q after exclusion", apiEntry.Text, secretLiteral)
+	}
+	if apiEntry.RuntimeValue != nil {
+		t.Errorf("API_KEY entry RuntimeValue = %q, want nil after secret exclusion", *apiEntry.RuntimeValue)
+	}
+	if apiEntry.ValueMode != model.ValueModeUnsupported {
+		t.Errorf("API_KEY entry ValueMode = %q, want %q after secret exclusion", apiEntry.ValueMode, model.ValueModeUnsupported)
 	}
 
 	// The committed profile.zsh (the derived human view, D-02) must ALSO be free of
@@ -237,6 +244,10 @@ func TestExcludeSecretsDefensiveCopy(t *testing.T) {
 		t.Fatalf("fixture not a single literal secret: %#v", in.Entries)
 	}
 	originalValue := in.Entries[0].Value
+	originalRuntimeValue := in.Entries[0].RuntimeValue
+	if originalRuntimeValue == nil {
+		t.Fatalf("fixture has no decoded RuntimeValue: %#v", in.Entries[0])
+	}
 
 	vault := newVaultKeychain(t.TempDir())
 	out, report, err := excludeSecrets(context.Background(), in, vault)
@@ -251,12 +262,18 @@ func TestExcludeSecretsDefensiveCopy(t *testing.T) {
 	if in.Entries[0].Secret != nil {
 		t.Errorf("excludeSecrets stamped a SecretRef on the caller's Entry: %#v", in.Entries[0])
 	}
+	if in.Entries[0].RuntimeValue == nil || in.Entries[0].RuntimeValue != originalRuntimeValue || *in.Entries[0].RuntimeValue != *originalRuntimeValue {
+		t.Errorf("excludeSecrets mutated the caller's Entry.RuntimeValue: got %v, want original pointer/value %q", in.Entries[0].RuntimeValue, *originalRuntimeValue)
+	}
 	// The returned COPY is rewritten: literal gone from Text+Value, SecretRef stamped.
 	if out.Entries[0].Secret == nil {
 		t.Errorf("returned copy has no SecretRef: %#v", out.Entries[0])
 	}
 	if strings.Contains(out.Entries[0].Value, secretLiteral) || strings.Contains(out.Entries[0].Text, secretLiteral) {
 		t.Errorf("returned copy still carries the literal %q: %#v", secretLiteral, out.Entries[0])
+	}
+	if out.Entries[0].RuntimeValue != nil || out.Entries[0].ValueMode != model.ValueModeUnsupported {
+		t.Errorf("returned copy retained an activatable runtime value: %#v", out.Entries[0])
 	}
 	if len(report) != 1 || report[0].Name != "API_KEY" {
 		t.Errorf("report = %v, want one API_KEY entry", report)

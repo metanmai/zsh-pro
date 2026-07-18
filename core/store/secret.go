@@ -39,9 +39,10 @@ import (
 // values): the caller's original Profile is never mutated, so the Phase 2 round-trip
 // comparison and any caller-held reference see the literal value unchanged. The copy
 // is shallow — a copied Entry shares the caller's Names backing array and Secret
-// pointer — but the loop only ever REPLACES value-typed fields (Text, Value) and
-// INSTALLS a new Secret pointer; it never writes through e.Names[i] or *e.Secret, so
-// no aliased state of the caller is mutated in place. (Names is additionally cloned
+// pointer — but the loop only ever REPLACES value-typed fields (Text, Value,
+// ValueMode), CLEARS RuntimeValue, and INSTALLS a new Secret pointer; it never writes
+// through e.Names[i], *e.RuntimeValue, or *e.Secret, so no aliased state of the caller
+// is mutated in place. (Names is additionally cloned
 // at the IR boundary in ir.Build, so even the shared backing array is not the
 // parser's.) The returned Profile is the one Commit marshals + commits.
 //
@@ -74,9 +75,10 @@ func excludeSecrets(_ context.Context, p model.Profile, kc KeychainDriver) (mode
 	// Entries stays nil (no allocation) — the secret-free / empty-profile path is a
 	// pure no-op that returns the profile and a nil report, preserving the Phase 2
 	// round-trip equality. The copy shares each Entry's Names backing array and Secret
-	// pointer with the caller, but the loop below only replaces value-typed fields and
-	// installs a new Secret pointer (never writes through the shared array/pointer), so
-	// the caller is never corrupted (TestExcludeSecretsDefensiveCopy pins this).
+	// pointers with the caller, but the loop below only replaces value-typed fields,
+	// clears RuntimeValue, and installs a new Secret pointer (never writes through the
+	// shared array/pointers), so the caller is never corrupted
+	// (TestExcludeSecretsDefensiveCopy pins this).
 	if len(p.Entries) == 0 {
 		return p, nil, nil
 	}
@@ -151,6 +153,12 @@ func excludeSecrets(_ context.Context, p model.Profile, kc KeychainDriver) (mode
 			e.Text = fmt.Sprintf("%s=%s", key, placeholder)
 		}
 		e.Value = placeholder
+		// RuntimeValue carries the decoded literal and therefore must be redacted at
+		// the same boundary as Text and Value. Marking the entry Unsupported prevents
+		// activation from falling back to the inert placeholder; SecretRef is now the
+		// authoritative source until the runtime secret resolver supplies the value.
+		e.RuntimeValue = nil
+		e.ValueMode = model.ValueModeUnsupported
 
 		report = append(report, WithheldSecret{Name: key, StartLine: e.StartLine})
 	}
