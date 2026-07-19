@@ -128,3 +128,40 @@ func TestDiffFunctionBodyPresence(t *testing.T) {
 		t.Fatalf("legacy deactivation blocked: %#v %v", p, err)
 	}
 }
+
+func TestDiffNormalizesDuplicateFunctionIdentitiesAndExportProvenance(t *testing.T) {
+	exported := false
+	target := &model.Manifest{
+		Schema: model.SchemaV1,
+		Env: []model.Scalar{
+			{Name: "PLAIN", Applied: "one", Exported: &exported},
+			{Name: "PLAIN", Applied: "two", Exported: &exported},
+		},
+		Functions: model.FuncSet{Added: []string{"dup", "dup"}, Bodies: map[string]string{"dup": "print final"}},
+	}
+	active := &model.Manifest{Schema: model.SchemaV1, Functions: model.FuncSet{Added: []string{"dup", "dup"}, Bodies: map[string]string{"dup": "print old"}}}
+	p, err := Diff(active, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var unset, restore, set int
+	for _, op := range p.Deactivate {
+		switch op.(type) {
+		case UnsetFunc:
+			unset++
+		case RestoreShadowedFunc:
+			restore++
+		}
+	}
+	for _, op := range p.Activate {
+		if scalar, ok := op.(SetScalar); ok {
+			set++
+			if scalar.Name != "PLAIN" || scalar.Applied != "two" || scalar.Exported {
+				t.Fatalf("scalar provenance=%#v", scalar)
+			}
+		}
+	}
+	if unset != 1 || restore != 1 || set != 1 {
+		t.Fatalf("duplicate identities produced repeated operations: %#v", p)
+	}
+}

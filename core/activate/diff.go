@@ -15,6 +15,14 @@ func Diff(active, target *model.Manifest) (Plan, error) {
 	if target != nil && target.Schema != model.SchemaV1 {
 		return Plan{}, fmt.Errorf("target manifest schema %q unsupported", target.Schema)
 	}
+	if active != nil {
+		normalized := normalizeManifest(*active)
+		active = &normalized
+	}
+	if target != nil {
+		normalized := normalizeManifest(*target)
+		target = &normalized
+	}
 	if target != nil {
 		for _, name := range target.Functions.Added {
 			if _, ok := target.Functions.Bodies[name]; !ok {
@@ -30,6 +38,70 @@ func Diff(active, target *model.Manifest) (Plan, error) {
 		p.Activate = activate(*target)
 	}
 	return p, nil
+}
+
+// normalizeManifest preserves the final source occurrence of every ordered
+// identity. It also protects Diff from legacy or hand-built manifests that did
+// not pass through Build before generating ownership-changing operations.
+func normalizeManifest(in model.Manifest) model.Manifest {
+	out := in
+	out.Env = normalizeScalars(in.Env)
+	out.Functions.Added = normalizeNames(in.Functions.Added)
+	out.Options = normalizeOptions(in.Options)
+	return out
+}
+
+func normalizeScalars(in []model.Scalar) []model.Scalar {
+	last := map[string]int{}
+	exported := map[string]bool{}
+	explicit := map[string]bool{}
+	for i, scalar := range in {
+		last[scalar.Name] = i
+		if scalar.Exported != nil {
+			explicit[scalar.Name] = true
+			exported[scalar.Name] = exported[scalar.Name] || *scalar.Exported
+		}
+	}
+	out := make([]model.Scalar, 0, len(last))
+	for i, scalar := range in {
+		if last[scalar.Name] != i {
+			continue
+		}
+		if explicit[scalar.Name] {
+			value := exported[scalar.Name]
+			scalar.Exported = &value
+		}
+		out = append(out, scalar)
+	}
+	return out
+}
+
+func normalizeNames(in []string) []string {
+	last := map[string]int{}
+	for i, name := range in {
+		last[name] = i
+	}
+	out := make([]string, 0, len(last))
+	for i, name := range in {
+		if last[name] == i {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+func normalizeOptions(in []model.OptionSet) []model.OptionSet {
+	last := map[string]int{}
+	for i, option := range in {
+		last[option.Name] = i
+	}
+	out := make([]model.OptionSet, 0, len(last))
+	for i, option := range in {
+		if last[option.Name] == i {
+			out = append(out, option)
+		}
+	}
+	return out
 }
 func deactivate(m model.Manifest) []Op {
 	var out []Op
@@ -66,7 +138,13 @@ func activate(m model.Manifest) []Op {
 		if s.Dynamic != nil {
 			dynamic = *s.Dynamic
 		}
-		out = append(out, SetScalar{Name: s.Name, Applied: s.Applied, Dynamic: dynamic})
+		// A missing field is a legacy manifest, which historically used export
+		// assignment for scalar activation.
+		exported := true
+		if s.Exported != nil {
+			exported = *s.Exported
+		}
+		out = append(out, SetScalar{Name: s.Name, Applied: s.Applied, Dynamic: dynamic, Exported: exported})
 	}
 	for _, l := range m.Lists {
 		out = append(out, ApplyListDelta{Name: l.Name, Additions: l.Additions, Deletions: l.Deletions})

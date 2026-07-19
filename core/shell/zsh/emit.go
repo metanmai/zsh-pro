@@ -1,6 +1,7 @@
 package zsh
 
 import (
+	"encoding/hex"
 	"fmt"
 	"regexp"
 	"strings"
@@ -19,9 +20,12 @@ var renderValue = func(applied string, dynamic bool) string {
 }
 
 var renderList = func(name string, additions []string, _ bool) string {
-	base := "ZP_BASE_" + sanitizeSlot(name)
+	base := encodeSlot("BASE", name)
 	array := "path"
-	if strings.EqualFold(name, "FPATH") {
+	if strings.EqualFold(name, "PATH") {
+		base = "ZP_BASE_PATH"
+	} else if strings.EqualFold(name, "FPATH") {
+		base = "ZP_BASE_FPATH"
 		array = "fpath"
 	}
 	parts := make([]string, 0, len(additions))
@@ -70,19 +74,11 @@ func dynamicSegment(s string) bool {
 	return regexp.MustCompile(`^\$[A-Za-z_][A-Za-z0-9_]*(/[^;[:space:]]*)?$`).MatchString(s)
 }
 
-func sanitizeSlot(s string) string {
-	var b strings.Builder
-	for _, r := range s {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' {
-			b.WriteRune(r)
-		} else {
-			b.WriteByte('_')
-		}
-	}
-	if b.Len() == 0 {
-		return "x"
-	}
-	return b.String()
+// encodeSlot is injective for every UTF-8 name and emits only identifier-safe
+// bytes. The state-class component keeps independently captured identities in
+// separate namespaces.
+func encodeSlot(class, name string) string {
+	return "ZP_" + class + "_" + hex.EncodeToString([]byte(name))
 }
 
 func safeEnvName(s string) bool       { return envNameRe.MatchString(s) }
@@ -92,25 +88,31 @@ func safeAliasFuncName(s string) bool { return aliasFuncNameRe.MatchString(s) }
 const runtimeHelpers = `
 # These helpers intentionally remain plain functions: option changes made by
 # the apply loader must persist after the function returns.
-zp_capture_env() {
-  local var="$1" slot="__ZP_ORIG_$1"
-  if [[ "${(P)+slot}" == 1 ]]; then return 0; fi
+zp_capture_scalar() {
+  local var="$1" originalSlot="$2" presenceSlot="$3" exportSlot="$4"
+  if [[ "${(P)+presenceSlot}" == 1 ]]; then return 0; fi
   if [[ "${(P)+var}" == 1 ]]; then
-    typeset -g "$slot=${(P)var}"
+    typeset -g "$presenceSlot=1"
+    typeset -g "$originalSlot=${(P)var}"
+    if [[ "${parameters[$var]}" == *export* ]]; then typeset -g "$exportSlot=1"
+    else typeset -g "$exportSlot=0"; fi
   else
-    typeset -g "$slot=__ZP_UNSET__"
+    typeset -g "$presenceSlot=0"
+    typeset -g "$exportSlot=0"
   fi
 }
-zp_restore_env() {
-  local var="$1" applied="$2" slot="__ZP_ORIG_$1" appliedSlot="__ZP_APPLIED_$1" prior
+zp_restore_scalar() {
+  local var="$1" applied="$2" originalSlot="$3" presenceSlot="$4" exportSlot="$5" appliedSlot="$6"
   if [[ "${(P)+appliedSlot}" == 1 ]]; then applied="${(P)appliedSlot}"; fi
   if [[ "${(P)+var}" == 1 && "${(P)var}" == "$applied" ]]; then
-    if [[ "${(P)+slot}" != 1 ]]; then return 0; fi
-    prior="${(P)slot}"
-    if [[ "$prior" == __ZP_UNSET__ ]]; then unset "$var"
-    else export "$var"="$prior"; fi
+    if [[ "${(P)presenceSlot}" == 1 ]]; then
+      typeset -g "$var=${(P)originalSlot}"
+      if [[ "${(P)exportSlot}" == 1 ]]; then export "$var"; else typeset +x "$var"; fi
+    else unset "$var"; fi
   fi
-  unset "$slot"
+  unset "$originalSlot"
+  unset "$presenceSlot"
+  unset "$exportSlot"
   unset "$appliedSlot"
 }
 `
@@ -145,9 +147,17 @@ func emitActivate(b *strings.Builder, op activate.Op) error {
 		if !safeEnvName(x.Name) {
 			return nil
 		}
-		fmt.Fprintf(b, "  zp_capture_env %s\n  export %s=%s\n", x.Name, x.Name, renderValue(x.Applied, x.Dynamic))
-		slot := "__ZP_APPLIED_" + sanitizeSlot(x.Name)
-		fmt.Fprintf(b, "  if (( ! ${+%s} )); then typeset -g %s=\"$%s\"; fi\n", slot, slot, x.Name)
+		original := encodeSlot("ORIGINAL_SCALAR", x.Name)
+		presence := encodeSlot("PRESENT_SCALAR", x.Name)
+		exported := encodeSlot("EXPORTED_SCALAR", x.Name)
+		applied := encodeSlot("APPLIED_SCALAR", x.Name)
+		fmt.Fprintf(b, "  zp_capture_scalar %s %s %s %s\n", x.Name, original, presence, exported)
+		if x.Exported {
+			fmt.Fprintf(b, "  export %s=%s\n", x.Name, renderValue(x.Applied, x.Dynamic))
+		} else {
+			fmt.Fprintf(b, "  typeset -g %s=%s\n", x.Name, renderValue(x.Applied, x.Dynamic))
+		}
+		fmt.Fprintf(b, "  typeset -g %s=\"$%s\"\n", applied, x.Name)
 	case activate.ApplyListDelta:
 		if !safeEnvName(x.Name) {
 			return nil
@@ -157,21 +167,23 @@ func emitActivate(b *strings.Builder, op activate.Op) error {
 		if !safeAliasFuncName(x.Name) {
 			return nil
 		}
-		slot := "ZP_PRIOR_ALIAS_" + sanitizeSlot(x.Name)
-		fmt.Fprintf(b, "  if (( ! ${+%s} )); then if (( ${+aliases[%s]} )); then typeset -g \"%s=${aliases[%s]}\"; else typeset -g %s=__ZP_UNSET__; fi; fi\n", slot, x.Name, slot, x.Name, slot)
+		original := encodeSlot("ORIGINAL_ALIAS", x.Name)
+		presence := encodeSlot("PRESENT_ALIAS", x.Name)
+		fmt.Fprintf(b, "  if (( ! ${+%s} )); then if (( ${+aliases[%s]} )); then typeset -g %s=1; typeset -g \"%s=${aliases[%s]}\"; else typeset -g %s=0; fi; fi\n", presence, x.Name, presence, original, x.Name, presence)
 		fmt.Fprintf(b, "  alias %s=%s\n", x.Name, renderValue(x.Body, x.Dynamic))
 	case activate.AddFunc:
 		if !safeAliasFuncName(x.Name) {
 			return nil
 		}
-		slot := "ZP_PRIOR_FUNC_" + sanitizeSlot(x.Name)
-		fmt.Fprintf(b, "  if (( ! ${+%s} )); then if (( ${+functions[%s]} )); then typeset -g \"%s=${functions[%s]}\"; else typeset -g %s=__ZP_UNSET__; fi; fi\n", slot, x.Name, slot, x.Name, slot)
+		original := encodeSlot("ORIGINAL_FUNCTION", x.Name)
+		presence := encodeSlot("PRESENT_FUNCTION", x.Name)
+		fmt.Fprintf(b, "  if (( ! ${+%s} )); then if (( ${+functions[%s]} )); then typeset -g %s=1; typeset -g \"%s=${functions[%s]}\"; else typeset -g %s=0; fi; fi\n", presence, x.Name, presence, original, x.Name, presence)
 		fmt.Fprintf(b, "  functions[%s]=%s\n", x.Name, quoteFunctionBody(x.Body))
 	case activate.SetOption:
 		if !safeOptionName(x.Name) {
 			return nil
 		}
-		slot := "ZP_WAS_ON_" + sanitizeSlot(x.Name)
+		slot := encodeSlot("WAS_ON_OPTION", x.Name)
 		fmt.Fprintf(b, "  if (( ! ${+%s} )); then if [[ -o %s ]]; then typeset -g %s=1; else typeset -g %s=0; fi; fi\n", slot, x.Name, slot, slot)
 		if x.Enabled {
 			fmt.Fprintf(b, "  setopt %s\n", x.Name)
@@ -190,19 +202,21 @@ func emitDeactivate(b *strings.Builder, op activate.Op) error {
 		if !safeEnvName(x.Name) {
 			return nil
 		}
-		fmt.Fprintf(b, "  zp_restore_env %s %s\n", x.Name, renderValue(x.Applied, false))
+		emitRestoreScalar(b, x.Name, x.Applied)
 	case activate.UnsetScalar:
 		if !safeEnvName(x.Name) {
 			return nil
 		}
-		fmt.Fprintf(b, "  zp_restore_env %s %s\n", x.Name, renderValue(x.Applied, false))
+		emitRestoreScalar(b, x.Name, x.Applied)
 	case activate.RebuildListFromBase:
 		if !safeEnvName(x.Name) {
 			return nil
 		}
-		base := "ZP_BASE_" + sanitizeSlot(x.Name)
+		base := encodeSlot("BASE", x.Name)
 		if strings.EqualFold(x.Name, "PATH") {
 			base = "ZP_BASE_PATH"
+		} else if strings.EqualFold(x.Name, "FPATH") {
+			base = "ZP_BASE_FPATH"
 		}
 		fmt.Fprintf(b, "  %s=\"$%s\"\n", x.Name, base)
 	case activate.Unalias:
@@ -214,8 +228,9 @@ func emitDeactivate(b *strings.Builder, op activate.Op) error {
 		if !safeAliasFuncName(x.Name) {
 			return nil
 		}
-		slot := "ZP_PRIOR_ALIAS_" + sanitizeSlot(x.Name)
-		fmt.Fprintf(b, "  if (( ${+%s} )); then if [[ \"${%s}\" == __ZP_UNSET__ ]]; then unalias %s 2>/dev/null; else alias %s=\"${%s}\"; fi; unset %s; fi\n", slot, slot, x.Name, x.Name, slot, slot)
+		original := encodeSlot("ORIGINAL_ALIAS", x.Name)
+		presence := encodeSlot("PRESENT_ALIAS", x.Name)
+		fmt.Fprintf(b, "  if (( ${+%s} )); then if (( %s )); then alias %s=\"${%s}\"; else unalias %s 2>/dev/null; fi; unset %s; unset %s; fi\n", presence, presence, x.Name, original, x.Name, original, presence)
 	case activate.UnsetFunc:
 		if !safeAliasFuncName(x.Name) {
 			return nil
@@ -225,18 +240,23 @@ func emitDeactivate(b *strings.Builder, op activate.Op) error {
 		if !safeAliasFuncName(x.Name) {
 			return nil
 		}
-		slot := "ZP_PRIOR_FUNC_" + sanitizeSlot(x.Name)
-		fmt.Fprintf(b, "  if (( ${+%s} )); then if [[ \"${%s}\" == __ZP_UNSET__ ]]; then unset -f %s 2>/dev/null; else functions[%s]=\"${%s}\"; fi; unset %s; fi\n", slot, slot, x.Name, x.Name, slot, slot)
+		original := encodeSlot("ORIGINAL_FUNCTION", x.Name)
+		presence := encodeSlot("PRESENT_FUNCTION", x.Name)
+		fmt.Fprintf(b, "  if (( ${+%s} )); then if (( %s )); then functions[%s]=\"${%s}\"; else unset -f %s 2>/dev/null; fi; unset %s; unset %s; fi\n", presence, presence, x.Name, original, x.Name, original, presence)
 	case activate.RestoreOption:
 		if !safeOptionName(x.Name) {
 			return nil
 		}
-		slot := "ZP_WAS_ON_" + sanitizeSlot(x.Name)
+		slot := encodeSlot("WAS_ON_OPTION", x.Name)
 		fmt.Fprintf(b, "  if (( ${+%s} )); then if (( %s )); then setopt %s; else unsetopt %s; fi; unset %s; fi\n", slot, slot, x.Name, x.Name, slot)
 	default:
 		return fmt.Errorf("deactivate: unsupported operation %T", op)
 	}
 	return nil
+}
+
+func emitRestoreScalar(b *strings.Builder, name, applied string) {
+	fmt.Fprintf(b, "  zp_restore_scalar %s %s %s %s %s %s\n", name, renderValue(applied, false), encodeSlot("ORIGINAL_SCALAR", name), encodeSlot("PRESENT_SCALAR", name), encodeSlot("EXPORTED_SCALAR", name), encodeSlot("APPLIED_SCALAR", name))
 }
 
 // Reserved future element-removal form: when ListDelta.Deletions is activated,
