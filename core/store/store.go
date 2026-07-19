@@ -77,6 +77,13 @@ type Store struct {
 	git      gitRunner         // git-binary subprocess driver (Plan 01)
 	regen    shell.Regenerator // injected per-entry zsh emitter (D-03; never the concrete zsh provider)
 	keychain KeychainDriver    // secret backend seam (concrete impls land in Plan 03)
+
+	// Per-instance test seams for ambiguous ref effects. Production leaves these nil
+	// and calls gitRunner directly; a test can inject one Store without leaking state
+	// to later tests or another concurrent Store.
+	refRead   func(context.Context, string) (string, error)
+	refUpdate func(context.Context, string, string, string) error
+	refDelete func(context.Context, string, string) error
 }
 
 // New constructs a Store after a one-time git-presence guard (an absent git binary
@@ -343,20 +350,20 @@ func (s *Store) Commit(ctx context.Context, branch string, p model.Profile, msg 
 	if old == "" {
 		old = "0000000000000000000000000000000000000000"
 	}
-	if err := s.git.updateRefCAS(ctx, ref, commit, old); err != nil {
+	if err := s.updateRefCAS(ctx, ref, commit, old); err != nil {
 		// update-ref can be ambiguous from this process's perspective (for example,
 		// a timeout after git has moved the ref). Re-read the ref before restoring
 		// secrets: compensate only if it points to OUR commit, and use CAS again so
 		// another writer can never be clobbered.
 		result := err
-		if current, readErr := s.git.revParse(ctx, ref); readErr == nil {
+		if current, readErr := s.readRef(ctx, ref); readErr == nil {
 			switch {
 			case current == commit:
 				var compensateErr error
 				if parent == "" {
-					compensateErr = s.git.deleteRefCAS(ctx, ref, commit)
+					compensateErr = s.deleteRefCAS(ctx, ref, commit)
 				} else {
-					compensateErr = s.git.updateRefCAS(ctx, ref, parent, commit)
+					compensateErr = s.updateRefCAS(ctx, ref, parent, commit)
 				}
 				if compensateErr != nil {
 					result = ErrSecretRollback
@@ -373,6 +380,27 @@ func (s *Store) Commit(ctx context.Context, branch string, p model.Profile, msg 
 		return nil, result
 	}
 	return report, nil // names the literal secrets excluded above (nil/empty when none)
+}
+
+func (s *Store) readRef(ctx context.Context, ref string) (string, error) {
+	if s.refRead != nil {
+		return s.refRead(ctx, ref)
+	}
+	return s.git.revParse(ctx, ref)
+}
+
+func (s *Store) updateRefCAS(ctx context.Context, ref, sha, old string) error {
+	if s.refUpdate != nil {
+		return s.refUpdate(ctx, ref, sha, old)
+	}
+	return s.git.updateRefCAS(ctx, ref, sha, old)
+}
+
+func (s *Store) deleteRefCAS(ctx context.Context, ref, old string) error {
+	if s.refDelete != nil {
+		return s.refDelete(ctx, ref, old)
+	}
+	return s.git.deleteRefCAS(ctx, ref, old)
 }
 
 // Read reconstructs a model.Profile from a branch's profile.json, pulled straight

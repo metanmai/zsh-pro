@@ -295,6 +295,59 @@ func TestCommitRollsBackSecretWritesBeforeMovingRef(t *testing.T) {
 	}
 }
 
+func TestCommitCompensatesAmbiguousRefFailure(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed; skipping ref transaction test")
+	}
+	for _, tc := range []struct {
+		name string
+		move bool
+	}{
+		{name: "before effect"},
+		{name: "after effect", move: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			kc := &transactionKeychain{values: map[string]string{}}
+			s, err := New(t.TempDir(), stubRegen{}, kc)
+			if err != nil {
+				t.Fatal("New returned an error")
+			}
+			if err := s.Init(ctx); err != nil {
+				t.Fatal("Init returned an error")
+			}
+			before, err := s.git.revParse(ctx, "refs/heads/main")
+			if err != nil {
+				t.Fatal("could not read baseline ref")
+			}
+			injected := false
+			s.refUpdate = func(ctx context.Context, ref, sha, old string) error {
+				if injected {
+					return s.git.updateRefCAS(ctx, ref, sha, old)
+				}
+				injected = true
+				if tc.move {
+					if err := s.git.updateRefCAS(ctx, ref, sha, old); err != nil {
+						return err
+					}
+				}
+				return ErrGitCommand
+			}
+			p := buildSecretProfile(t, "export API_KEY=next_value\n")
+			if _, err := s.Commit(ctx, "main", p, "ref transaction test"); !errors.Is(err, ErrGitCommand) {
+				t.Fatal("Commit did not return the typed ref error")
+			}
+			after, err := s.git.revParse(ctx, "refs/heads/main")
+			if err != nil || after != before {
+				t.Fatal("ambiguous ref failure was not restored to the prior SHA")
+			}
+			if _, exists := kc.values["API_KEY"]; exists {
+				t.Fatal("ambiguous ref failure left a backend write behind")
+			}
+		})
+	}
+}
+
 func TestExcludeSecretsRejectsMalformedLiteralBeforeBackendWrite(t *testing.T) {
 	vault := newVaultKeychain(t.TempDir())
 	in := model.Profile{Entries: []model.Entry{{
