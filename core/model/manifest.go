@@ -32,9 +32,11 @@ type Scalar struct {
 // ListDelta records additions and deletions relative to the runtime base. Deletions
 // are validated-present but unexercised in this phase; later runtime work authors them.
 type ListDelta struct {
-	Name      string   `json:"name"`      // PATH or FPATH
-	Additions []string `json:"additions"` // profile entries
-	Deletions []string `json:"deletions"` // base entries removed (Phase 5+)
+	Name            string   `json:"name"`      // PATH or FPATH
+	Additions       []string `json:"additions"` // profile entries
+	Deletions       []string `json:"deletions"` // base entries removed (Phase 5+)
+	BaseIndex       *int     `json:"baseIndex,omitempty"`
+	AdditionDynamic []bool   `json:"additionDynamic,omitempty"`
 }
 
 // AliasSet separates profile-added alias bodies from runtime-captured shadows.

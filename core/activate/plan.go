@@ -60,6 +60,8 @@ func (SetScalar) activationOp() {}
 type ApplyListDelta struct {
 	Name                 string
 	Additions, Deletions []string
+	BaseIndex            *int
+	AdditionDynamic      []bool
 }
 
 func (ApplyListDelta) activationOp() {}

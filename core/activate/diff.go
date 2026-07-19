@@ -24,6 +24,11 @@ func Diff(active, target *model.Manifest) (Plan, error) {
 		target = &normalized
 	}
 	if target != nil {
+		for _, list := range target.Lists {
+			if err := validateListDelta(list); err != nil {
+				return Plan{}, err
+			}
+		}
 		for _, name := range target.Functions.Added {
 			if _, ok := target.Functions.Bodies[name]; !ok {
 				return Plan{}, fmt.Errorf("target function %q has no activation body", name)
@@ -38,6 +43,22 @@ func Diff(active, target *model.Manifest) (Plan, error) {
 		p.Activate = activate(*target)
 	}
 	return p, nil
+}
+
+func validateListDelta(list model.ListDelta) error {
+	if list.BaseIndex == nil {
+		if len(list.AdditionDynamic) != 0 {
+			return fmt.Errorf("target list %q has dynamic metadata without base metadata", list.Name)
+		}
+		return nil
+	}
+	if *list.BaseIndex < 0 || *list.BaseIndex > len(list.Additions) {
+		return fmt.Errorf("target list %q has invalid base index", list.Name)
+	}
+	if len(list.AdditionDynamic) != len(list.Additions) {
+		return fmt.Errorf("target list %q has invalid dynamic metadata", list.Name)
+	}
+	return nil
 }
 
 // normalizeManifest preserves the final source occurrence of every ordered
@@ -147,7 +168,7 @@ func activate(m model.Manifest) []Op {
 		out = append(out, SetScalar{Name: s.Name, Applied: s.Applied, Dynamic: dynamic, Exported: exported})
 	}
 	for _, l := range m.Lists {
-		out = append(out, ApplyListDelta{Name: l.Name, Additions: l.Additions, Deletions: l.Deletions})
+		out = append(out, ApplyListDelta{Name: l.Name, Additions: l.Additions, Deletions: l.Deletions, BaseIndex: l.BaseIndex, AdditionDynamic: l.AdditionDynamic})
 	}
 	keys := make([]string, 0, len(m.Aliases.Added))
 	for k := range m.Aliases.Added {
