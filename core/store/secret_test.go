@@ -205,6 +205,96 @@ func TestExcludeSecretsStoresLiteralRuntimeValueExactly(t *testing.T) {
 	}
 }
 
+// transactionKeychain records side effects so transaction ordering and rollback can
+// be exercised without relying on an OS keychain or exposing values in subprocesses.
+type transactionKeychain struct {
+	values   map[string]string
+	stores   []string
+	failKey  string
+	failOnce bool
+}
+
+func (k *transactionKeychain) Store(key, value string) error {
+	k.stores = append(k.stores, key)
+	if key == k.failKey && k.failOnce {
+		k.failOnce = false
+		return ErrSecretBackendUnavailable
+	}
+	k.values[key] = value
+	return nil
+}
+
+func (k *transactionKeychain) Retrieve(key string) (string, error) {
+	value, ok := k.values[key]
+	if !ok {
+		return "", ErrSecretNotFound
+	}
+	return value, nil
+}
+
+func (k *transactionKeychain) Delete(key string) error {
+	delete(k.values, key)
+	return nil
+}
+
+func (*transactionKeychain) Kind() model.SecretRefKind { return model.SecretRefFile }
+
+func TestPrepareSecretsIsPureAndCoalescesLastWrite(t *testing.T) {
+	kc := &transactionKeychain{values: map[string]string{}}
+	in := buildSecretProfile(t, "export API_KEY=first\nexport API_KEY=second\n")
+
+	prepared, err := prepareSecrets(in, kc)
+	if err != nil {
+		t.Fatal("prepareSecrets returned an error")
+	}
+	if len(kc.stores) != 0 {
+		t.Fatal("prepareSecrets mutated the backend")
+	}
+	if len(prepared.pending) != 1 || prepared.pending[0].key != "API_KEY" || prepared.pending[0].value != "second" {
+		t.Fatal("prepareSecrets did not retain one final mutation")
+	}
+	if len(prepared.report) != 2 {
+		t.Fatal("prepareSecrets did not report every source occurrence")
+	}
+	if in.Entries[0].Secret != nil || in.Entries[1].Secret != nil {
+		t.Fatal("prepareSecrets mutated the caller profile")
+	}
+}
+
+func TestCommitRollsBackSecretWritesBeforeMovingRef(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed; skipping transaction test")
+	}
+	ctx := context.Background()
+	kc := &transactionKeychain{
+		values:   map[string]string{"API_KEY": "previous-a", "TOKEN": "previous-b"},
+		failKey:  "TOKEN",
+		failOnce: true,
+	}
+	s, err := New(t.TempDir(), stubRegen{}, kc)
+	if err != nil {
+		t.Fatal("New returned an error")
+	}
+	if err := s.Init(ctx); err != nil {
+		t.Fatal("Init returned an error")
+	}
+	before, err := s.git.revParse(ctx, "refs/heads/main")
+	if err != nil {
+		t.Fatal("could not read baseline ref")
+	}
+	p := buildSecretProfile(t, "export API_KEY=next_a\nexport TOKEN=next_b\n")
+	if _, err := s.Commit(ctx, "main", p, "transaction test"); !errors.Is(err, ErrSecretBackendUnavailable) {
+		t.Fatal("Commit did not return the typed backend failure")
+	}
+	after, err := s.git.revParse(ctx, "refs/heads/main")
+	if err != nil || after != before {
+		t.Fatal("failed secret write moved the profile ref")
+	}
+	if kc.values["API_KEY"] != "previous-a" || kc.values["TOKEN"] != "previous-b" {
+		t.Fatal("failed secret write was not rolled back")
+	}
+}
+
 func TestExcludeSecretsRejectsMalformedLiteralBeforeBackendWrite(t *testing.T) {
 	vault := newVaultKeychain(t.TempDir())
 	in := model.Profile{Entries: []model.Entry{{
