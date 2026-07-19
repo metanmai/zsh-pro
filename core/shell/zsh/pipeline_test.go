@@ -198,3 +198,44 @@ func-bar() { print final-dash; }
 		t.Fatalf("live identity pipeline: %v\n%s\nsource:\n%s\nscript:\n%s", err, out, source, script)
 	}
 }
+
+func TestPipelineComposedPathAndFPathDynamicExpansion(t *testing.T) {
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("zsh not available")
+	}
+	source := "PATH=/a:$PATH\nPATH=$PATH:/b\nFPATH=$EXTRA:$FPATH\n"
+	p := Provider{}
+	blocks, err := p.Parse([]byte(source))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := activate.Build(ir.Build(blocks, p))
+	m.Profile = "lists"
+	applyPlan, err := activate.Diff(nil, &m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deactivatePlan, err := activate.Diff(&m, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	apply, _, err := p.Emit(applyPlan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, deactivate, err := p.Emit(deactivatePlan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, extra := range []string{"/one:/two", ""} {
+		script := strings.Join([]string{
+			"PATH=/base", "FPATH=/fbase", "EXTRA=" + zquote(extra), apply, "zp_apply",
+			"[[ $PATH == /a:/base:/b ]] || exit 71",
+			"if [[ -n $EXTRA ]]; then [[ $FPATH == /one:/two:/fbase ]] || exit 72; else [[ $FPATH == /fbase ]] || exit 73; fi",
+			deactivate, "zp_deactivate", "[[ $PATH == /base && $FPATH == /fbase ]] || exit 74",
+		}, "\n")
+		if out, err := exec.Command("zsh", "-f", "-c", script).CombinedOutput(); err != nil {
+			t.Fatalf("extra case did not match direct scalar behavior: %v %s", err, out)
+		}
+	}
+}
