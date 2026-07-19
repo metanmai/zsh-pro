@@ -70,7 +70,19 @@ import (
 // No secret value is ever logged or echoed (Pitfall 3 / ASVS V7). The ctx is accepted to
 // match Commit's call shape and leave room for a context-aware backend without a future
 // signature change; the current backends are synchronous.
-func excludeSecrets(_ context.Context, p model.Profile, kc KeychainDriver) (model.Profile, WithheldReport, error) {
+type pendingSecret struct {
+	key, value string
+}
+
+type preparedSecrets struct {
+	profile model.Profile
+	report  WithheldReport
+	pending []pendingSecret
+}
+
+// prepareSecrets redacts a copied profile and records deterministic final writes
+// without touching the backend.
+func prepareSecrets(p model.Profile, kc KeychainDriver) (preparedSecrets, error) {
 	// Shallow copy of the entry slice so the caller's Profile is untouched. A nil
 	// Entries stays nil (no allocation) — the secret-free / empty-profile path is a
 	// pure no-op that returns the profile and a nil report, preserving the Phase 2
@@ -80,12 +92,14 @@ func excludeSecrets(_ context.Context, p model.Profile, kc KeychainDriver) (mode
 	// shared array/pointers), so the caller is never corrupted
 	// (TestExcludeSecretsDefensiveCopy pins this).
 	if len(p.Entries) == 0 {
-		return p, nil, nil
+		return preparedSecrets{profile: p}, nil
 	}
 	entries := make([]model.Entry, len(p.Entries))
 	copy(entries, p.Entries)
 
 	var report WithheldReport
+	var pending []pendingSecret
+	pendingIndex := map[string]int{}
 	for i := range entries {
 		e := &entries[i]
 		if e.Category != model.CatSecrets {
@@ -99,31 +113,31 @@ func excludeSecrets(_ context.Context, p model.Profile, kc KeychainDriver) (mode
 			// would risk leaving the literal in Text (CR-01) or capturing it under the
 			// wrong key (CR-02). Fail closed (T-03-03): never fall through to a verbatim
 			// commit that would leak the literal.
-			return model.Profile{}, nil, ErrUnsafeSecretShape
+			return preparedSecrets{}, ErrUnsafeSecretShape
 		}
 		var value string
 		switch e.ValueMode {
 		case model.ValueModeDynamic:
 			if !e.Dynamic {
-				return model.Profile{}, nil, ErrUnsafeSecretShape
+				return preparedSecrets{}, ErrUnsafeSecretShape
 			}
 			// Dynamic secrets remain late-bound source text and are never stored.
 			continue
 		case model.ValueModeLiteral:
 			if e.RuntimeValue == nil {
-				return model.Profile{}, nil, ErrUnsafeSecretShape
+				return preparedSecrets{}, ErrUnsafeSecretShape
 			}
 			// RuntimeValue is the parser-authoritative semantic value. It may be
 			// present-empty; source Value deliberately retains quotes and escapes.
 			value = *e.RuntimeValue
 		case model.ValueModeLegacy:
 			if e.Dynamic || e.Value == "" {
-				return model.Profile{}, nil, ErrUnsafeSecretShape
+				return preparedSecrets{}, ErrUnsafeSecretShape
 			}
 			// Narrow compatibility path for pre-semantic programmatic entries.
 			value = e.Value
 		default:
-			return model.Profile{}, nil, ErrUnsafeSecretShape
+			return preparedSecrets{}, ErrUnsafeSecretShape
 		}
 
 		key := e.Names[0] // isExcludableSecretShape guarantees exactly one name.
@@ -132,12 +146,13 @@ func excludeSecrets(_ context.Context, p model.Profile, kc KeychainDriver) (mode
 			// than commit the literal or nil-panic. The composition root always injects a
 			// non-nil driver (NewOSKeychainDriver falls back to the vault), so this guards
 			// only test-only / future misuse construction.
-			return model.Profile{}, nil, ErrSecretBackendUnavailable
+			return preparedSecrets{}, ErrSecretBackendUnavailable
 		}
-		if err := kc.Store(key, value); err != nil {
-			// Capture failed: abort the whole Commit. Never fall through and commit the
-			// literal — that would leak the secret into the tree.
-			return model.Profile{}, nil, err
+		if prior, ok := pendingIndex[key]; ok {
+			pending[prior].value = value
+		} else {
+			pendingIndex[key] = len(pending)
+			pending = append(pending, pendingSecret{key: key, value: value})
 		}
 
 		// Replace the literal with a reference stamped with the ACTIVE backend's kind
@@ -175,7 +190,22 @@ func excludeSecrets(_ context.Context, p model.Profile, kc KeychainDriver) (mode
 		report = append(report, WithheldSecret{Name: key, StartLine: e.StartLine})
 	}
 
-	return model.Profile{Entries: entries}, report, nil
+	return preparedSecrets{profile: model.Profile{Entries: entries}, report: report, pending: pending}, nil
+}
+
+// excludeSecrets remains a compatibility helper for direct callers; Commit uses
+// prepareSecrets so it can order backend effects transactionally.
+func excludeSecrets(_ context.Context, p model.Profile, kc KeychainDriver) (model.Profile, WithheldReport, error) {
+	prepared, err := prepareSecrets(p, kc)
+	if err != nil {
+		return model.Profile{}, nil, err
+	}
+	for _, mutation := range prepared.pending {
+		if err := kc.Store(mutation.key, mutation.value); err != nil {
+			return model.Profile{}, nil, err
+		}
+	}
+	return prepared.profile, prepared.report, nil
 }
 
 // secretRefValue renders the inert placeholder that stands in for an excluded

@@ -114,7 +114,9 @@ func (macOSKeychain) Retrieve(key string) (string, error) {
 	if err := cmd.Run(); err != nil {
 		return "", mapKeychainError()
 	}
-	return strings.TrimRight(out.String(), "\n"), nil
+	// security's framing cannot distinguish its output terminator from a user
+	// newline, so returning altered bytes would be unsafe.
+	return "", ErrSecretBackendUnavailable
 }
 
 // Delete removes the account=key, service=zsh-pro entry. A not-found delete is
@@ -176,7 +178,8 @@ func (linuxKeychain) Retrieve(key string) (string, error) {
 	if err := cmd.Run(); err != nil {
 		return "", mapKeychainError()
 	}
-	return strings.TrimRight(out.String(), "\n"), nil
+	// secret-tool's newline framing is likewise ambiguous for secret data.
+	return "", ErrSecretBackendUnavailable
 }
 
 // Delete clears the entry matching the attribute schema. [CITED]
@@ -249,7 +252,7 @@ func (v vaultKeychain) Retrieve(key string) (string, error) {
 	}
 	val, ok := entries[key]
 	if !ok {
-		return "", ErrSecretBackendUnavailable
+		return "", ErrSecretNotFound
 	}
 	return val, nil
 }

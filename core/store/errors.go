@@ -26,6 +26,11 @@ const (
 	// ErrSecretBackendUnavailable is returned when no OS keychain backend is present;
 	// the store falls back to the git-ignored vault file.
 	ErrSecretBackendUnavailable errStore = "zsh-pro: no secret backend available; using vault file"
+	// ErrSecretNotFound distinguishes an absent key from an operational backend
+	// failure, including when a present key stores the empty string.
+	ErrSecretNotFound    errStore = "zsh-pro: secret not found"
+	ErrSecretRollback    errStore = "zsh-pro: secret rollback failed"
+	ErrSecretRefConflict errStore = "zsh-pro: profile ref changed concurrently"
 	// ErrUnsafeSecretShape is returned when a CatSecrets assignment cannot be safely
 	// excluded because its shape does not faithfully model a single secret segment.
 	// The parser collapses a multi-name assignment (`export A=$HOME B=secret`) into
