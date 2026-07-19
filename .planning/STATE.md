@@ -5,16 +5,16 @@ milestone_name: Branchable Shell Environments
 current_phase: 04
 current_phase_name: manifest-builder-emit
 status: executing
-stopped_at: Completed 04-09-PLAN.md
-last_updated: "2026-07-19T07:27:37.801Z"
+stopped_at: Completed 04-12-PLAN.md
+last_updated: "2026-07-19T08:20:00Z"
 last_activity: 2026-07-19
-last_activity_desc: Completed 04-11 atomic secret transaction
+last_activity_desc: Completed 04-12 production-path zero-residue oracle and discovery gate
 progress:
   total_phases: 6
   completed_phases: 3
   total_plans: 23
-  completed_plans: 19
-  percent: 50
+  completed_plans: 20
+  percent: 52
 ---
 
 # Project State
@@ -29,11 +29,11 @@ See: .planning/PROJECT.md (updated 2026-06-25)
 ## Current Position
 
 Phase: 04 (manifest-builder-emit) — EXECUTING
-Plan: 11 of 13 numeric plans complete (04-09 next)
-Status: Ready to execute remaining Phase 04 gap plans
-Last activity: 2026-07-19 — Completed 04-11 atomic secret transaction
+Plan: 12 of 13 numeric plans complete (04-UAT next)
+Status: Ready for Phase 04 UAT and verification
+Last activity: 2026-07-19 — Completed 04-12 production-path zero-residue oracle and discovery gate
 
-Progress: [████████░░] 83%
+Progress: [█████████░] 92%
 
 ## Performance Metrics
 
@@ -76,6 +76,7 @@ Progress: [████████░░] 83%
 | Phase 04 P08 | 18 min | 3 tasks | 9 files |
 | Phase 04 P11 | 16 min | 3 tasks | 7 files |
 | Phase 04 P09 | 18 min | 3 tasks | 10 files |
+| Phase 04 P12 | 31 min | 3 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -117,6 +118,7 @@ Recent decisions affecting current work:
 - [Phase 04]: A semantic PATH or FPATH list is present only with one same-list Self marker; nil preserves legacy and unsupported entries. — Activation must never infer a base reference from raw source or a cross-list expansion.
 - [Phase 04]: Dynamic list additions retain validated simple-parameter source as scalar expressions, with zsh deciding zero, one, or many elements at runtime. — Pre-splitting dynamic text would freeze runtime cardinality and violate tied-list semantics.
 - [Phase 04]: Secret preparation is side-effect free; Commit snapshots all keys, writes the backend before a CAS ref update, and compensates only its own visible ref result. — This preserves exact prior backend state and never overwrites concurrent ref movement.
+- [Phase 04]: The final residue oracle uses accepted source fixtures through Parse, IR, Build, Diff, and Emit; observable PATH/FPATH presence and qqqq-encoded multiplicity remain explicit while emitter bookkeeping stays internal.
 
 ### Pending Todos
 
@@ -145,6 +147,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-19T07:27:37.794Z
-Stopped at: Completed 04-09-PLAN.md
+Last session: 2026-07-19T08:20:00Z
+Stopped at: Completed 04-12-PLAN.md
 Resume file: None

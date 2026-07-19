@@ -134,7 +134,7 @@ Plans:
   3. Restore is ownership-aware: deactivate removes only what this profile added (drift guard — restore a value only if the live value still equals what was applied) and never strips base/unmanaged state a profile merely also added (e.g. `/usr/local/bin`).
   4. A shadowed prior alias/function is captured before override and re-established on deactivate; PATH is stored as a delta against the captured base, never a wholesale overwrite.
 
-**Plans**: 11/13 plans executed
+**Plans**: 12/13 plans executed
 
 Plans:
 
@@ -177,7 +177,7 @@ Plans:
 
 **Wave 9** *(gap closure; blocked on Wave 8)*
 
-- [ ] 04-12-PLAN.md — expand the production-path residue oracle and enforce reverse-zsh ownership and test-discovery invariants
+- [x] 04-12-PLAN.md — expand the production-path residue oracle and enforce reverse-zsh ownership and test-discovery invariants (completed 2026-07-19)
 
 ### Phase 5: Runtime Loader + CLI + Bootstrap
 
