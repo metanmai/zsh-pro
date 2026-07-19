@@ -9,29 +9,27 @@ import (
 
 func TestReverseSyntaxHasSingleEmitHome(t *testing.T) {
 	root := filepath.Join("..", "..", "..")
-	files := []string{"core/activate", "core/model", "core/shell/zsh"}
-	for _, rel := range files {
-		entries, err := os.ReadDir(filepath.Join(root, rel))
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, e := range entries {
-			if rel == "core/shell/zsh" && e.Name() != "regen.go" {
-				continue
-			}
-			if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
-				continue
-			}
-			b, err := os.ReadFile(filepath.Join(root, rel, e.Name()))
+	for _, rel := range []string{"core/activate", "core/model", "core/store", "core/shell"} {
+		err := filepath.WalkDir(filepath.Join(root, rel), func(path string, d os.DirEntry, err error) error {
 			if err != nil {
-				t.Fatal(err)
+				return err
 			}
-			text := string(b)
+			if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") || filepath.Clean(path) == filepath.Join(root, "core/shell/zsh/emit.go") {
+				return nil
+			}
+			b, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
 			for _, token := range []string{"unalias ", "unset -f ", "unsetopt "} {
-				if strings.Contains(text, token) {
-					t.Fatalf("reverse token %q found outside emit.go in %s", token, filepath.Join(rel, e.Name()))
+				if strings.Contains(string(b), token) {
+					t.Errorf("reverse token %q found outside emit.go in %s", token, path)
 				}
 			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
 		}
 	}
 }
