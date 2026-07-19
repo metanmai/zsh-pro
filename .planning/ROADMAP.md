@@ -134,7 +134,7 @@ Plans:
   3. Restore is ownership-aware: deactivate removes only what this profile added (drift guard — restore a value only if the live value still equals what was applied) and never strips base/unmanaged state a profile merely also added (e.g. `/usr/local/bin`).
   4. A shadowed prior alias/function is captured before override and re-established on deactivate; PATH is stored as a delta against the captured base, never a wholesale overwrite.
 
-**Plans**: 10/13 plans executed
+**Plans**: 11/13 plans executed
 
 Plans:
 
@@ -173,7 +173,7 @@ Plans:
 
 **Wave 8** *(gap closure; blocked on Wave 7)*
 
-- [ ] 04-09-PLAN.md — compose repeated PATH/FPATH statements while preserving an unset, empty, or non-empty base
+- [x] 04-09-PLAN.md — compose repeated PATH/FPATH statements while preserving an unset, empty, or non-empty base
 
 **Wave 9** *(gap closure; blocked on Wave 8)*
 
@@ -227,7 +227,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 | 1. SPIKE — Zero-Residue Live Hot-Switch | 2/2 | Complete   | 2026-06-25 |
 | 2. IR + Partial Evaluation | 3/3 | Complete   | 2026-06-26 |
 | 3. Git-Backed Store | 3/3 | Complete   | 2026-06-27 |
-| 4. Manifest Builder + Emit | 10/13 | In Progress|  |
+| 4. Manifest Builder + Emit | 11/13 | In Progress|  |
 | 5. Runtime Loader + CLI + Bootstrap | 0/2 | Not started | - |
 | 6. Ingest End-to-End | 0/2 | Not started | - |
 
