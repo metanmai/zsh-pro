@@ -134,7 +134,7 @@ Plans:
   3. Restore is ownership-aware: deactivate removes only what this profile added (drift guard — restore a value only if the live value still equals what was applied) and never strips base/unmanaged state a profile merely also added (e.g. `/usr/local/bin`).
   4. A shadowed prior alias/function is captured before override and re-established on deactivate; PATH is stored as a delta against the captured base, never a wholesale overwrite.
 
-**Plans**: 5/6 plans executed
+**Plans**: 5/13 plans executed
 
 Plans:
 
@@ -159,6 +159,25 @@ Plans:
 **Wave 5** *(gap closure; blocked on Wave 4)*
 
 - [x] 04-05-PLAN.md — deterministic balanced N≥20 zero-residue property; type-aware collision-safe full-state oracle; self-tests and three independent emitter mutants
+
+**Wave 6** *(gap closure; blocked on Wave 5)*
+
+- [ ] 04-06-PLAN.md — reduce declarations to final effective shell identities; use collision-free presence-aware restore slots; preserve scalar export provenance and attributes
+- [ ] 04-07-PLAN.md — match zsh escape semantics exactly and capture secrets as semantic runtime values without freezing dynamic content
+- [ ] 04-10-PLAN.md — make introspection failures and framing explicit, fail-closed, and testable
+
+**Wave 7** *(gap closure; blocked on Wave 6)*
+
+- [ ] 04-08-PLAN.md — carry PATH/FPATH as semantic list values with correct dynamic zero/one/many expansion
+- [ ] 04-11-PLAN.md — make secret storage and Git publication transactional, newline-safe, rollback-safe, and concurrency-safe
+
+**Wave 8** *(gap closure; blocked on Wave 7)*
+
+- [ ] 04-09-PLAN.md — compose repeated PATH/FPATH statements while preserving an unset, empty, or non-empty base
+
+**Wave 9** *(gap closure; blocked on Wave 8)*
+
+- [ ] 04-12-PLAN.md — expand the production-path residue oracle and enforce reverse-zsh ownership and test-discovery invariants
 
 ### Phase 5: Runtime Loader + CLI + Bootstrap
 
