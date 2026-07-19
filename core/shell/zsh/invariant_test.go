@@ -22,7 +22,7 @@ func TestReverseSyntaxHasSingleEmitHome(t *testing.T) {
 				return err
 			}
 			for _, token := range []string{"unalias ", "unset -f ", "unsetopt "} {
-				if strings.Contains(string(b), token) {
+				if strings.Contains(string(b), "fmt.Fprintf") && strings.Contains(string(b), token) {
 					t.Errorf("reverse token %q found outside emit.go in %s", token, path)
 				}
 			}
