@@ -20,6 +20,10 @@ type Scalar struct {
 	Name     string  `json:"name"`               // variable name
 	Applied  string  `json:"applied"`            // profile value
 	Original *string `json:"original,omitempty"` // runtime-reconciled prior value
+	// Exported records explicit assignment provenance for newly-built manifests.
+	// Nil preserves legacy manifests, whose historical export-on-apply behavior
+	// remains in the differ.
+	Exported *bool `json:"exported,omitempty"`
 	// Dynamic is present on newly built manifests. A nil pointer identifies a
 	// legacy manifest whose provenance must be inferred for compatibility.
 	Dynamic *bool `json:"dynamic,omitempty"`

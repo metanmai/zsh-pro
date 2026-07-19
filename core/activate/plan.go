@@ -52,6 +52,7 @@ func (RestoreOption) activationOp() {}
 type SetScalar struct {
 	Name, Applied string
 	Dynamic       bool
+	Exported      bool
 }
 
 func (SetScalar) activationOp() {}

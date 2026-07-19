@@ -117,3 +117,22 @@ func TestManifestAdditiveSemanticFieldsRemainCompatible(t *testing.T) {
 		t.Fatalf("empty additive fields changed legacy shape: %s", b)
 	}
 }
+
+func TestScalarExportedProvenanceIsExplicitAndLegacyCompatible(t *testing.T) {
+	exported := false
+	b, err := json.Marshal(Scalar{Name: "PLAIN", Applied: "value", Exported: &exported})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"exported":false`) {
+		t.Fatalf("explicit false provenance was omitted: %s", b)
+	}
+
+	var legacy Scalar
+	if err := json.Unmarshal([]byte(`{"name":"LEGACY","applied":"value"}`), &legacy); err != nil {
+		t.Fatal(err)
+	}
+	if legacy.Exported != nil {
+		t.Fatalf("legacy scalar unexpectedly gained export provenance: %#v", legacy.Exported)
+	}
+}

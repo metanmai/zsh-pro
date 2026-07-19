@@ -26,6 +26,9 @@ func Build(p model.Profile) model.Manifest {
 			Bodies:   map[string]string{},
 		},
 	}
+	envIndexes := map[string]int{}
+	functionIndexes := map[string]int{}
+	optionIndexes := map[string]int{}
 	for _, e := range p.Entries {
 		if !e.EffectiveManaged() {
 			continue
@@ -40,7 +43,21 @@ func Build(p model.Profile) model.Manifest {
 				if !ok {
 					continue
 				}
-				m.Env = append(m.Env, model.Scalar{Name: e.Names[0], Applied: value, Dynamic: boolPtr(dynamic)})
+				scalar := model.Scalar{Name: e.Names[0], Applied: value, Dynamic: boolPtr(dynamic), Exported: boolPtr(e.Exported)}
+				if previous, ok := envIndexes[scalar.Name]; ok {
+					// A plain assignment does not clear a shell's export attribute.
+					// Preserve any managed export transition while replacing the final
+					// value and moving the identity to its final source occurrence.
+					*scalar.Exported = *m.Env[previous].Exported || e.Exported
+					m.Env = append(m.Env[:previous], m.Env[previous+1:]...)
+					for name, index := range envIndexes {
+						if index > previous {
+							envIndexes[name] = index - 1
+						}
+					}
+				}
+				envIndexes[scalar.Name] = len(m.Env)
+				m.Env = append(m.Env, scalar)
 				continue
 			}
 			if e.Category == model.CatPath {
@@ -59,8 +76,18 @@ func Build(p model.Profile) model.Manifest {
 			}
 		case model.KindFuncDecl:
 			if len(e.Names) == 1 && symbolNameRE.MatchString(e.Names[0]) && e.FunctionBody != nil {
-				m.Functions.Added = append(m.Functions.Added, e.Names[0])
-				m.Functions.Bodies[e.Names[0]] = *e.FunctionBody
+				name := e.Names[0]
+				if previous, ok := functionIndexes[name]; ok {
+					m.Functions.Added = append(m.Functions.Added[:previous], m.Functions.Added[previous+1:]...)
+					for function, index := range functionIndexes {
+						if index > previous {
+							functionIndexes[function] = index - 1
+						}
+					}
+				}
+				functionIndexes[name] = len(m.Functions.Added)
+				m.Functions.Added = append(m.Functions.Added, name)
+				m.Functions.Bodies[name] = *e.FunctionBody
 			}
 		case model.KindCommand:
 			if e.Category != model.CatOptions || (e.CmdName != "setopt" && e.CmdName != unsetOptCommand) {
@@ -68,6 +95,15 @@ func Build(p model.Profile) model.Manifest {
 			}
 			for _, n := range e.Names {
 				if optionNameRE.MatchString(n) {
+					if previous, ok := optionIndexes[n]; ok {
+						m.Options = append(m.Options[:previous], m.Options[previous+1:]...)
+						for option, index := range optionIndexes {
+							if index > previous {
+								optionIndexes[option] = index - 1
+							}
+						}
+					}
+					optionIndexes[n] = len(m.Options)
 					m.Options = append(m.Options, model.OptionSet{Name: n, Enabled: e.CmdName == "setopt"})
 				}
 			}
@@ -122,7 +158,7 @@ func pathDelta(name, value string) (model.ListDelta, bool) {
 	if idx == -1 {
 		return model.ListDelta{}, false
 	}
-	adds := parts
+	var adds []string
 	if idx == 0 {
 		adds = parts[1:]
 	} else {

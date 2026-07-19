@@ -112,3 +112,43 @@ func TestBuildRequiresAndPreservesFunctionBodies(t *testing.T) {
 		t.Fatalf("multiline body changed: %q", m.Functions.Bodies["multiline"])
 	}
 }
+
+func TestBuildReducesRepeatedEffectiveIdentities(t *testing.T) {
+	firstBody := "print first"
+	lastBody := "print last"
+	p := model.Profile{Entries: []model.Entry{
+		{Category: model.CatEnvironment, Kind: model.KindAssignment, Names: []string{"EDITOR"}, Value: "one", Managed: true},
+		{Category: model.CatFunctions, Kind: model.KindFuncDecl, Names: []string{"work"}, Managed: true, FunctionBody: &firstBody},
+		{Category: model.CatOptions, Kind: model.KindCommand, CmdName: "setopt", Names: []string{"EXTENDED_GLOB"}, Managed: true},
+		{Category: model.CatEnvironment, Kind: model.KindAssignment, Names: []string{"EDITOR"}, Value: "two", Managed: true, Exported: true},
+		{Category: model.CatFunctions, Kind: model.KindFuncDecl, Names: []string{"work"}, Managed: true, FunctionBody: &lastBody},
+		{Category: model.CatOptions, Kind: model.KindCommand, CmdName: "unsetopt", Names: []string{"EXTENDED_GLOB"}, Managed: true},
+	}}
+
+	m := Build(p)
+	if len(m.Env) != 1 || m.Env[0].Name != "EDITOR" || m.Env[0].Applied != "two" || m.Env[0].Exported == nil || !*m.Env[0].Exported {
+		t.Fatalf("scalar was not reduced with additive export intent: %#v", m.Env)
+	}
+	if len(m.Functions.Added) != 1 || m.Functions.Added[0] != "work" || m.Functions.Bodies["work"] != lastBody {
+		t.Fatalf("function was not reduced to final body: %#v", m.Functions)
+	}
+	if len(m.Options) != 1 || m.Options[0] != (model.OptionSet{Name: "EXTENDED_GLOB", Enabled: false}) {
+		t.Fatalf("option was not reduced to final state: %#v", m.Options)
+	}
+}
+
+func TestBuildPreservesDistinctPunctuationIdentities(t *testing.T) {
+	names := []string{"foo-bar", "foo.bar", "foo_bar"}
+	p := model.Profile{}
+	for _, name := range names {
+		body := "print " + name
+		p.Entries = append(p.Entries,
+			model.Entry{Category: model.CatAliases, Kind: model.KindAlias, Names: []string{name}, Value: name, Managed: true},
+			model.Entry{Category: model.CatFunctions, Kind: model.KindFuncDecl, Names: []string{name}, Managed: true, FunctionBody: &body},
+		)
+	}
+	m := Build(p)
+	if len(m.Aliases.Added) != len(names) || len(m.Functions.Added) != len(names) {
+		t.Fatalf("punctuation-distinct names merged: %#v %#v", m.Aliases, m.Functions)
+	}
+}
