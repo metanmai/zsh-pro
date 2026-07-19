@@ -5,16 +5,16 @@ milestone_name: Branchable Shell Environments
 current_phase: 04
 current_phase_name: manifest-builder-emit
 status: executing
-stopped_at: Planned 04-06 through 04-12 gap closure
-last_updated: "2026-07-19T05:22:03.508Z"
+stopped_at: Completed 04-06-PLAN.md
+last_updated: "2026-07-19T06:48:44.537Z"
 last_activity: 2026-07-19
-last_activity_desc: Planned Phase 04 gap closure (04-06 through 04-12)
+last_activity_desc: Phase 04 execution started
 progress:
   total_phases: 6
   completed_phases: 3
   total_plans: 23
-  completed_plans: 13
-  percent: 50
+  completed_plans: 14
+  percent: 61
 ---
 
 # Project State
@@ -29,11 +29,11 @@ See: .planning/PROJECT.md (updated 2026-06-25)
 ## Current Position
 
 Phase: 04 (manifest-builder-emit) — EXECUTING
-Plan: 5 of 12 numeric plans complete (04-06 next)
-Status: Ready to execute gap plans 04-06 through 04-12
-Last activity: 2026-07-19 — Planned Phase 04 gap closure (04-06 through 04-12)
+Plan: 6 of 13 numeric plans complete (04-07 next)
+Status: Ready to execute remaining Phase 04 gap plans
+Last activity: 2026-07-19 — Completed 04-06 final-identity restoration
 
-Progress: [██████░░░░] 57%
+Progress: [██████░░░░] 61%
 
 ## Performance Metrics
 
@@ -71,6 +71,7 @@ Progress: [██████░░░░] 57%
 | Phase 04 P03 | 13min | 3 tasks | 11 files |
 | Phase 04 P04 | 12min | 2 tasks | 9 files |
 | Phase 04 P05 | 18min | 2 tasks | 1 files |
+| Phase 04 P06 | 74 min | 3 tasks | 10 files |
 
 ## Accumulated Context
 
@@ -108,6 +109,7 @@ Recent decisions affecting current work:
 - [Phase 04]: Function body map-key presence distinguishes a valid empty function from missing activation data.
 - [Phase 04]: The complete residue oracle uses sorted type-aware live dereferencing and qqqq field encoding. — This keeps arbitrary NUL, newline, backslash, and metacharacter data collision-safe without decoding snapshots.
 - [Phase 04]: Renderer negative controls assert their intended failure modes and restore seams with cleanup before a real-emitter rerun. — This proves the residue test is falsifiable and cannot pass because a mutant leaked into later tests.
+- [Phase 04]: Final manifest identities own restoration; explicit scalar export provenance and presence-aware hex slots preserve exact prior shell state.
 
 ### Pending Todos
 
@@ -136,6 +138,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-18T18:58:38.565Z
-Stopped at: Completed 04-05-PLAN.md
+Last session: 2026-07-19T06:48:29.429Z
+Stopped at: Completed 04-06-PLAN.md
 Resume file: None
