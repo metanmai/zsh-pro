@@ -294,3 +294,82 @@ func TestParseCapturesFunctionBody(t *testing.T) {
 		})
 	}
 }
+
+func TestParseListValueSegments(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		want []model.ListSegment
+	}{
+		{
+			name: "path dynamic then self",
+			src:  `PATH="$HOME/bin:$PATH"`,
+			want: []model.ListSegment{{Dynamic: true, Source: "$HOME/bin"}, {Self: true}},
+		},
+		{
+			name: "fpath braced dynamic then self",
+			src:  `FPATH="${HOME}/zfunc:$FPATH"`,
+			want: []model.ListSegment{{Dynamic: true, Source: "${HOME}/zfunc"}, {Self: true}},
+		},
+		{
+			name: "ordered mixed quoted additions",
+			src:  `PATH='/a b':$PATH:"/c d"`,
+			want: []model.ListSegment{{Value: "/a b"}, {Self: true}, {Value: "/c d"}},
+		},
+		{
+			name: "literal then self",
+			src:  `PATH=/a:$PATH`,
+			want: []model.ListSegment{{Value: "/a"}, {Self: true}},
+		},
+		{
+			name: "self then literal",
+			src:  `PATH=$PATH:/b`,
+			want: []model.ListSegment{{Self: true}, {Value: "/b"}},
+		},
+		{
+			name: "quoted and escaped delimiters",
+			src:  `PATH=':/quoted':/escaped\:part:$PATH`,
+			want: []model.ListSegment{{Value: ""}, {Value: "/quoted"}, {Value: "/escaped"}, {Value: "part"}, {Self: true}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			blocks, err := (Provider{}).Parse([]byte(tc.src))
+			if err != nil || len(blocks) != 1 {
+				t.Fatalf("blocks=%#v err=%v", blocks, err)
+			}
+			got := blocks[0]
+			if got.ListValue == nil {
+				t.Fatal("ListValue = nil")
+			}
+			if len(got.ListValue.Segments) != len(tc.want) {
+				t.Fatalf("segments=%#v want=%#v", got.ListValue.Segments, tc.want)
+			}
+			for i := range tc.want {
+				if got.ListValue.Segments[i] != tc.want[i] {
+					t.Fatalf("segment %d = %#v, want %#v", i, got.ListValue.Segments[i], tc.want[i])
+				}
+			}
+			if got.Value != strings.TrimPrefix(tc.src, "PATH=") && got.Value != strings.TrimPrefix(tc.src, "FPATH=") {
+				t.Fatalf("Value changed to %q", got.Value)
+			}
+		})
+	}
+}
+
+func TestParseListValueRejectsAmbiguousBase(t *testing.T) {
+	for _, src := range []string{
+		`PATH=$FPATH:/a`, `PATH=$fpath:/a`, `FPATH=$PATH:/a`, `FPATH=$path:/a`,
+		`PATH=/a`, `PATH=$PATH:$PATH`, `PATH=$(printf /a):$PATH`, `PATH=${PATH:-/a}`,
+	} {
+		t.Run(src, func(t *testing.T) {
+			blocks, err := (Provider{}).Parse([]byte(src))
+			if err != nil || len(blocks) != 1 {
+				t.Fatalf("blocks=%#v err=%v", blocks, err)
+			}
+			if blocks[0].ListValue != nil {
+				t.Fatalf("ListValue = %#v, want nil", blocks[0].ListValue)
+			}
+		})
+	}
+}

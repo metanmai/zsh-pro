@@ -91,6 +91,7 @@ func (p Provider) describe(stmt *syntax.Stmt, b *model.Block, src []byte) {
 				}
 			}
 			ensureExplicitValueMode(b)
+			captureListValue(b, c.Assigns, src)
 			return
 		}
 		name := c.Args[0].Lit()
@@ -148,6 +149,7 @@ func (p Provider) describe(stmt *syntax.Stmt, b *model.Block, src []byte) {
 				}
 			}
 			ensureExplicitValueMode(b)
+			captureListValue(b, c.Assigns, src)
 			for _, w := range c.Args[1:] {
 				lit := p.wordLitPrefix(w)
 				if lit == "" || strings.HasPrefix(lit, "-") {
@@ -200,6 +202,7 @@ func (p Provider) describe(stmt *syntax.Stmt, b *model.Block, src []byte) {
 			}
 		}
 		ensureExplicitValueMode(b)
+		captureListValue(b, c.Args, src)
 	case *syntax.FuncDecl:
 		b.Kind = model.KindFuncDecl
 		if c.Name != nil {
@@ -272,6 +275,180 @@ func captureWordSemantics(b *model.Block, w *syntax.Word, prefix string) {
 	}
 	b.ValueMode = model.ValueModeLiteral
 	b.RuntimeValue = &decoded
+}
+
+// captureListValue records the PATH/FPATH semantic list only for a single
+// scalar assignment. The normal Value/RuntimeValue contract remains untouched.
+func captureListValue(b *model.Block, assigns []*syntax.Assign, src []byte) {
+	if len(assigns) != 1 || b.Append || b.Array {
+		return
+	}
+	a := assigns[0]
+	if a.Name == nil || a.Value == nil || canonicalListName(a.Name.Value) == "" {
+		return
+	}
+	b.ListValue = decodeListValue(a.Name.Value, a.Value, src)
+}
+
+func canonicalListName(name string) string {
+	switch name {
+	case "PATH", "path":
+		return "PATH"
+	case "FPATH", "fpath":
+		return "FPATH"
+	default:
+		return ""
+	}
+}
+
+type listPiece struct {
+	literal string
+	param   string
+	source  string
+}
+
+// decodeListValue tokenizes a scalar PATH/FPATH value using only the parsed
+// AST. Dynamic source remains a scalar expression: it is deliberately not
+// split into presumed list elements before zsh evaluates it in tied context.
+func decodeListValue(name string, w *syntax.Word, src []byte) *model.ListValue {
+	canonical := canonicalListName(name)
+	if canonical == "" || w == nil {
+		return nil
+	}
+	pieces, ok := listPieces(w.Parts, src, literalUnquoted)
+	if !ok {
+		return nil
+	}
+
+	var segments []model.ListSegment
+	var literal, source strings.Builder
+	var params []string
+	hasLiteral := false
+	flush := func() bool {
+		if len(params) == 0 {
+			segments = append(segments, model.ListSegment{Value: literal.String()})
+		} else {
+			listParam := ""
+			for _, param := range params {
+				if got := canonicalListName(param); got != "" {
+					if got != canonical || listParam != "" {
+						return false
+					}
+					listParam = got
+				}
+			}
+			if listParam != "" {
+				if len(params) != 1 || hasLiteral {
+					return false
+				}
+				segments = append(segments, model.ListSegment{Self: true})
+			} else {
+				segments = append(segments, model.ListSegment{Dynamic: true, Source: source.String()})
+			}
+		}
+		literal.Reset()
+		source.Reset()
+		params = nil
+		hasLiteral = false
+		return true
+	}
+	for _, piece := range pieces {
+		if piece.param != "" {
+			params = append(params, piece.param)
+			source.WriteString(piece.source)
+			continue
+		}
+		parts := strings.Split(piece.literal, ":")
+		for i, part := range parts {
+			literal.WriteString(part)
+			if part != "" {
+				source.WriteString(listLiteralSource(part))
+				hasLiteral = true
+			}
+			if i < len(parts)-1 && !flush() {
+				return nil
+			}
+		}
+	}
+	if !flush() {
+		return nil
+	}
+	value := &model.ListValue{Segments: segments}
+	if !value.Valid() {
+		return nil
+	}
+	return value
+}
+
+func listPieces(parts []syntax.WordPart, src []byte, context literalQuoteContext) ([]listPiece, bool) {
+	var pieces []listPiece
+	for _, part := range parts {
+		switch p := part.(type) {
+		case *syntax.Lit:
+			var literal strings.Builder
+			if !decodeLiteralLit(&literal, p.Value, context) {
+				return nil, false
+			}
+			pieces = append(pieces, listPiece{literal: literal.String()})
+		case *syntax.SglQuoted:
+			if p.Dollar {
+				return nil, false
+			}
+			pieces = append(pieces, listPiece{literal: p.Value})
+		case *syntax.DblQuoted:
+			if p.Dollar {
+				return nil, false
+			}
+			nested, ok := listPieces(p.Parts, src, literalDoubleQuoted)
+			if !ok {
+				return nil, false
+			}
+			pieces = append(pieces, nested...)
+		case *syntax.ParamExp:
+			param, ok := simpleParamName(p)
+			if !ok {
+				return nil, false
+			}
+			pieces = append(pieces, listPiece{
+				param:  param,
+				source: sliceSrc(src, p.Pos().Offset(), p.End().Offset()),
+			})
+		default:
+			return nil, false
+		}
+	}
+	return pieces, true
+}
+
+func simpleParamName(p *syntax.ParamExp) (string, bool) {
+	if p == nil || p.Param == nil || p.Flags != nil || p.Excl || p.Length || p.Width || p.IsSet ||
+		p.NestedParam != nil || p.Index != nil || len(p.Modifiers) != 0 || p.Slice != nil ||
+		p.Repl != nil || p.Names != 0 || p.Exp != nil {
+		return "", false
+	}
+	return p.Param.Value, true
+}
+
+func listLiteralSource(value string) string {
+	if value == "" {
+		return "''"
+	}
+	for i := 0; i < len(value); i++ {
+		switch value[i] {
+		case ' ', '\t', '\n', '\\', '\'', '"', '$', '`', '*', '?', '[', ']', '{', '}', '(', ')', '|', '&', ';', '<', '>', '!', '~':
+			var quoted strings.Builder
+			quoted.WriteByte('"')
+			for j := 0; j < len(value); j++ {
+				if strings.ContainsRune("\\\"$`", rune(value[j])) {
+					quoted.WriteByte('\\')
+				}
+				quoted.WriteByte(value[j])
+			}
+			quoted.WriteByte('"')
+			return quoted.String()
+		}
+	}
+	return value
 }
 
 // decodeLiteralWord decodes only AST forms whose runtime data semantics are

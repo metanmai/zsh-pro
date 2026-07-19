@@ -225,4 +225,39 @@ func TestParseRuntimeValueDecoderDoesNotExecute(t *testing.T) {
 	}
 }
 
+func TestParseListDynamicSegmentsMatchLiveZsh(t *testing.T) {
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("zsh not available")
+	}
+	for _, name := range []string{"PATH", "FPATH"} {
+		for _, extra := range []string{"/a:/b", ""} {
+			t.Run(name+"/"+extra, func(t *testing.T) {
+				src := name + "=$EXTRA:$" + name
+				blocks, err := (Provider{}).Parse([]byte(src))
+				if err != nil || len(blocks) != 1 || blocks[0].ListValue == nil {
+					t.Fatalf("blocks=%#v err=%v", blocks, err)
+				}
+				segments := blocks[0].ListValue.Segments
+				if len(segments) != 2 || !segments[0].Dynamic || segments[0].Source != "$EXTRA" || !segments[1].Self {
+					t.Fatalf("segments=%#v", segments)
+				}
+
+				array := strings.ToLower(name)
+				script := array + "=(/base); EXTRA=" + extra + "; " + src + "; print -rl -- \"${" + array + "[@]}\""
+				out, err := exec.Command("zsh", "-f", "-c", script).Output()
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := "/a\n/b\n/base\n"
+				if extra == "" {
+					want = "\n/base\n"
+				}
+				if string(out) != want {
+					t.Fatalf("zsh %s EXTRA=%q = %q, want %q", name, extra, out, want)
+				}
+			})
+		}
+	}
+}
+
 func stringPtr(s string) *string { return &s }
