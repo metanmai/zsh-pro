@@ -218,10 +218,11 @@ func (s *Store) Commit(ctx context.Context, branch string, p model.Profile, msg 
 	// (marshal, regenerate, hash, commit) operates on `excluded`, NOT the caller's `p`,
 	// so the literal never reaches the committed tree (T-03-03). A backend/nil-driver
 	// failure aborts the Commit before any ref moves.
-	excluded, report, err := excludeSecrets(ctx, p, s.keychain)
+	prepared, err := prepareSecrets(p, s.keychain)
 	if err != nil {
 		return nil, err
 	}
+	excluded, report := prepared.profile, prepared.report
 
 	// profile.json is authoritative (D-01); profile.zsh is the derived view emitted
 	// via the injected seam (D-02/D-03) — values pass through verbatim, never resolved.
@@ -296,8 +297,80 @@ func (s *Store) Commit(ctx context.Context, branch string, p model.Profile, msg 
 	}
 	commit := strings.TrimSpace(string(commitOut))
 
-	if err := s.git.updateRef(ctx, ref, commit); err != nil {
-		return nil, err
+	type priorSecret struct {
+		key, value string
+		exists     bool
+	}
+	priors := make([]priorSecret, 0, len(prepared.pending))
+	for _, mutation := range prepared.pending {
+		value, retrieveErr := s.keychain.Retrieve(mutation.key)
+		if retrieveErr != nil && retrieveErr != ErrSecretNotFound {
+			return nil, retrieveErr
+		}
+		priors = append(priors, priorSecret{key: mutation.key, value: value, exists: retrieveErr == nil})
+	}
+	rollback := func() error {
+		failed := false
+		for i := len(priors) - 1; i >= 0; i-- {
+			prior := priors[i]
+			var restoreErr error
+			if prior.exists {
+				restoreErr = s.keychain.Store(prior.key, prior.value)
+			} else {
+				restoreErr = s.keychain.Delete(prior.key)
+				if restoreErr == ErrSecretNotFound {
+					restoreErr = nil
+				}
+			}
+			if restoreErr != nil {
+				failed = true
+			}
+		}
+		if failed {
+			return ErrSecretRollback
+		}
+		return nil
+	}
+	for _, mutation := range prepared.pending {
+		if err := s.keychain.Store(mutation.key, mutation.value); err != nil {
+			if rollbackErr := rollback(); rollbackErr != nil {
+				return nil, rollbackErr
+			}
+			return nil, err
+		}
+	}
+	old := parent
+	if old == "" {
+		old = "0000000000000000000000000000000000000000"
+	}
+	if err := s.git.updateRefCAS(ctx, ref, commit, old); err != nil {
+		// update-ref can be ambiguous from this process's perspective (for example,
+		// a timeout after git has moved the ref). Re-read the ref before restoring
+		// secrets: compensate only if it points to OUR commit, and use CAS again so
+		// another writer can never be clobbered.
+		result := err
+		if current, readErr := s.git.revParse(ctx, ref); readErr == nil {
+			switch {
+			case current == commit:
+				var compensateErr error
+				if parent == "" {
+					compensateErr = s.git.deleteRefCAS(ctx, ref, commit)
+				} else {
+					compensateErr = s.git.updateRefCAS(ctx, ref, parent, commit)
+				}
+				if compensateErr != nil {
+					result = ErrSecretRollback
+				}
+			case current != parent:
+				// The ref changed to a third value. Do not compensate it; callers
+				// receive a typed conflict instead of an accidental overwrite.
+				result = ErrSecretRefConflict
+			}
+		}
+		if rollbackErr := rollback(); rollbackErr != nil {
+			return nil, rollbackErr
+		}
+		return nil, result
 	}
 	return report, nil // names the literal secrets excluded above (nil/empty when none)
 }

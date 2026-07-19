@@ -90,8 +90,8 @@ func TestVaultRoundTrip(t *testing.T) {
 func TestVaultRetrieveNotFoundIsPhrased(t *testing.T) {
 	v := newVaultKeychain(t.TempDir())
 	_, err := v.Retrieve("MISSING")
-	if !errors.Is(err, ErrSecretBackendUnavailable) {
-		t.Errorf("Retrieve(missing) = %v, want ErrSecretBackendUnavailable", err)
+	if !errors.Is(err, ErrSecretNotFound) {
+		t.Errorf("Retrieve(missing) = %v, want ErrSecretNotFound", err)
 	}
 	if err != nil && !strings.HasPrefix(err.Error(), "zsh-pro:") {
 		t.Errorf("error %q is not zsh-pro-phrased", err.Error())

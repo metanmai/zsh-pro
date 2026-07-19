@@ -156,6 +156,20 @@ func (g gitRunner) updateRef(ctx context.Context, ref, sha string) error {
 	return err
 }
 
+// updateRefCAS moves ref only if it still equals old. An all-zero old value
+// asserts that the ref remains absent.
+func (g gitRunner) updateRefCAS(ctx context.Context, ref, sha, old string) error {
+	_, err := g.run(ctx, "update-ref", ref, sha, old)
+	return err
+}
+
+// deleteRefCAS deletes ref only if it still equals old. It is used to compensate a
+// ref update that may have succeeded even when the caller observed an error.
+func (g gitRunner) deleteRefCAS(ctx context.Context, ref, old string) error {
+	_, err := g.run(ctx, "update-ref", "-d", ref, old)
+	return err
+}
+
 // isBareRepo reports whether repoDir is a bare git repository
 // (`git rev-parse --is-bare-repository` => "true"). Used by Plan 02's idempotent
 // Init to detect an already-initialized store.
