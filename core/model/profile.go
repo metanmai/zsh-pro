@@ -21,6 +21,46 @@ const (
 	ValueModeUnsupported ValueMode = "unsupported"
 )
 
+// ListSegment is one ordered part of a semantic PATH/FPATH scalar value.
+// Literal segments carry runtime Value. Dynamic segments carry parser-validated
+// scalar-context Source, which zsh may expand to zero, one, or many elements.
+// Self marks the one same-list reference that supplies the existing tied value.
+type ListSegment struct {
+	Value   string
+	Source  string
+	Dynamic bool
+	Self    bool
+}
+
+// ListValue is the presence-aware semantic representation of a PATH/FPATH
+// scalar assignment. A present value may contain only its Self segment.
+type ListValue struct {
+	Segments []ListSegment
+}
+
+// Valid reports whether ListValue can be consumed without inventing list
+// semantics. It requires exactly one self marker and rejects combinations that
+// would blur literal data, dynamic source, or the current list reference.
+func (v ListValue) Valid() bool {
+	selfCount := 0
+	for _, s := range v.Segments {
+		switch {
+		case s.Self:
+			if s.Dynamic || s.Value != "" || s.Source != "" {
+				return false
+			}
+			selfCount++
+		case s.Dynamic:
+			if s.Value != "" || s.Source == "" {
+				return false
+			}
+		case s.Source != "":
+			return false
+		}
+	}
+	return selfCount == 1
+}
+
 // ManagedOverride is an explicit per-entry override of the auto managed/imperative
 // verdict. It is an orthogonal axis to the Dynamic flag (D-05): an entry may be
 // dynamic yet managed, or static yet forced unmanaged.
@@ -61,6 +101,9 @@ type Entry struct {
 	// FunctionBody is assignment-ready function body text. Pointer presence
 	// distinguishes a parsed empty function from a missing body.
 	FunctionBody *string
+	// ListValue is the optional parser-verified semantic list contract. Nil
+	// preserves legacy and unsupported entries without inferring semantics.
+	ListValue *ListValue
 }
 
 // EffectiveManaged reports whether the entry is treated as managed (declarative,

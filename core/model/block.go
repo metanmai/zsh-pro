@@ -47,4 +47,7 @@ type Block struct {
 	// FunctionBody is assignment-ready function body text. Pointer presence
 	// distinguishes an empty function body from a body that was not captured.
 	FunctionBody *string
+	// ListValue is a verified semantic contract for PATH/FPATH-style scalar
+	// assignments. Nil means the parser could not safely model the list.
+	ListValue *ListValue
 }

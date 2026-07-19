@@ -257,3 +257,58 @@ func TestBuildCopiesFunctionBodyContract(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildCopiesListValueContract(t *testing.T) {
+	list := &model.ListValue{Segments: []model.ListSegment{
+		{Value: "/literal"},
+		{Dynamic: true, Source: "${EXTRA}"},
+		{Self: true},
+	}}
+	p := Build([]model.Block{{
+		Kind:      model.KindAssignment,
+		Names:     []string{"PATH"},
+		ListValue: list,
+	}}, stubClassifier{cat: model.CatPath})
+
+	got := p.Entries[0].ListValue
+	if got == nil || len(got.Segments) != 3 {
+		t.Fatalf("ListValue = %#v, want three present segments", got)
+	}
+	if got == list || &got.Segments[0] == &list.Segments[0] {
+		t.Fatal("ListValue shares source storage")
+	}
+	if got.Segments[1].Source != "${EXTRA}" || !got.Segments[1].Dynamic || !got.Segments[2].Self {
+		t.Fatalf("ListValue = %#v", got)
+	}
+	got.Segments[0].Value = "mutated"
+	if list.Segments[0].Value != "/literal" {
+		t.Fatalf("source ListValue mutated to %#v", list)
+	}
+
+	selfOnly := Build([]model.Block{{
+		Kind:      model.KindAssignment,
+		Names:     []string{"PATH"},
+		ListValue: &model.ListValue{Segments: []model.ListSegment{{Self: true}}},
+	}}, stubClassifier{cat: model.CatPath})
+	if selfOnly.Entries[0].ListValue == nil {
+		t.Fatal("self-only ListValue was lost")
+	}
+}
+
+func TestBuildRejectsMalformedListValue(t *testing.T) {
+	for _, list := range []*model.ListValue{
+		{Segments: []model.ListSegment{{Dynamic: true}, {Self: true}}},
+		{Segments: []model.ListSegment{{Self: true, Value: "/bad"}}},
+		{Segments: []model.ListSegment{{Value: "/a"}}},
+		{Segments: []model.ListSegment{{Self: true}, {Self: true}}},
+	} {
+		p := Build([]model.Block{{
+			Kind:      model.KindAssignment,
+			Names:     []string{"PATH"},
+			ListValue: list,
+		}}, stubClassifier{cat: model.CatPath})
+		if p.Entries[0].ListValue != nil {
+			t.Fatalf("malformed ListValue survived: %#v", p.Entries[0].ListValue)
+		}
+	}
+}

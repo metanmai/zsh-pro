@@ -44,6 +44,7 @@ func Build(blocks []model.Block, c shell.Classifier) model.Profile {
 			// values instead of sharing mutable storage across the IR boundary.
 			RuntimeValue: cloneString(b.RuntimeValue),
 			FunctionBody: cloneString(b.FunctionBody),
+			ListValue:    cloneListValue(b.ListValue),
 		})
 	}
 	return p
@@ -55,4 +56,11 @@ func cloneString(s *string) *string {
 	}
 	v := *s
 	return &v
+}
+
+func cloneListValue(v *model.ListValue) *model.ListValue {
+	if v == nil || !v.Valid() {
+		return nil
+	}
+	return &model.ListValue{Segments: append([]model.ListSegment(nil), v.Segments...)}
 }
