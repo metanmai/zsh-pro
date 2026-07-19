@@ -38,8 +38,23 @@ type entryDTO struct {
 	Secret    *model.SecretRef      `json:"secret,omitempty"`
 	ValueMode model.ValueMode       `json:"valueMode,omitempty"`
 	// Pointer presence preserves decoded/parsed empty strings through JSON.
-	RuntimeValue *string `json:"runtimeValue,omitempty"`
-	FunctionBody *string `json:"functionBody,omitempty"`
+	RuntimeValue *string       `json:"runtimeValue,omitempty"`
+	FunctionBody *string       `json:"functionBody,omitempty"`
+	ListValue    *listValueDTO `json:"listValue,omitempty"`
+}
+
+// listValueDTO is the optional persistence form of parser-verified PATH/FPATH
+// semantics. The flags intentionally do not omit false so each segment shape is
+// explicit and stable in profile JSON.
+type listValueDTO struct {
+	Segments []listSegmentDTO `json:"segments"`
+}
+
+type listSegmentDTO struct {
+	Value   string `json:"value"`
+	Source  string `json:"source,omitempty"`
+	Dynamic bool   `json:"dynamic"`
+	Self    bool   `json:"self"`
 }
 
 // profileDTO is the top-level wire shape of a serialized profile.
@@ -104,6 +119,7 @@ func toEntryDTO(e model.Entry) entryDTO {
 		ValueMode:    e.ValueMode,
 		RuntimeValue: cloneStringPointer(e.RuntimeValue),
 		FunctionBody: cloneStringPointer(e.FunctionBody),
+		ListValue:    toListValueDTO(e.ListValue),
 	}
 }
 
@@ -126,6 +142,7 @@ func fromEntryDTO(d entryDTO) model.Entry {
 		ValueMode:    d.ValueMode,
 		RuntimeValue: cloneStringPointer(d.RuntimeValue),
 		FunctionBody: cloneStringPointer(d.FunctionBody),
+		ListValue:    fromListValueDTO(d.ListValue),
 	}
 }
 
@@ -146,4 +163,39 @@ func cloneStringPointer(in *string) *string {
 	}
 	out := *in
 	return &out
+}
+
+func toListValueDTO(in *model.ListValue) *listValueDTO {
+	if in == nil || !in.Valid() {
+		return nil
+	}
+	out := &listValueDTO{Segments: make([]listSegmentDTO, len(in.Segments))}
+	for i, segment := range in.Segments {
+		out.Segments[i] = listSegmentDTO{
+			Value:   segment.Value,
+			Source:  segment.Source,
+			Dynamic: segment.Dynamic,
+			Self:    segment.Self,
+		}
+	}
+	return out
+}
+
+func fromListValueDTO(in *listValueDTO) *model.ListValue {
+	if in == nil {
+		return nil
+	}
+	out := &model.ListValue{Segments: make([]model.ListSegment, len(in.Segments))}
+	for i, segment := range in.Segments {
+		out.Segments[i] = model.ListSegment{
+			Value:   segment.Value,
+			Source:  segment.Source,
+			Dynamic: segment.Dynamic,
+			Self:    segment.Self,
+		}
+	}
+	if !out.Valid() {
+		return nil
+	}
+	return out
 }

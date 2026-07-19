@@ -309,6 +309,76 @@ func TestSemanticPointersNotAliased(t *testing.T) {
 	}
 }
 
+func TestRoundTripListValueContract(t *testing.T) {
+	in := model.Profile{Entries: []model.Entry{{
+		Text:  `PATH="$EXTRA:/literal:$PATH"`,
+		Value: `"$EXTRA:/literal:$PATH"`,
+		ListValue: &model.ListValue{Segments: []model.ListSegment{
+			{Dynamic: true, Source: "$EXTRA"},
+			{Value: "/literal"},
+			{Self: true},
+		}},
+	}}}
+	b, err := MarshalProfile(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fragment := range []string{`"listValue"`, `"dynamic": true`, `"dynamic": false`, `"self": true`, `"self": false`, `"source": "$EXTRA"`} {
+		if !bytes.Contains(b, []byte(fragment)) {
+			t.Fatalf("JSON missing %s:\n%s", fragment, b)
+		}
+	}
+	out, err := UnmarshalProfile(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(out, in) {
+		t.Fatalf("round trip mismatch:\n in=%#v\nout=%#v", in, out)
+	}
+	again, err := MarshalProfile(out)
+	if err != nil || !bytes.Equal(again, b) {
+		t.Fatalf("repeat marshal=%s err=%v, want %s", again, err, b)
+	}
+
+	dto := toEntryDTO(in.Entries[0])
+	if dto.ListValue == nil {
+		t.Fatal("toEntryDTO dropped ListValue")
+	}
+	dto.ListValue.Segments[0].Source = "$MUTATED"
+	if in.Entries[0].ListValue.Segments[0].Source != "$EXTRA" {
+		t.Fatal("mutating DTO ListValue changed Entry")
+	}
+	decoded := fromEntryDTO(dto)
+	decoded.ListValue.Segments[0].Source = "$ENTRY"
+	if dto.ListValue.Segments[0].Source != "$MUTATED" {
+		t.Fatal("mutating Entry ListValue changed DTO")
+	}
+}
+
+func TestListValueDTOOmissionAndMalformedDynamicFailClosed(t *testing.T) {
+	legacy := []byte(`{"entries":[{"text":"PATH=$PATH","startLine":1,"category":"path","kind":"assignment","cmdName":"","names":["PATH"],"value":"$PATH","exported":false,"managed":true,"override":"auto","dynamic":true}]}`)
+	out, err := UnmarshalProfile(legacy)
+	if err != nil || out.Entries[0].ListValue != nil {
+		t.Fatalf("legacy list contract=%#v err=%v", out.Entries[0].ListValue, err)
+	}
+
+	malformed := []byte(`{"entries":[{"text":"PATH=$EXTRA:$PATH","startLine":1,"category":"path","kind":"assignment","cmdName":"","names":["PATH"],"value":"$EXTRA:$PATH","exported":false,"managed":true,"override":"auto","dynamic":true,"listValue":{"segments":[{"value":"","dynamic":true,"self":false},{"value":"","dynamic":false,"self":true}]}}]}`)
+	out, err = UnmarshalProfile(malformed)
+	if err != nil || out.Entries[0].ListValue != nil {
+		t.Fatalf("malformed list contract=%#v err=%v", out.Entries[0].ListValue, err)
+	}
+
+	selfOnly := model.Profile{Entries: []model.Entry{{ListValue: &model.ListValue{Segments: []model.ListSegment{{Self: true}}}}}}
+	b, err := MarshalProfile(selfOnly)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err = UnmarshalProfile(b)
+	if err != nil || out.Entries[0].ListValue == nil || len(out.Entries[0].ListValue.Segments) != 1 || !out.Entries[0].ListValue.Segments[0].Self {
+		t.Fatalf("self-only contract=%#v err=%v", out.Entries[0].ListValue, err)
+	}
+}
+
 func tail(b []byte) []byte {
 	if len(b) <= 12 {
 		return b
