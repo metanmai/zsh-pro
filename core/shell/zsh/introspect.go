@@ -67,10 +67,15 @@ func (Provider) parseIntrospect(s string) model.IdentitySet {
 		AliasBodies: map[string]string{}, FunctionBodies: map[string]string{},
 		Available: true,
 	}
+	bodyAt := strings.Index(s, "##ALIASBODIES##\n")
+	prefix := s
+	if bodyAt >= 0 {
+		prefix = s[:bodyAt]
+	}
 	parseBodies(s, "##ALIASBODIES##", "##FUNCTIONBODIES##", ids.AliasBodies)
 	parseBodies(s, "##FUNCTIONBODIES##", "##END##", ids.FunctionBodies)
 	section := ""
-	for _, line := range strings.Split(s, "\n") {
+	for _, line := range strings.Split(prefix, "\n") {
 		switch line {
 		case "##ALIASES##", "##FUNCTIONS##", "##ENV##", "##PATH##", "##OPTIONS##", "##ALIASBODIES##", "##FUNCTIONBODIES##", "##END##":
 			section = line

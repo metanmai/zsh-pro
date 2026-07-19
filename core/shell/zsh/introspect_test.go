@@ -100,3 +100,12 @@ func TestParseIntrospectBodyBoundary(t *testing.T) {
 		t.Fatalf("body=%q", ids.FunctionBodies["foo"])
 	}
 }
+
+func TestParseIntrospectSentinelBodyDoesNotPolluteIdentityPrefix(t *testing.T) {
+	body := "##ALIASES##\n##FUNCTIONS##\n##ENV##\n##PATH##\n##OPTIONS##\n##ALIASBODIES##\n##FUNCTIONBODIES##\n##END##"
+	s := "##ALIASES##\na\n##FUNCTIONS##\nf\n##ALIASBODIES##\na\x00\x00##FUNCTIONBODIES##\nf\x00" + body + "\x00##END##\n"
+	ids := (Provider{}).parseIntrospect(s)
+	if ids.FunctionBodies["f"] != body || !ids.Aliases["a"] || !ids.Functions["f"] || len(ids.Env) != 0 || len(ids.Path) != 0 || len(ids.Options) != 0 {
+		t.Fatalf("%#v", ids)
+	}
+}
