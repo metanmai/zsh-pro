@@ -5,15 +5,15 @@ milestone_name: Branchable Shell Environments
 current_phase: 04
 current_phase_name: manifest-builder-emit
 status: executing
-stopped_at: Completed 04-10-PLAN.md
-last_updated: "2026-07-19T06:57:57.449Z"
+stopped_at: Completed 04-08-PLAN.md
+last_updated: "2026-07-19T07:11:27.730Z"
 last_activity: 2026-07-19
 last_activity_desc: Completed 04-06 final-identity restoration
 progress:
   total_phases: 6
   completed_phases: 3
   total_plans: 23
-  completed_plans: 16
+  completed_plans: 17
   percent: 50
 ---
 
@@ -29,11 +29,11 @@ See: .planning/PROJECT.md (updated 2026-06-25)
 ## Current Position
 
 Phase: 04 (manifest-builder-emit) — EXECUTING
-Plan: 8 of 13 numeric plans complete (04-07 next)
+Plan: 9 of 13 numeric plans complete (04-07 next)
 Status: Ready to execute remaining Phase 04 gap plans
 Last activity: 2026-07-19 — Completed 04-06 final-identity restoration
 
-Progress: [███████░░░] 70%
+Progress: [███████░░░] 74%
 
 ## Performance Metrics
 
@@ -47,7 +47,6 @@ Progress: [███████░░░] 70%
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| 01 | 2 | - | - |
 | 02 | 3 | - | - |
 | 03 | 3 | - | - |
 
@@ -74,6 +73,7 @@ Progress: [███████░░░] 70%
 | Phase 04 P06 | 74 min | 3 tasks | 10 files |
 | Phase 04 P07 | 3 min | 2 tasks | 4 files |
 | Phase 04 P10 | 4 min | 2 tasks | 2 files |
+| Phase 04 P08 | 18 min | 3 tasks | 9 files |
 
 ## Accumulated Context
 
@@ -87,8 +87,6 @@ Recent decisions affecting current work:
 - [Roadmap]: IR is the spine — store, manifest, and regeneration all serialize `model.Profile`, so it lands right after the spike (store-before-IR rejected: `Store.Read`/`Commit` are typed in terms of the IR).
 - [Constraint]: No new dependencies — git via the `git` binary (mirrors the existing `zsh -f` subprocess); `go-git` explicitly rejected (new module + weak porcelain).
 - [Constraint]: Only `core/shell/zsh/emit.go` ever writes zsh syntax; `core/profile`/`core/store`/`core/activate` stay shell-agnostic and never import the concrete provider (single composition root preserved).
-- [Phase 1 spike]: Overall verdict GO (D-03): core classes aliases/env/PATH reverse byte-identical; functions+options admitted; completion's compinit excluded to master block (fpath array admittable).
-- [Phase 1 spike]: Reality-check measures the slice's declared-name VALUE delta, not a live env name-set diff — the honest measure under zsh -f env inheritance (Pitfall 5); Phase 4 emitter must follow.
 - [Phase ?]: [02-01]: IR value-capture via additive Block.Value/Dynamic at parse time (Approach A); static/dynamic detection in the core/shell/zsh AST tier keeps core/ir shell-free
 - [Phase ?]: [02-01]: routeManaged ING-02 gate admits 5 reversible classes; bare setopt/unsetopt routes imperative (#2); confidence never gates routing (D-06); ManagedOverride wins over auto verdict (D-07)
 - [Phase 02]: [02-03] Array assignments route imperative (verbatim Text), not templated — additive Block.Array flag detected at parse time; same D-04/D-06 lineage as BL-02/WR-01/WR-02
@@ -114,6 +112,8 @@ Recent decisions affecting current work:
 - [Phase 04]: Final manifest identities own restoration; explicit scalar export provenance and presence-aware hex slots preserve exact prior shell state.
 - [Phase 04]: Source status is captured before protocol emission, so any source failure makes introspection unavailable. — Prevents later successful print commands from masking missing, invalid, or explicitly failing configurations.
 - [Phase 04]: The line parser receives only the identity prefix; alias and function bodies stay NUL-framed payloads. — Exact marker-shaped body lines cannot be reinterpreted as protocol section controls.
+- [Phase 04]: A semantic PATH or FPATH list is present only with one same-list Self marker; nil preserves legacy and unsupported entries. — Activation must never infer a base reference from raw source or a cross-list expansion.
+- [Phase 04]: Dynamic list additions retain validated simple-parameter source as scalar expressions, with zsh deciding zero, one, or many elements at runtime. — Pre-splitting dynamic text would freeze runtime cardinality and violate tied-list semantics.
 
 ### Pending Todos
 
@@ -142,6 +142,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-19T06:57:28.792Z
-Stopped at: Completed 04-10-PLAN.md
+Last session: 2026-07-19T07:10:57.531Z
+Stopped at: Completed 04-08-PLAN.md
 Resume file: None
