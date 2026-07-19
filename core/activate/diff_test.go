@@ -78,8 +78,8 @@ func TestDiffUsesExplicitDynamicProvenance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var scalars map[string]bool = map[string]bool{}
-	var aliases map[string]bool = map[string]bool{}
+	scalars := map[string]bool{}
+	aliases := map[string]bool{}
 	for _, op := range p.Activate {
 		switch op := op.(type) {
 		case SetScalar:
@@ -105,7 +105,7 @@ func TestDiffFunctionBodyPresence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var got map[string]string = map[string]string{}
+	got := map[string]string{}
 	for _, op := range p.Activate {
 		if fn, ok := op.(AddFunc); ok {
 			got[fn.Name] = fn.Body

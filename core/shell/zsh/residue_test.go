@@ -14,10 +14,9 @@ import (
 	"zsh-pro/core/model"
 )
 
-const (
-	residueSeed        int64 = 0x5eed0405
-	residueActionCount       = 24
-)
+const residueSeed int64 = 0x5eed0405
+
+const residueActionCount = 24
 
 type residueAction struct {
 	profile int
