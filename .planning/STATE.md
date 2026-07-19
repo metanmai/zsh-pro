@@ -5,15 +5,15 @@ milestone_name: Branchable Shell Environments
 current_phase: 04
 current_phase_name: manifest-builder-emit
 status: executing
-stopped_at: Completed 04-07-PLAN.md
-last_updated: "2026-07-19T06:53:39.136Z"
+stopped_at: Completed 04-10-PLAN.md
+last_updated: "2026-07-19T06:57:57.449Z"
 last_activity: 2026-07-19
 last_activity_desc: Completed 04-06 final-identity restoration
 progress:
   total_phases: 6
   completed_phases: 3
   total_plans: 23
-  completed_plans: 15
+  completed_plans: 16
   percent: 50
 ---
 
@@ -29,11 +29,11 @@ See: .planning/PROJECT.md (updated 2026-06-25)
 ## Current Position
 
 Phase: 04 (manifest-builder-emit) — EXECUTING
-Plan: 7 of 13 numeric plans complete (04-07 next)
+Plan: 8 of 13 numeric plans complete (04-07 next)
 Status: Ready to execute remaining Phase 04 gap plans
 Last activity: 2026-07-19 — Completed 04-06 final-identity restoration
 
-Progress: [███████░░░] 65%
+Progress: [███████░░░] 70%
 
 ## Performance Metrics
 
@@ -73,6 +73,7 @@ Progress: [███████░░░] 65%
 | Phase 04 P05 | 18min | 2 tasks | 1 files |
 | Phase 04 P06 | 74 min | 3 tasks | 10 files |
 | Phase 04 P07 | 3 min | 2 tasks | 4 files |
+| Phase 04 P10 | 4 min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -111,6 +112,8 @@ Recent decisions affecting current work:
 - [Phase 04]: The complete residue oracle uses sorted type-aware live dereferencing and qqqq field encoding. — This keeps arbitrary NUL, newline, backslash, and metacharacter data collision-safe without decoding snapshots.
 - [Phase 04]: Renderer negative controls assert their intended failure modes and restore seams with cleanup before a real-emitter rerun. — This proves the residue test is falsifiable and cannot pass because a mutant leaked into later tests.
 - [Phase 04]: Final manifest identities own restoration; explicit scalar export provenance and presence-aware hex slots preserve exact prior shell state.
+- [Phase 04]: Source status is captured before protocol emission, so any source failure makes introspection unavailable. — Prevents later successful print commands from masking missing, invalid, or explicitly failing configurations.
+- [Phase 04]: The line parser receives only the identity prefix; alias and function bodies stay NUL-framed payloads. — Exact marker-shaped body lines cannot be reinterpreted as protocol section controls.
 
 ### Pending Todos
 
@@ -139,6 +142,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-19T06:53:39.129Z
-Stopped at: Completed 04-07-PLAN.md
+Last session: 2026-07-19T06:57:28.792Z
+Stopped at: Completed 04-10-PLAN.md
 Resume file: None
