@@ -115,8 +115,8 @@ export API_KEY="`+secretLiteral+`"
 	if err != nil {
 		t.Fatalf("vault.Retrieve(API_KEY): %v", err)
 	}
-	if !strings.Contains(got, secretLiteral) {
-		t.Errorf("vault.Retrieve(API_KEY) = %q, want it to contain the captured literal %q", got, secretLiteral)
+	if got != secretLiteral {
+		t.Errorf("vault.Retrieve(API_KEY) = %q, want exact semantic value %q", got, secretLiteral)
 	}
 
 	// (d) The read-back entry's SecretRef.Kind is the vault's file kind (T-03-09):
@@ -175,6 +175,47 @@ export API_KEY="`+secretLiteral+`"
 	}
 	if editor == nil || editor.Secret != nil || editor.Value != "nvim" {
 		t.Errorf("EDITOR entry was altered by exclusion: %#v", editor)
+	}
+}
+
+func TestExcludeSecretsStoresLiteralRuntimeValueExactly(t *testing.T) {
+	for _, tc := range []struct {
+		name, src, want string
+	}{
+		{"single quoted", `export API_KEY='single value'`, "single value"},
+		{"double quoted", `export API_KEY="double value"`, "double value"},
+		{"escaped", `export API_KEY=escaped\ value`, "escaped value"},
+		{"empty", `export API_KEY=''`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := buildSecretProfile(t, tc.src+"\n")
+			vault := newVaultKeychain(t.TempDir())
+			out, _, err := excludeSecrets(context.Background(), in, vault)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := vault.Retrieve("API_KEY")
+			if err != nil || got != tc.want {
+				t.Fatalf("stored=%q err=%v want=%q", got, err, tc.want)
+			}
+			if out.Entries[0].RuntimeValue != nil || out.Entries[0].ValueMode != model.ValueModeUnsupported {
+				t.Fatalf("redaction=%#v", out.Entries[0])
+			}
+		})
+	}
+}
+
+func TestExcludeSecretsRejectsMalformedLiteralBeforeBackendWrite(t *testing.T) {
+	vault := newVaultKeychain(t.TempDir())
+	in := model.Profile{Entries: []model.Entry{{
+		Category: model.CatSecrets, Kind: model.KindAssignment, Names: []string{"API_KEY"},
+		ValueMode: model.ValueModeLiteral,
+	}}}
+	if _, _, err := excludeSecrets(context.Background(), in, vault); !errors.Is(err, ErrUnsafeSecretShape) {
+		t.Fatalf("excludeSecrets error=%v, want ErrUnsafeSecretShape", err)
+	}
+	if _, err := vault.Retrieve("API_KEY"); err == nil {
+		t.Fatal("backend was written for malformed literal")
 	}
 }
 

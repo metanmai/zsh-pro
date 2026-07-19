@@ -101,16 +101,28 @@ func excludeSecrets(_ context.Context, p model.Profile, kc KeychainDriver) (mode
 			// commit that would leak the literal.
 			return model.Profile{}, nil, ErrUnsafeSecretShape
 		}
-		if e.Dynamic {
-			// Single-name dynamic secret (export TOKEN=$(...)): already a late-bound
-			// pointer, committed verbatim and not reported (D-08).
+		var value string
+		switch e.ValueMode {
+		case model.ValueModeDynamic:
+			if !e.Dynamic {
+				return model.Profile{}, nil, ErrUnsafeSecretShape
+			}
+			// Dynamic secrets remain late-bound source text and are never stored.
 			continue
-		}
-		if e.Value == "" {
-			// Single-name, non-dynamic, but no scalar literal in Value: an array secret
-			// (`export ARR=(sk-one sk-two)`) keeps its literal only in Text, or a
-			// degenerate empty assignment. The store cannot prove from Entry fields that
-			// Text holds no literal, so fail closed rather than commit Text verbatim.
+		case model.ValueModeLiteral:
+			if e.RuntimeValue == nil {
+				return model.Profile{}, nil, ErrUnsafeSecretShape
+			}
+			// RuntimeValue is the parser-authoritative semantic value. It may be
+			// present-empty; source Value deliberately retains quotes and escapes.
+			value = *e.RuntimeValue
+		case model.ValueModeLegacy:
+			if e.Dynamic || e.Value == "" {
+				return model.Profile{}, nil, ErrUnsafeSecretShape
+			}
+			// Narrow compatibility path for pre-semantic programmatic entries.
+			value = e.Value
+		default:
 			return model.Profile{}, nil, ErrUnsafeSecretShape
 		}
 
@@ -122,7 +134,7 @@ func excludeSecrets(_ context.Context, p model.Profile, kc KeychainDriver) (mode
 			// only test-only / future misuse construction.
 			return model.Profile{}, nil, ErrSecretBackendUnavailable
 		}
-		if err := kc.Store(key, e.Value); err != nil {
+		if err := kc.Store(key, value); err != nil {
 			// Capture failed: abort the whole Commit. Never fall through and commit the
 			// literal — that would leak the secret into the tree.
 			return model.Profile{}, nil, err
