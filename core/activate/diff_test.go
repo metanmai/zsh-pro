@@ -42,6 +42,20 @@ func TestDiffSchemaGate(t *testing.T) {
 		}
 	}
 }
+
+func TestDiffRejectsMalformedListMetadata(t *testing.T) {
+	index := 2
+	for _, list := range []model.ListDelta{
+		{Name: "PATH", Additions: []string{"/a"}, BaseIndex: &index, AdditionDynamic: []bool{false}},
+		{Name: "PATH", Additions: []string{"/a"}, AdditionDynamic: []bool{false}},
+		{Name: "PATH", Additions: []string{"/a"}, BaseIndex: func() *int { i := 0; return &i }(), AdditionDynamic: nil},
+	} {
+		plan, err := Diff(nil, &model.Manifest{Schema: model.SchemaV1, Lists: []model.ListDelta{list}})
+		if err == nil || len(plan.Activate) != 0 {
+			t.Fatalf("metadata accepted: %#v %#v", list, plan)
+		}
+	}
+}
 func TestDiffRestoreDerivedFromAdded(t *testing.T) {
 	a := &model.Manifest{Schema: model.SchemaV1, Aliases: model.AliasSet{Added: map[string]string{"a": "x"}}, Functions: model.FuncSet{Added: []string{"f"}}}
 	p, _ := Diff(a, nil)

@@ -39,6 +39,27 @@ func TestBuildPathShapes(t *testing.T) {
 	}
 }
 
+func TestBuildComposesSemanticListsInSourceOrder(t *testing.T) {
+	list := func(segments ...model.ListSegment) *model.ListValue { return &model.ListValue{Segments: segments} }
+	p := model.Profile{Entries: []model.Entry{
+		{Category: model.CatPath, Kind: model.KindAssignment, Names: []string{"PATH"}, Managed: true, ListValue: list(model.ListSegment{Value: "/a"}, model.ListSegment{Self: true})},
+		{Category: model.CatPath, Kind: model.KindAssignment, Names: []string{"PATH"}, Managed: true, ListValue: list(model.ListSegment{Self: true}, model.ListSegment{Value: "/b"})},
+		{Category: model.CatPath, Kind: model.KindAssignment, Names: []string{"FPATH"}, Managed: true, ListValue: list(model.ListSegment{Dynamic: true, Source: "$EXTRA"}, model.ListSegment{Self: true})},
+	}}
+	m := Build(p)
+	if len(m.Lists) != 2 {
+		t.Fatalf("lists=%#v", m.Lists)
+	}
+	path := m.Lists[0]
+	if path.Name != "PATH" || len(path.Additions) != 2 || path.Additions[0] != "/a" || path.Additions[1] != "/b" || path.BaseIndex == nil || *path.BaseIndex != 1 {
+		t.Fatalf("PATH=%#v", path)
+	}
+	fpath := m.Lists[1]
+	if fpath.Name != "FPATH" || len(fpath.AdditionDynamic) != 1 || !fpath.AdditionDynamic[0] || fpath.BaseIndex == nil || *fpath.BaseIndex != 1 {
+		t.Fatalf("FPATH=%#v", fpath)
+	}
+}
+
 func TestBuildUsesExplicitRuntimeValueContract(t *testing.T) {
 	literalDollar := "$HOME"
 	empty := ""
