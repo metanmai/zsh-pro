@@ -118,3 +118,83 @@ zp_deactivate
 		t.Fatalf("canary exists after pipeline: %v", err)
 	}
 }
+
+func TestPipelineRepeatedCollisionSentinelAndExportRestoration(t *testing.T) {
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("zsh not available")
+	}
+
+	source := `
+FOO=one
+export FOO=two
+FOO=three
+EMPTY=managed
+export EXPORTED=managed
+UNSET=managed
+alias foo-bar='new-dash'
+alias foo.bar='new-dot'
+alias foo_bar='new-underscore'
+func-bar() { print new-dash; }
+func.bar() { print new-dot; }
+func_bar() { print new-underscore; }
+func-bar() { print final-dash; }
+`
+	provider := Provider{}
+	blocks, err := provider.Parse([]byte(source))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := activate.Build(ir.Build(blocks, provider))
+	manifest.Profile = "pipeline-identities"
+	if len(manifest.Env) != 4 || len(manifest.Aliases.Added) != 3 || len(manifest.Functions.Added) != 3 {
+		t.Fatalf("manifest did not reduce final identities: %#v", manifest)
+	}
+
+	applyPlan, err := activate.Diff(nil, &manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deactivatePlan, err := activate.Diff(&manifest, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	apply, _, err := provider.Emit(applyPlan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, deactivate, err := provider.Emit(deactivatePlan)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	script := strings.Join([]string{
+		"FOO=before",
+		"typeset EMPTY=''",
+		"typeset -gx EXPORTED='before-exported'",
+		"unset UNSET",
+		"alias foo-bar='__ZP_UNSET__'",
+		"alias foo.bar='old-dot'",
+		"alias foo_bar='old-underscore'",
+		"func-bar() { print __ZP_UNSET__; }",
+		"func.bar() { print old-dot; }",
+		"func_bar() { print old-underscore; }",
+		apply,
+		"zp_apply",
+		"[[ $FOO == three && ${parameters[FOO]} == *export* ]] || exit 31",
+		"[[ $EMPTY == managed && ${parameters[EMPTY]} != *export* ]] || exit 32",
+		"[[ $EXPORTED == managed && ${parameters[EXPORTED]} == *export* ]] || exit 33",
+		"[[ $UNSET == managed ]] || exit 34",
+		"[[ $(func-bar) == final-dash && $(func.bar) == new-dot && $(func_bar) == new-underscore ]] || exit 35",
+		deactivate,
+		"zp_deactivate",
+		"[[ $FOO == before && ${parameters[FOO]} != *export* ]] || exit 36",
+		"[[ ${+EMPTY} == 1 && $EMPTY == '' && ${parameters[EMPTY]} != *export* ]] || exit 37",
+		"[[ $EXPORTED == before-exported && ${parameters[EXPORTED]} == *export* ]] || exit 38",
+		"[[ ${+UNSET} == 0 ]] || exit 39",
+		"[[ ${aliases[foo-bar]} == __ZP_UNSET__ && ${aliases[foo.bar]} == old-dot && ${aliases[foo_bar]} == old-underscore ]] || exit 40",
+		"[[ $(func-bar) == __ZP_UNSET__ && $(func.bar) == old-dot && $(func_bar) == old-underscore ]] || exit 41",
+	}, "\n")
+	if out, err := exec.Command("zsh", "-f", "-c", script).CombinedOutput(); err != nil {
+		t.Fatalf("live identity pipeline: %v\n%s\nsource:\n%s\nscript:\n%s", err, out, source, script)
+	}
+}
