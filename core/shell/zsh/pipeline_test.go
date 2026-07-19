@@ -231,7 +231,7 @@ func TestPipelineComposedPathAndFPathDynamicExpansion(t *testing.T) {
 		script := strings.Join([]string{
 			"PATH=/base", "FPATH=/fbase", "EXTRA=" + zquote(extra), apply, "zp_apply",
 			"[[ $PATH == /a:/base:/b ]] || exit 71",
-			"if [[ -n $EXTRA ]]; then [[ $FPATH == /one:/two:/fbase ]] || exit 72; else [[ $FPATH == /fbase ]] || exit 73; fi",
+			"if [[ -n $EXTRA ]]; then [[ $FPATH == /one:/two:/fbase ]] || exit 72; else [[ $FPATH == :/fbase ]] || exit 73; fi",
 			deactivate, "zp_deactivate", "[[ $PATH == /base && $FPATH == /fbase ]] || exit 74",
 		}, "\n")
 		if out, err := exec.Command("zsh", "-f", "-c", script).CombinedOutput(); err != nil {
