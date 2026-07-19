@@ -24,6 +24,8 @@ const introspectScript = `
 emulate -L zsh
 zmodload zsh/parameter 2>/dev/null
 source "$1" >/dev/null 2>&1
+source_status=$?
+(( source_status == 0 )) || exit "$source_status"
 print -r -- '##ALIASES##'
 for k in "${(@k)aliases}"; do print -r -- "$k"; done
 print -r -- '##FUNCTIONS##'

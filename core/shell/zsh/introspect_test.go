@@ -41,10 +41,33 @@ func TestIntrospectMissingFileDegrades(t *testing.T) {
 		t.Skip("zsh not installed")
 	}
 	ids, err := (Provider{}).Introspect("/nonexistent/path/rc.zsh")
-	// Sourcing a missing file is suppressed; introspection still returns the
-	// (empty) resolved set with Available=true. The key guarantee: no panic.
-	if err == nil && !ids.Available {
-		t.Fatal("inconsistent: no error but Available=false")
+	if err == nil || ids.Available {
+		t.Fatalf("missing source = (%#v, %v), want unavailable error", ids, err)
+	}
+}
+
+func TestIntrospectFailureAndEmpty(t *testing.T) {
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("zsh not installed")
+	}
+	dir := t.TempDir()
+	for _, tc := range []struct {
+		name, body string
+		fail       bool
+	}{{"syntax", "if then\n", true}, {"explicit", "return 9\n", true}, {"empty", "", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(dir, tc.name+".zsh")
+			if err := os.WriteFile(path, []byte(tc.body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			ids, err := (Provider{}).Introspect(path)
+			if tc.fail && (err == nil || ids.Available) {
+				t.Fatalf("got %#v %v", ids, err)
+			}
+			if !tc.fail && (err != nil || !ids.Available) {
+				t.Fatalf("got %#v %v", ids, err)
+			}
+		})
 	}
 }
 
