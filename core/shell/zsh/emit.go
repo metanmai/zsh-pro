@@ -38,6 +38,26 @@ var renderList = func(name string, additions []string, _ bool) string {
 	return fmt.Sprintf("%s=\"$%s\"; %s=(%s $%s)", name, base, array, strings.Join(parts, " "), array)
 }
 
+func renderListDelta(name string, additions []string, baseIndex *int, dynamic []bool) string {
+	if baseIndex == nil || len(dynamic) != len(additions) {
+		return renderList(name, additions, false)
+	}
+	base := "ZP_BASE_PATH"
+	if strings.EqualFold(name, "FPATH") {
+		base = "ZP_BASE_FPATH"
+	}
+	parts := make([]string, 0, len(additions)+1)
+	for i := 0; i <= len(additions); i++ {
+		if i == *baseIndex {
+			parts = append(parts, "$"+base)
+		}
+		if i < len(additions) {
+			parts = append(parts, renderValue(additions[i], dynamic[i]))
+		}
+	}
+	return fmt.Sprintf("%s=%s", name, strings.Join(parts, ":"))
+}
+
 var optionNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 var aliasFuncNameRe = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]*$`)
 var envNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -162,7 +182,12 @@ func emitActivate(b *strings.Builder, op activate.Op) error {
 		if !safeEnvName(x.Name) {
 			return nil
 		}
-		fmt.Fprintf(b, "  %s\n", renderList(x.Name, x.Additions, false))
+		base, present := "ZP_BASE_PATH", "ZP_BASE_PATH_PRESENT"
+		if strings.EqualFold(x.Name, "FPATH") {
+			base, present = "ZP_BASE_FPATH", "ZP_BASE_FPATH_PRESENT"
+		}
+		fmt.Fprintf(b, "  if (( ! ${+%s} )); then if (( ${+%s} )); then typeset -g %s=1; else typeset -g %s=0; fi; typeset -g %s=\"$%s\"; fi\n", base, x.Name, present, present, base, x.Name)
+		fmt.Fprintf(b, "  %s\n", renderListDelta(x.Name, x.Additions, x.BaseIndex, x.AdditionDynamic))
 	case activate.AddAlias:
 		if !safeAliasFuncName(x.Name) {
 			return nil
@@ -218,7 +243,11 @@ func emitDeactivate(b *strings.Builder, op activate.Op) error {
 		} else if strings.EqualFold(x.Name, "FPATH") {
 			base = "ZP_BASE_FPATH"
 		}
-		fmt.Fprintf(b, "  %s=\"$%s\"\n", x.Name, base)
+		present := "ZP_BASE_PATH_PRESENT"
+		if strings.EqualFold(x.Name, "FPATH") {
+			present = "ZP_BASE_FPATH_PRESENT"
+		}
+		fmt.Fprintf(b, "  if (( ${+%s} )) && [[ \"$%s\" != 1 ]]; then unset %s %s; else %s=\"$%s\"; fi\n", present, present, x.Name, strings.ToLower(x.Name), x.Name, base)
 	case activate.Unalias:
 		if !safeAliasFuncName(x.Name) {
 			return nil
