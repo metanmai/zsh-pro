@@ -309,32 +309,68 @@ func decodeLiteralWord(w *syntax.Word, prefix string) (string, bool) {
 	}
 
 	var out strings.Builder
-	if !decodeLiteralParts(&out, word.Parts, true) {
+	if !decodeLiteralParts(&out, word.Parts, literalUnquoted, true) {
 		return "", false
 	}
 	return out.String(), true
 }
 
-func decodeLiteralParts(out *strings.Builder, parts []syntax.WordPart, rejectExtglob bool) bool {
+type literalQuoteContext uint8
+
+const (
+	literalUnquoted literalQuoteContext = iota
+	literalDoubleQuoted
+)
+
+func decodeLiteralParts(out *strings.Builder, parts []syntax.WordPart, context literalQuoteContext, rejectExtglob bool) bool {
 	for _, part := range parts {
 		switch p := part.(type) {
 		case *syntax.Lit:
 			if rejectExtglob && containsExtglobSyntax(p.Value) {
 				return false
 			}
-			out.WriteString(p.Value)
+			if !decodeLiteralLit(out, p.Value, context) {
+				return false
+			}
 		case *syntax.SglQuoted:
 			if p.Dollar {
 				return false
 			}
 			out.WriteString(p.Value)
 		case *syntax.DblQuoted:
-			if p.Dollar || !decodeLiteralParts(out, p.Parts, false) {
+			if p.Dollar || !decodeLiteralParts(out, p.Parts, literalDoubleQuoted, false) {
 				return false
 			}
 		default:
 			return false
 		}
+	}
+	return true
+}
+
+// decodeLiteralLit models the zsh backslash rules that the AST preserves in
+// literal nodes. It intentionally decodes no expansions: every unmodeled part
+// remains Unsupported at the caller.
+func decodeLiteralLit(out *strings.Builder, value string, context literalQuoteContext) bool {
+	for i := 0; i < len(value); i++ {
+		if value[i] != '\\' {
+			out.WriteByte(value[i])
+			continue
+		}
+		if i+1 == len(value) {
+			return false
+		}
+		next := value[i+1]
+		if context == literalDoubleQuoted && next != '$' && next != '`' && next != '"' && next != '\\' && next != '\n' {
+			out.WriteByte('\\')
+			out.WriteByte(next)
+			i++
+			continue
+		}
+		if next != '\n' {
+			out.WriteByte(next)
+		}
+		i++
 	}
 	return true
 }
