@@ -22,6 +22,7 @@ func (m mockProvider) Classify(b model.Block) (model.Category, model.Confidence)
 func (m mockProvider) Introspect(_ string) (model.IdentitySet, error) { return m.ids, nil }
 func (m mockProvider) Categories() []model.Category                   { return model.Categories() }
 func (m mockProvider) Regenerate(e model.Entry) string                { return e.Text }
+func (m mockProvider) HookScript() string                             { return "" }
 
 func TestAnalyzeDetectsDuplicateAlias(t *testing.T) {
 	p := mockProvider{

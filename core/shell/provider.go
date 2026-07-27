@@ -43,10 +43,18 @@ type Emitter interface {
 	Emit(p activate.Plan) (apply, deactivate string, err error)
 }
 
-// Provider composes the four concerns for convenient wiring.
+// Hooker provides the sourced runtime loader. Like Regenerator and Emitter,
+// this is a boundary where zsh syntax originates, so implementations belong in
+// the concrete shell package rather than a caller assembling shell text.
+type Hooker interface {
+	HookScript() string
+}
+
+// Provider composes the shell concerns for convenient wiring.
 type Provider interface {
 	Parser
 	Classifier
 	Introspector
 	Regenerator
+	Hooker
 }

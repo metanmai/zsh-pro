@@ -1,0 +1,60 @@
+package zsh
+
+import (
+	"os/exec"
+	"regexp"
+	"strings"
+	"testing"
+)
+
+func TestHookScriptIsParseableAndDefinesRuntimeSurface(t *testing.T) {
+	script := (Provider{}).HookScript()
+	for _, name := range []string{"checkout", "activate", "deactivate", "list", "status"} {
+		definition := regexp.MustCompile(`(?m)^` + name + `\(\) \{`)
+		if got := len(definition.FindAllString(script, -1)); got != 1 {
+			t.Errorf("%s definitions = %d, want 1", name, got)
+		}
+	}
+	for _, surface := range []string{"zp_capture_env()", "zp_restore_env()", "typeset -g ZP_UNSET_SENTINEL"} {
+		if !strings.Contains(script, surface) {
+			t.Errorf("loader missing %q", surface)
+		}
+	}
+	if strings.Contains(script, "emulate -L") || strings.Contains(script, "LOCAL_OPTIONS") {
+		t.Fatal("runtime loader must stay plain so option changes persist")
+	}
+	if got := loaderTopLevel(script); strings.Contains(got, "$(") || strings.Contains(got, "`") || strings.Contains(got, "git ") {
+		t.Fatalf("loader top level starts a subprocess:\n%s", got)
+	}
+
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("zsh not installed")
+	}
+	cmd := exec.Command("zsh", "-n")
+	cmd.Stdin = strings.NewReader(script)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("HookScript is not zsh -n parseable: %v\n%s", err, out)
+	}
+}
+
+// loaderTopLevel extracts lines outside function bodies. The loader may shell
+// out only when a user explicitly invokes a verb, never while it is sourced.
+func loaderTopLevel(script string) string {
+	var lines []string
+	depth := 0
+	for _, line := range strings.Split(script, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasSuffix(trimmed, "() {") {
+			depth++
+			continue
+		}
+		if depth == 0 {
+			lines = append(lines, line)
+			continue
+		}
+		if trimmed == "}" {
+			depth--
+		}
+	}
+	return strings.Join(lines, "\n")
+}
