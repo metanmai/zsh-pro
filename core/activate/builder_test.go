@@ -89,6 +89,106 @@ func TestBuildComposesSemanticListsInSourceOrder(t *testing.T) {
 	}
 }
 
+func TestBuildComposesLegacyListsInSourceOrder(t *testing.T) {
+	legacy := func(name, value string) model.Entry {
+		return model.Entry{
+			Category: model.CatPath, Kind: model.KindAssignment, Names: []string{name},
+			Value: value, Managed: true, ValueMode: model.ValueModeLegacy,
+		}
+	}
+	cases := []struct {
+		name  string
+		entry []model.Entry
+		want  model.ListDelta
+	}{
+		{
+			name:  "repeated PATH",
+			entry: []model.Entry{legacy("PATH", "$PATH:/one"), legacy("PATH", "$PATH:/two")},
+			want:  model.ListDelta{Name: "PATH", Additions: []string{"/one", "/two"}, AdditionDynamic: []bool{false, false}},
+		},
+		{
+			name:  "repeated FPATH",
+			entry: []model.Entry{legacy("FPATH", "$fpath:/one"), legacy("FPATH", "$fpath:/two")},
+			want:  model.ListDelta{Name: "FPATH", Additions: []string{"/one", "/two"}, AdditionDynamic: []bool{false, false}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := Build(model.Profile{Entries: tc.entry})
+			if len(m.Lists) != 1 {
+				t.Fatalf("lists=%#v, want one composed delta", m.Lists)
+			}
+			got := m.Lists[0]
+			if got.Name != tc.want.Name || !equalStrings(got.Additions, tc.want.Additions) || !equalBools(got.AdditionDynamic, tc.want.AdditionDynamic) || got.BaseIndex == nil || *got.BaseIndex != 0 {
+				t.Fatalf("delta=%#v, want %#v with base at 0", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBuildComposesLegacyAndSemanticListsInSourceOrder(t *testing.T) {
+	legacy := func(value string) model.Entry {
+		return model.Entry{Category: model.CatPath, Kind: model.KindAssignment, Names: []string{"PATH"}, Value: value, Managed: true, ValueMode: model.ValueModeLegacy}
+	}
+	semantic := func(segments ...model.ListSegment) model.Entry {
+		return model.Entry{Category: model.CatPath, Kind: model.KindAssignment, Names: []string{"PATH"}, Managed: true, ListValue: &model.ListValue{Segments: segments}}
+	}
+	cases := []struct {
+		name  string
+		entry []model.Entry
+		adds  []string
+		dyn   []bool
+		base  int
+	}{
+		{
+			name:  "legacy then semantic",
+			entry: []model.Entry{legacy("$PATH:/legacy"), semantic(model.ListSegment{Self: true}, model.ListSegment{Dynamic: true, Source: "$EXTRA"})},
+			adds:  []string{"/legacy", "$EXTRA"}, dyn: []bool{false, true}, base: 0,
+		},
+		{
+			name:  "semantic then legacy",
+			entry: []model.Entry{semantic(model.ListSegment{Value: "/semantic"}, model.ListSegment{Self: true}), legacy("$PATH:/legacy")},
+			adds:  []string{"/semantic", "/legacy"}, dyn: []bool{false, false}, base: 1,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := Build(model.Profile{Entries: tc.entry})
+			if len(m.Lists) != 1 {
+				t.Fatalf("lists=%#v, want one composed delta", m.Lists)
+			}
+			got := m.Lists[0]
+			if got.Name != "PATH" || !equalStrings(got.Additions, tc.adds) || !equalBools(got.AdditionDynamic, tc.dyn) || got.BaseIndex == nil || *got.BaseIndex != tc.base {
+				t.Fatalf("delta=%#v, want additions=%q dynamic=%v base=%d", got, tc.adds, tc.dyn, tc.base)
+			}
+		})
+	}
+}
+
+func equalStrings(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func equalBools(got, want []bool) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func TestBuildUsesExplicitRuntimeValueContract(t *testing.T) {
 	literalDollar := "$HOME"
 	empty := ""
