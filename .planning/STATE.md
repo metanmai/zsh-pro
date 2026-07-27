@@ -5,10 +5,10 @@ milestone_name: Branchable Shell Environments
 current_phase: 04
 current_phase_name: manifest-builder-emit
 status: executing
-stopped_at: Completed 04-12-PLAN.md
-last_updated: "2026-07-19T08:20:00Z"
-last_activity: 2026-07-19
-last_activity_desc: Completed 04-12 production-path zero-residue oracle and discovery gate
+stopped_at: Planned 04-13-PLAN.md gap closure
+last_updated: "2026-07-27T08:45:00Z"
+last_activity: 2026-07-27
+last_activity_desc: Planned 04-13 gap closure for semantic list, declaration routing, and multi-name function fidelity
 progress:
   total_phases: 6
   completed_phases: 3
@@ -29,9 +29,9 @@ See: .planning/PROJECT.md (updated 2026-06-25)
 ## Current Position
 
 Phase: 04 (manifest-builder-emit) — EXECUTING
-Plan: 12 of 13 numeric plans complete (04-UAT next)
-Status: Ready for Phase 04 UAT and verification
-Last activity: 2026-07-19 — Completed 04-12 production-path zero-residue oracle and discovery gate
+Plan: 12 of 13 numeric plans complete (04-13 next)
+Status: Gap-closure plan ready to execute
+Last activity: 2026-07-27 — Planned 04-13 source-fidelity gap closure after independent verification
 
 Progress: [█████████░] 92%
 
