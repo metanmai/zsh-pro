@@ -5,15 +5,15 @@ milestone_name: Branchable Shell Environments
 current_phase: 04
 current_phase_name: manifest-builder-emit
 status: executing
-stopped_at: Planned 04-14-PLAN.md gap closure
-last_updated: "2026-07-27T10:07:02Z"
+stopped_at: Completed 04-14-PLAN.md; awaiting independent Phase 4 review
+last_updated: "2026-07-27T11:03:47.744Z"
 last_activity: 2026-07-27
 last_activity_desc: Planned 04-14 legacy-list composition and persisted declaration gap closure
 progress:
   total_phases: 6
   completed_phases: 4
-  total_plans: 23
-  completed_plans: 21
+  total_plans: 24
+  completed_plans: 22
   percent: 67
 ---
 
@@ -78,6 +78,7 @@ Progress: [█████████░] 91%
 | Phase 04 P09 | 18 min | 3 tasks | 10 files |
 | Phase 04 P12 | 31 min | 3 tasks | 2 files |
 | Phase 04 P13 | 3 min | 3 tasks | 7 files |
+| Phase 04 P14 | 8 min | 3 tasks | 9 files |
 
 ## Accumulated Context
 
@@ -121,6 +122,8 @@ Recent decisions affecting current work:
 - [Phase 04]: Secret preparation is side-effect free; Commit snapshots all keys, writes the backend before a CAS ref update, and compensates only its own visible ref result. — This preserves exact prior backend state and never overwrites concurrent ref movement.
 - [Phase 04]: The final residue oracle uses accepted source fixtures through Parse, IR, Build, Diff, and Emit; observable PATH/FPATH presence and qqqq-encoded multiplicity remain explicit while emitter bookkeeping stays internal.
 - [Phase ?]: Unmodeled declaration commands stay verbatim-imperative; only ValueModeLegacy may use same-list raw list fallback; multi-name functions reduce atomically.
+- [Phase ?]: 04-14: Legacy PATH/FPATH entries now flow through the semantic token reducer, preserving source order and provenance.
+- [Phase ?]: 04-14: Persisted forced declarations require representability and otherwise regenerate verbatim with no manifest intent.
 
 ### Pending Todos
 
@@ -149,6 +152,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-27T09:42:09.142Z
-Stopped at: Completed 04-13-PLAN.md
+Last session: 2026-07-27T11:03:47.737Z
+Stopped at: Completed 04-14-PLAN.md; awaiting independent Phase 4 review
 Resume file: None
