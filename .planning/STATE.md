@@ -29,9 +29,9 @@ See: .planning/PROJECT.md (updated 2026-06-25)
 ## Current Position
 
 Phase: 04 (manifest-builder-emit) — EXECUTING
-Plan: 16 of 17 numeric plans complete (04-16 next)
-Status: Two validated gap-closure plans ready to execute
-Last activity: 2026-07-27 — Validated 04-16/04-17 indexed-assignment and semantic export-flag closure plans
+Plan: 16 of 17 numeric plans complete (04-17 next)
+Status: Plan 16 complete; Plan 17 remains pending live-zsh and residue proof
+Last activity: 2026-07-27 — Completed Plan 16 indexed-assignment and semantic export-flag source-fidelity closure
 
 Progress: [█████████░] 89%
 
