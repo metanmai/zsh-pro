@@ -24,7 +24,7 @@ func TestRegenerateSourceOrderAndRouting(t *testing.T) {
 		// 1: imperative — emitted verbatim
 		{Text: "eval \"$(starship init zsh)\"", Kind: model.KindCommand, CmdName: "eval", Managed: false},
 		// 2: managed declarative — templated
-		{Text: "alias gs='git status'", Kind: model.KindAlias, Names: []string{"gs"}, Value: "'git status'", Managed: true, StructuralFidelityKnown: true},
+		{Text: "alias gs='git status'", Kind: model.KindAlias, Names: []string{"gs"}, Value: "'git status'", Managed: true, StructuralFidelityKnown: true, AliasAssignment: true},
 		// 3: Opaque/other — emitted verbatim
 		{Text: "if [[ -f ~/.x ]]; then source ~/.x; fi", Kind: model.KindOther, Managed: false},
 		// 4: managed but forced-unmanaged (override wins, D-07) — verbatim

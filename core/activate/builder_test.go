@@ -7,7 +7,7 @@ import (
 
 func TestBuildAdmittedAndGuards(t *testing.T) {
 	body := "print ok"
-	p := model.Profile{Entries: []model.Entry{{Category: model.CatEnvironment, Kind: model.KindAssignment, Names: []string{"EDITOR"}, Value: "nvim", Managed: true, StructuralFidelityKnown: true}, {Category: model.CatPath, Kind: model.KindAssignment, Names: []string{"PATH"}, Value: "$HOME/bin:$PATH", Managed: true, StructuralFidelityKnown: true}, {Category: model.CatAliases, Kind: model.KindAlias, Names: []string{"gs"}, Value: "git status", Managed: true, StructuralFidelityKnown: true}, {Category: model.CatFunctions, Kind: model.KindFuncDecl, Names: []string{"foo"}, Managed: true, StructuralFidelityKnown: true, FunctionBody: &body}, {Category: model.CatOptions, Kind: model.KindCommand, CmdName: "setopt", Names: []string{"extendedglob"}, Managed: true, StructuralFidelityKnown: true}, {Category: model.CatEnvironment, Kind: model.KindAssignment, Names: []string{"BAD"}, Value: "x", Managed: true, StructuralFidelityKnown: true, Override: model.OverrideUnmanaged}}}
+	p := model.Profile{Entries: []model.Entry{{Category: model.CatEnvironment, Kind: model.KindAssignment, Names: []string{"EDITOR"}, Value: "nvim", Managed: true, StructuralFidelityKnown: true}, {Category: model.CatPath, Kind: model.KindAssignment, Names: []string{"PATH"}, Value: "$HOME/bin:$PATH", Managed: true, StructuralFidelityKnown: true}, {Category: model.CatAliases, Kind: model.KindAlias, Names: []string{"gs"}, Value: "git status", Managed: true, StructuralFidelityKnown: true, AliasAssignment: true}, {Category: model.CatFunctions, Kind: model.KindFuncDecl, Names: []string{"foo"}, Managed: true, StructuralFidelityKnown: true, FunctionBody: &body}, {Category: model.CatOptions, Kind: model.KindCommand, CmdName: "setopt", Names: []string{"extendedglob"}, Managed: true, StructuralFidelityKnown: true}, {Category: model.CatEnvironment, Kind: model.KindAssignment, Names: []string{"BAD"}, Value: "x", Managed: true, StructuralFidelityKnown: true, Override: model.OverrideUnmanaged}}}
 	m := Build(p)
 	if len(m.Env) != 1 || len(m.Lists) != 1 || len(m.Aliases.Added) != 1 || len(m.Functions.Added) != 1 || len(m.Options) != 1 {
 		t.Fatalf("manifest=%#v", m)
@@ -261,8 +261,8 @@ func TestBuildUsesExplicitRuntimeValueContract(t *testing.T) {
 		{Category: model.CatEnvironment, Kind: model.KindAssignment, Names: []string{"LITERAL"}, Value: "'$HOME'", Managed: true, StructuralFidelityKnown: true, ValueMode: model.ValueModeLiteral, RuntimeValue: &literalDollar},
 		{Category: model.CatEnvironment, Kind: model.KindAssignment, Names: []string{"DYNAMIC"}, Value: "$HOME", Managed: true, StructuralFidelityKnown: true, Dynamic: true, ValueMode: model.ValueModeDynamic},
 		{Category: model.CatEnvironment, Kind: model.KindAssignment, Names: []string{"EMPTY"}, Value: "''", Managed: true, StructuralFidelityKnown: true, ValueMode: model.ValueModeLiteral, RuntimeValue: &empty},
-		{Category: model.CatAliases, Kind: model.KindAlias, Names: []string{"literal"}, Value: "'echo $HOME'", Managed: true, StructuralFidelityKnown: true, ValueMode: model.ValueModeLiteral, RuntimeValue: func() *string { s := "echo $HOME"; return &s }()},
-		{Category: model.CatAliases, Kind: model.KindAlias, Names: []string{"dynamic"}, Value: "echo $HOME", Managed: true, StructuralFidelityKnown: true, Dynamic: true, ValueMode: model.ValueModeDynamic},
+		{Category: model.CatAliases, Kind: model.KindAlias, Names: []string{"literal"}, Value: "'echo $HOME'", Managed: true, StructuralFidelityKnown: true, AliasAssignment: true, ValueMode: model.ValueModeLiteral, RuntimeValue: func() *string { s := "echo $HOME"; return &s }()},
+		{Category: model.CatAliases, Kind: model.KindAlias, Names: []string{"dynamic"}, Value: "echo $HOME", Managed: true, StructuralFidelityKnown: true, AliasAssignment: true, Dynamic: true, ValueMode: model.ValueModeDynamic},
 		{Category: model.CatEnvironment, Kind: model.KindAssignment, Names: []string{"UNSUPPORTED"}, Value: "${^spec}", Managed: true, StructuralFidelityKnown: true, ValueMode: model.ValueModeUnsupported},
 		{Category: model.CatEnvironment, Kind: model.KindAssignment, Names: []string{"BAD_LITERAL"}, Value: "'bad'", Managed: true, StructuralFidelityKnown: true, ValueMode: model.ValueModeLiteral},
 		{Category: model.CatAliases, Kind: model.KindAlias, Names: []string{"bad_dynamic"}, Value: "$HOME", Managed: true, StructuralFidelityKnown: true, ValueMode: model.ValueModeDynamic},
@@ -299,7 +299,7 @@ func TestBuildUsesExplicitRuntimeValueContract(t *testing.T) {
 func TestBuildLegacyValueFallback(t *testing.T) {
 	m := Build(model.Profile{Entries: []model.Entry{
 		{Category: model.CatEnvironment, Kind: model.KindAssignment, Names: []string{"LEGACY"}, Value: "$HOME", Managed: true, StructuralFidelityKnown: true, Dynamic: true},
-		{Category: model.CatAliases, Kind: model.KindAlias, Names: []string{"legacy"}, Value: "echo $HOME", Managed: true, StructuralFidelityKnown: true, Dynamic: true},
+		{Category: model.CatAliases, Kind: model.KindAlias, Names: []string{"legacy"}, Value: "echo $HOME", Managed: true, StructuralFidelityKnown: true, AliasAssignment: true, Dynamic: true},
 	}})
 	if len(m.Env) != 1 || m.Env[0].Applied != "$HOME" || m.Env[0].Dynamic == nil || !*m.Env[0].Dynamic {
 		t.Fatalf("legacy scalar fallback changed: %#v", m.Env)
@@ -380,7 +380,7 @@ func TestBuildPreservesDistinctPunctuationIdentities(t *testing.T) {
 	for _, name := range names {
 		body := "print " + name
 		p.Entries = append(p.Entries,
-			model.Entry{Category: model.CatAliases, Kind: model.KindAlias, Names: []string{name}, Value: name, Managed: true, StructuralFidelityKnown: true},
+			model.Entry{Category: model.CatAliases, Kind: model.KindAlias, Names: []string{name}, Value: name, Managed: true, StructuralFidelityKnown: true, AliasAssignment: true},
 			model.Entry{Category: model.CatFunctions, Kind: model.KindFuncDecl, Names: []string{name}, Managed: true, StructuralFidelityKnown: true, FunctionBody: &body},
 		)
 	}
