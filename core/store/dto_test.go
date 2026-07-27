@@ -96,10 +96,11 @@ func TestRoundTripStructuralFidelity(t *testing.T) {
 		{Text: "FOO=bar", Kind: model.KindAssignment, Names: []string{"FOO"}, Value: "bar", StructuralFidelityKnown: true},
 		{Text: "FOO+=baz", Kind: model.KindAssignment, Names: []string{"FOO"}, Value: "baz", StructuralFidelityKnown: true, Append: true},
 		{Text: "plugins=(git zsh-autosuggestions)", Kind: model.KindAssignment, Names: []string{"plugins"}, StructuralFidelityKnown: true, Array: true},
-		{Text: "alias -g G='| grep'", Kind: model.KindAlias, CmdName: "alias", Names: []string{"G"}, Value: "| grep", StructuralFidelityKnown: true, Flagged: true},
+		{Text: "alias -g G='| grep'", Kind: model.KindAlias, CmdName: "alias", Names: []string{"G"}, Value: "| grep", StructuralFidelityKnown: true, AliasAssignment: true, Flagged: true},
 		{Text: "FOO[2]=bar", Kind: model.KindAssignment, Names: []string{"FOO"}, Value: "bar", StructuralFidelityKnown: true, Indexed: true},
 		{Text: "export -i COUNT=1", Kind: model.KindAssignment, CmdName: "export", Names: []string{"COUNT"}, Value: "1", Exported: true, StructuralFidelityKnown: true, DeclarationFlags: []string{"-i"}},
-		{Text: "export -- FOO=1", Kind: model.KindAssignment, CmdName: "export", Names: []string{"FOO"}, Value: "1", Exported: true, StructuralFidelityKnown: true, DeclarationFlags: []string{}},
+		{Text: "export -- FOO=1", Kind: model.KindAssignment, CmdName: "export", Names: []string{"FOO"}, Value: "1", Exported: true, StructuralFidelityKnown: true, DeclarationFlags: []string{}, OptionFlags: []string{}},
+		{Text: "setopt -o EXTENDED_GLOB", Kind: model.KindCommand, CmdName: "setopt", Names: []string{"EXTENDED_GLOB"}, StructuralFidelityKnown: true, OptionFlags: []string{"-o"}},
 	}}
 
 	payload, err := MarshalProfile(profile)
@@ -109,7 +110,7 @@ func TestRoundTripStructuralFidelity(t *testing.T) {
 	if got := bytes.Count(payload, []byte(`"structuralFidelity"`)); got != len(profile.Entries) {
 		t.Fatalf("structural fidelity objects=%d, want %d:\n%s", got, len(profile.Entries), payload)
 	}
-	for _, marker := range []string{`"version"`, `"append"`, `"array"`, `"flagged"`, `"indexed"`, `"declarationFlags"`} {
+	for _, marker := range []string{`"version"`, `"append"`, `"array"`, `"flagged"`, `"indexed"`, `"aliasAssignment"`, `"declarationFlags"`, `"optionFlags"`} {
 		if !bytes.Contains(payload, []byte(marker)) {
 			t.Fatalf("payload missing %s:\n%s", marker, payload)
 		}
@@ -123,7 +124,7 @@ func TestRoundTripStructuralFidelity(t *testing.T) {
 			t.Fatalf("entry %d lost known structural fidelity: %#v", i, entry)
 		}
 	}
-	if !got.Entries[4].Indexed || !reflect.DeepEqual(got.Entries[5].DeclarationFlags, []string{"-i"}) || !reflect.DeepEqual(got.Entries[6].DeclarationFlags, []string{}) {
+	if !got.Entries[3].AliasAssignment || !got.Entries[4].Indexed || !reflect.DeepEqual(got.Entries[5].DeclarationFlags, []string{"-i"}) || !reflect.DeepEqual(got.Entries[6].DeclarationFlags, []string{}) || !reflect.DeepEqual(got.Entries[7].OptionFlags, []string{"-o"}) {
 		t.Fatalf("new structural metadata did not round-trip: %#v", got.Entries[4:])
 	}
 }
@@ -138,12 +139,11 @@ func TestStructuralFidelityDTOCompatibilityMatrix(t *testing.T) {
 	}{
 		{name: "absent", raw: entry("")},
 		{name: "complete v1", raw: entry(`,"structuralFidelity":{"version":1,"append":false,"array":false,"flagged":false}`)},
-		{name: "v2 append omitted", raw: entry(`,"structuralFidelity":{"version":2,"array":false,"flagged":false,"indexed":false,"declarationFlags":[]}`)},
-		{name: "v2 array omitted", raw: entry(`,"structuralFidelity":{"version":2,"append":false,"flagged":false,"indexed":false,"declarationFlags":[]}`)},
-		{name: "v2 flagged omitted", raw: entry(`,"structuralFidelity":{"version":2,"append":false,"array":false,"indexed":false,"declarationFlags":[]}`)},
-		{name: "v2 indexed omitted", raw: entry(`,"structuralFidelity":{"version":2,"append":false,"array":false,"flagged":false,"declarationFlags":[]}`)},
-		{name: "v2 declaration flags omitted", raw: entry(`,"structuralFidelity":{"version":2,"append":false,"array":false,"flagged":false,"indexed":false}`)},
-		{name: "unsupported version", raw: entry(`,"structuralFidelity":{"version":99,"append":false,"array":false,"flagged":false,"indexed":false,"declarationFlags":[]}`)},
+		{name: "complete v2", raw: entry(`,"structuralFidelity":{"version":2,"append":false,"array":false,"flagged":false,"indexed":false,"declarationFlags":[]}`)},
+		{name: "v3 append omitted", raw: entry(`,"structuralFidelity":{"version":3,"array":false,"flagged":false,"indexed":false,"aliasAssignment":false,"declarationFlags":[],"optionFlags":{"values":null}}`)},
+		{name: "v3 alias assignment omitted", raw: entry(`,"structuralFidelity":{"version":3,"append":false,"array":false,"flagged":false,"indexed":false,"declarationFlags":[],"optionFlags":{"values":null}}`)},
+		{name: "v3 option flags omitted", raw: entry(`,"structuralFidelity":{"version":3,"append":false,"array":false,"flagged":false,"indexed":false,"aliasAssignment":false,"declarationFlags":[]}`)},
+		{name: "unsupported version", raw: entry(`,"structuralFidelity":{"version":99,"append":false,"array":false,"flagged":false,"indexed":false,"aliasAssignment":false,"declarationFlags":[],"optionFlags":{"values":null}}`)},
 	}
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
