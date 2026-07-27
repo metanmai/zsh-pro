@@ -59,3 +59,26 @@ func TestEntryDeclarationRepresentability(t *testing.T) {
 		}
 	}
 }
+
+func TestEntryRepresentabilityRequiresKnownStructuralFidelity(t *testing.T) {
+	cases := []struct {
+		name string
+		e    Entry
+		want bool
+	}{
+		{name: "unknown", e: Entry{Kind: KindAssignment}, want: false},
+		{name: "plain scalar", e: Entry{Kind: KindAssignment, StructuralFidelityKnown: true}, want: true},
+		{name: "exported scalar", e: Entry{Kind: KindAssignment, Exported: true, StructuralFidelityKnown: true}, want: true},
+		{name: "append", e: Entry{Kind: KindAssignment, StructuralFidelityKnown: true, Append: true}, want: false},
+		{name: "array", e: Entry{Kind: KindAssignment, StructuralFidelityKnown: true, Array: true}, want: false},
+		{name: "flagged alias", e: Entry{Kind: KindAlias, StructuralFidelityKnown: true, Flagged: true}, want: false},
+		{name: "declaration", e: Entry{Kind: KindAssignment, CmdName: "typeset", StructuralFidelityKnown: true}, want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.e.Representable(); got != tc.want {
+				t.Fatalf("Representable() = %v, want %v for %#v", got, tc.want, tc.e)
+			}
+		})
+	}
+}

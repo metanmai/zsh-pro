@@ -24,23 +24,35 @@ import (
 // entryDTO mirrors every model.Entry field one-to-one with stable lowercase json
 // keys. The DTO — not model.Entry — carries the wire tags (decision #1).
 type entryDTO struct {
-	Text      string                `json:"text"`
-	StartLine int                   `json:"startLine"`
-	Category  model.Category        `json:"category"`
-	Kind      model.BlockKind       `json:"kind"`
-	CmdName   string                `json:"cmdName"`
-	Names     []string              `json:"names"`
-	Value     string                `json:"value"`
-	Exported  bool                  `json:"exported"`
-	Managed   bool                  `json:"managed"`
-	Override  model.ManagedOverride `json:"override"`
-	Dynamic   bool                  `json:"dynamic"`
-	Secret    *model.SecretRef      `json:"secret,omitempty"`
-	ValueMode model.ValueMode       `json:"valueMode,omitempty"`
+	Text               string                 `json:"text"`
+	StartLine          int                    `json:"startLine"`
+	Category           model.Category         `json:"category"`
+	Kind               model.BlockKind        `json:"kind"`
+	CmdName            string                 `json:"cmdName"`
+	Names              []string               `json:"names"`
+	Value              string                 `json:"value"`
+	Exported           bool                   `json:"exported"`
+	Managed            bool                   `json:"managed"`
+	Override           model.ManagedOverride  `json:"override"`
+	Dynamic            bool                   `json:"dynamic"`
+	StructuralFidelity *structuralFidelityDTO `json:"structuralFidelity,omitempty"`
+	Secret             *model.SecretRef       `json:"secret,omitempty"`
+	ValueMode          model.ValueMode        `json:"valueMode,omitempty"`
 	// Pointer presence preserves decoded/parsed empty strings through JSON.
 	RuntimeValue *string       `json:"runtimeValue,omitempty"`
 	FunctionBody *string       `json:"functionBody,omitempty"`
 	ListValue    *listValueDTO `json:"listValue,omitempty"`
+}
+
+const structuralFidelityVersion = 1
+
+// structuralFidelityDTO is presence-aware on purpose: absent bool fields are
+// historical unknowns, never inferred as false.
+type structuralFidelityDTO struct {
+	Version int   `json:"version"`
+	Append  *bool `json:"append"`
+	Array   *bool `json:"array"`
+	Flagged *bool `json:"flagged"`
 }
 
 // listValueDTO is the optional persistence form of parser-verified PATH/FPATH
@@ -104,22 +116,23 @@ func UnmarshalProfile(b []byte) (model.Profile, error) {
 // DTO never aliases the caller's backing array.
 func toEntryDTO(e model.Entry) entryDTO {
 	return entryDTO{
-		Text:         e.Text,
-		StartLine:    e.StartLine,
-		Category:     e.Category,
-		Kind:         e.Kind,
-		CmdName:      e.CmdName,
-		Names:        cloneNames(e.Names),
-		Value:        e.Value,
-		Exported:     e.Exported,
-		Managed:      e.Managed,
-		Override:     e.Override,
-		Dynamic:      e.Dynamic,
-		Secret:       e.Secret,
-		ValueMode:    e.ValueMode,
-		RuntimeValue: cloneStringPointer(e.RuntimeValue),
-		FunctionBody: cloneStringPointer(e.FunctionBody),
-		ListValue:    toListValueDTO(e.ListValue),
+		Text:               e.Text,
+		StartLine:          e.StartLine,
+		Category:           e.Category,
+		Kind:               e.Kind,
+		CmdName:            e.CmdName,
+		Names:              cloneNames(e.Names),
+		Value:              e.Value,
+		Exported:           e.Exported,
+		Managed:            e.Managed,
+		Override:           e.Override,
+		Dynamic:            e.Dynamic,
+		StructuralFidelity: toStructuralFidelityDTO(e),
+		Secret:             e.Secret,
+		ValueMode:          e.ValueMode,
+		RuntimeValue:       cloneStringPointer(e.RuntimeValue),
+		FunctionBody:       cloneStringPointer(e.FunctionBody),
+		ListValue:          toListValueDTO(e.ListValue),
 	}
 }
 
@@ -127,24 +140,53 @@ func toEntryDTO(e model.Entry) entryDTO {
 // the decoded Profile never shares a backing array with the DTO.
 func fromEntryDTO(d entryDTO) model.Entry {
 	return model.Entry{
-		Text:         d.Text,
-		StartLine:    d.StartLine,
-		Category:     d.Category,
-		Kind:         d.Kind,
-		CmdName:      d.CmdName,
-		Names:        cloneNames(d.Names),
-		Value:        d.Value,
-		Exported:     d.Exported,
-		Managed:      d.Managed,
-		Override:     d.Override,
-		Dynamic:      d.Dynamic,
-		Secret:       d.Secret,
-		ValueMode:    d.ValueMode,
-		RuntimeValue: cloneStringPointer(d.RuntimeValue),
-		FunctionBody: cloneStringPointer(d.FunctionBody),
-		ListValue:    fromListValueDTO(d.ListValue),
+		Text:                    d.Text,
+		StartLine:               d.StartLine,
+		Category:                d.Category,
+		Kind:                    d.Kind,
+		CmdName:                 d.CmdName,
+		Names:                   cloneNames(d.Names),
+		Value:                   d.Value,
+		Exported:                d.Exported,
+		Managed:                 d.Managed,
+		Override:                d.Override,
+		Dynamic:                 d.Dynamic,
+		StructuralFidelityKnown: structuralFidelityKnown(d.StructuralFidelity),
+		Secret:                  d.Secret,
+		ValueMode:               d.ValueMode,
+		RuntimeValue:            cloneStringPointer(d.RuntimeValue),
+		FunctionBody:            cloneStringPointer(d.FunctionBody),
+		ListValue:               fromListValueDTO(d.ListValue),
+		Append:                  structuralFidelityMarker(d.StructuralFidelity, func(f *structuralFidelityDTO) *bool { return f.Append }),
+		Array:                   structuralFidelityMarker(d.StructuralFidelity, func(f *structuralFidelityDTO) *bool { return f.Array }),
+		Flagged:                 structuralFidelityMarker(d.StructuralFidelity, func(f *structuralFidelityDTO) *bool { return f.Flagged }),
 	}
 }
+
+func toStructuralFidelityDTO(e model.Entry) *structuralFidelityDTO {
+	if !e.StructuralFidelityKnown {
+		return nil
+	}
+	return &structuralFidelityDTO{
+		Version: structuralFidelityVersion,
+		Append:  boolPointer(e.Append),
+		Array:   boolPointer(e.Array),
+		Flagged: boolPointer(e.Flagged),
+	}
+}
+
+func structuralFidelityKnown(in *structuralFidelityDTO) bool {
+	return in != nil && in.Version == structuralFidelityVersion && in.Append != nil && in.Array != nil && in.Flagged != nil
+}
+
+func structuralFidelityMarker(in *structuralFidelityDTO, marker func(*structuralFidelityDTO) *bool) bool {
+	if !structuralFidelityKnown(in) {
+		return false
+	}
+	return *marker(in)
+}
+
+func boolPointer(value bool) *bool { return &value }
 
 // cloneNames returns a fresh copy of the slice (nil stays nil so a no-names entry
 // round-trips as nil, not []string{}, preserving reflect.DeepEqual equality).

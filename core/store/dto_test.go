@@ -91,6 +91,75 @@ func TestRoundTripPersistedOverrideManagedDeclarations(t *testing.T) {
 	}
 }
 
+func TestRoundTripStructuralFidelity(t *testing.T) {
+	profile := model.Profile{Entries: []model.Entry{
+		{Text: "FOO=bar", Kind: model.KindAssignment, Names: []string{"FOO"}, Value: "bar", StructuralFidelityKnown: true},
+		{Text: "FOO+=baz", Kind: model.KindAssignment, Names: []string{"FOO"}, Value: "baz", StructuralFidelityKnown: true, Append: true},
+		{Text: "plugins=(git zsh-autosuggestions)", Kind: model.KindAssignment, Names: []string{"plugins"}, StructuralFidelityKnown: true, Array: true},
+		{Text: "alias -g G='| grep'", Kind: model.KindAlias, CmdName: "alias", Names: []string{"G"}, Value: "| grep", StructuralFidelityKnown: true, Flagged: true},
+	}}
+
+	payload, err := MarshalProfile(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := bytes.Count(payload, []byte(`"structuralFidelity"`)); got != len(profile.Entries) {
+		t.Fatalf("structural fidelity objects=%d, want %d:\n%s", got, len(profile.Entries), payload)
+	}
+	for _, marker := range []string{`"version"`, `"append"`, `"array"`, `"flagged"`} {
+		if !bytes.Contains(payload, []byte(marker)) {
+			t.Fatalf("payload missing %s:\n%s", marker, payload)
+		}
+	}
+	got, err := UnmarshalProfile(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, entry := range got.Entries {
+		if !entry.StructuralFidelityKnown {
+			t.Fatalf("entry %d lost known structural fidelity: %#v", i, entry)
+		}
+	}
+}
+
+func TestStructuralFidelityDTOCompatibilityMatrix(t *testing.T) {
+	rows := []struct {
+		name string
+		raw  string
+	}{
+		{name: "absent", raw: `{"entries":[{"text":"FOO+=bar","startLine":1,"category":"environment","kind":"assignment","cmdName":"","names":["FOO"],"value":"bar","exported":false,"managed":false,"override":"forced-managed","dynamic":false}]}`},
+		{name: "append omitted", raw: `{"entries":[{"text":"plugins=(git zsh-autosuggestions)","startLine":1,"category":"environment","kind":"assignment","cmdName":"","names":["plugins"],"value":"","exported":false,"managed":false,"override":"forced-managed","dynamic":false,"structuralFidelity":{"version":1,"array":true,"flagged":false}}]}`},
+		{name: "array omitted", raw: `{"entries":[{"text":"alias -g G='| grep'","startLine":1,"category":"aliases","kind":"alias","cmdName":"alias","names":["G"],"value":"| grep","exported":false,"managed":false,"override":"forced-managed","dynamic":false,"structuralFidelity":{"version":1,"append":false,"flagged":true}}]}`},
+		{name: "flagged omitted", raw: `{"entries":[{"text":"FOO+=bar","startLine":1,"category":"environment","kind":"assignment","cmdName":"","names":["FOO"],"value":"bar","exported":false,"managed":false,"override":"forced-managed","dynamic":false,"structuralFidelity":{"version":1,"append":true,"array":false}}]}`},
+		{name: "unsupported version", raw: `{"entries":[{"text":"alias -g G='| grep'","startLine":1,"category":"aliases","kind":"alias","cmdName":"alias","names":["G"],"value":"| grep","exported":false,"managed":false,"override":"forced-managed","dynamic":false,"structuralFidelity":{"version":99,"append":false,"array":false,"flagged":true}}]}`},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			first, err := UnmarshalProfile([]byte(row.raw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(first.Entries) != 1 || first.Entries[0].StructuralFidelityKnown || first.Entries[0].Representable() {
+				t.Fatalf("first decode inferred structural state: %#v", first)
+			}
+			saved, err := MarshalProfile(first)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bytes.Contains(saved, []byte(`"structuralFidelity"`)) {
+				t.Fatalf("historical fidelity was inferred on re-save:\n%s", saved)
+			}
+			second, err := UnmarshalProfile(saved)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(second.Entries) != 1 || second.Entries[0].StructuralFidelityKnown || second.Entries[0].Representable() {
+				t.Fatalf("re-saved decode inferred structural state: %#v", second)
+			}
+		})
+	}
+}
+
 // TestRoundTripLossless proves UnmarshalProfile(MarshalProfile(p)) == p for a
 // profile mixing all declarative classes + both overrides: every derived field
 // (ManagedOverride, Dynamic, Category, Managed, Names, Value, Text) survives (D-01).

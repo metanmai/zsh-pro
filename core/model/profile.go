@@ -93,8 +93,15 @@ type Entry struct {
 	Managed   bool            // auto verdict: is this a reversible declarative class? (D-06)
 	Override  ManagedOverride // explicit override of the auto verdict (D-07); defaults OverrideAuto
 	Dynamic   bool            // value contains a non-literal AST part ($HOME/$(...)/...) — orthogonal axis (D-05)
-	Secret    *SecretRef      // non-nil iff this entry is a secret-replaced literal (D-07); the literal Value is cleared when set so the secret never round-trips
-	ValueMode ValueMode       // parser-owned semantic mode; zero remains backward-compatible legacy
+	// StructuralFidelityKnown is true only when all parser-owned source-shape
+	// markers below are present. Historical DTOs that omitted any marker remain
+	// unknown rather than being guessed as ordinary scalar declarations.
+	StructuralFidelityKnown bool
+	Append                  bool       // assignment used +=; never lower it to =
+	Array                   bool       // assignment used (...); never lower it to a scalar
+	Flagged                 bool       // alias used a flag; never drop its attributes
+	Secret                  *SecretRef // non-nil iff this entry is a secret-replaced literal (D-07); the literal Value is cleared when set so the secret never round-trips
+	ValueMode               ValueMode  // parser-owned semantic mode; zero remains backward-compatible legacy
 	// RuntimeValue is the AST-decoded scalar or alias value for literal mode.
 	// Pointer presence distinguishes decoded empty from missing.
 	RuntimeValue *string
@@ -133,6 +140,27 @@ func (e Entry) DeclarationRepresentable() bool {
 	switch e.CmdName {
 	case "typeset", "declare", "local", "readonly":
 		return false
+	default:
+		return true
+	}
+}
+
+// Representable reports whether the persisted Entry has enough source-derived
+// structure to recreate its semantics. It deliberately does not answer whether
+// Override selected the managed axis: a forced override cannot compensate for
+// incomplete or behavior-bearing source structure.
+func (e Entry) Representable() bool {
+	if !e.StructuralFidelityKnown {
+		return false
+	}
+	if !e.DeclarationRepresentable() {
+		return false
+	}
+	switch e.Kind {
+	case KindAssignment:
+		return !e.Append && !e.Array
+	case KindAlias:
+		return !e.Flagged
 	default:
 		return true
 	}
