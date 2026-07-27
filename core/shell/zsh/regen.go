@@ -22,6 +22,14 @@ import (
 // an unhandled Kind — falls through to verbatim and can never produce empty or
 // undefined output (#3).
 func (Provider) Regenerate(e model.Entry) string {
+	// A persisted v3 entry can reach this lowering seam independently of
+	// ir.Regenerate. Never let a forced override use partial source structure to
+	// synthesize a different command: known-but-unrepresentable shapes remain
+	// verbatim exactly as the shared admission gate requires. Legacy callers
+	// without fidelity provenance retain the historical direct-regeneration API.
+	if e.StructuralFidelityKnown && !e.Representable() {
+		return e.Text
+	}
 	switch e.Kind {
 	case model.KindAssignment:
 		// Belt-and-suspenders length guard (BL-01): the router already keeps

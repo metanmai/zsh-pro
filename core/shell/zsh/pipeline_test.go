@@ -588,8 +588,179 @@ func TestPipelineLegacyStructuralFidelityMatrix(t *testing.T) {
 	}
 }
 
+// TestPipelinePersistedRejectedSourceShapes proves that a forced managed
+// override cannot turn source shapes with more semantics than Entry records
+// into manifest intent. Each fixture crosses Parse -> IR -> DTO re-save ->
+// OverrideManaged -> Regenerate -> Build -> Diff -> Emit.
+func TestPipelinePersistedRejectedSourceShapesPersisted(t *testing.T) {
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("zsh not available")
+	}
+	provider := Provider{}
+	sources := []string{
+		"A=one B=two",
+		"export A=one B=two",
+		"export -- A=one B=two",
+		"alias ll",
+		"alias one=profile-one two=profile-two",
+		"setopt +o extendedglob",
+		"unsetopt +o extendedglob",
+		"setopt -m extendedglob",
+		"unsetopt -m extendedglob",
+		"export -- PATH=$PATH:$EXTRA FPATH=$FPATH:$EXTRA",
+	}
+	persisted := forcePersistedPipelineProfile(t, provider, strings.Join(sources, "\n")+"\n")
+	if got, want := string(ir.Regenerate(persisted, provider)), strings.Join(sources, "\n")+"\n"; got != want {
+		t.Fatalf("rejected source regenerated as %q, want verbatim %q", got, want)
+	}
+	manifest := activate.Build(persisted)
+	if !pipelineManifestEmpty(manifest) {
+		t.Fatalf("rejected persisted source created manifest intent: %#v", manifest)
+	}
+	apply, deactivate := emitPipelineListPlan(t, provider, manifest)
+	script := strings.Join([]string{
+		"A=before", "B=before", "PATH=/path-base", "FPATH=/fpath-base", "EXTRA=/runtime-extra",
+		"alias ll='query-before'", "alias one='one-before'", "alias two='two-before'", "setopt extendedglob",
+		"before_a=$A before_b=$B before_path=$PATH before_fpath=$FPATH before_ll=${aliases[ll]} before_one=${aliases[one]} before_two=${aliases[two]} before_option=${options[extendedglob]}",
+		apply, "zp_apply",
+		"[[ $A == $before_a && $B == $before_b && $PATH == $before_path && $FPATH == $before_fpath ]] || exit 181",
+		"[[ ${aliases[ll]} == $before_ll && ${aliases[one]} == $before_one && ${aliases[two]} == $before_two && ${options[extendedglob]} == $before_option ]] || exit 182",
+		deactivate, "zp_deactivate",
+		"[[ $A == $before_a && $B == $before_b && $PATH == $before_path && $FPATH == $before_fpath ]] || exit 183",
+		"[[ ${aliases[ll]} == $before_ll && ${aliases[one]} == $before_one && ${aliases[two]} == $before_two && ${options[extendedglob]} == $before_option ]] || exit 184",
+	}, "\n")
+	if out, err := exec.Command("zsh", "-f", "-c", script).CombinedOutput(); err != nil {
+		t.Fatalf("rejected persisted pipeline changed live state: %v\n%s\nscript:\n%s", err, out, script)
+	}
+
+	// Source controls demonstrate the behavior that a lossy generated plan must
+	// not impersonate: query leaves a body intact; multi-definition changes both.
+	controls := "alias ll='query-before'; alias ll >/dev/null; [[ ${aliases[ll]} == query-before ]] || exit 185; alias one=profile-one two=profile-two; [[ ${aliases[one]} == profile-one && ${aliases[two]} == profile-two ]] || exit 186"
+	if out, err := exec.Command("zsh", "-f", "-c", controls).CombinedOutput(); err != nil {
+		t.Fatalf("alias direct-source discriminators failed: %v\n%s", err, out)
+	}
+}
+
+func TestPipelinePersistedOptionSyntaxMatrixOption(t *testing.T) {
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("zsh not available")
+	}
+	provider := Provider{}
+	supported := []struct {
+		source  string
+		enabled string
+	}{
+		{"setopt extendedglob", "on"}, {"setopt -- extendedglob", "on"}, {"setopt -o extendedglob", "on"},
+		{"unsetopt extendedglob", "off"}, {"unsetopt -- extendedglob", "off"}, {"unsetopt -o extendedglob", "off"},
+	}
+	for _, tc := range supported {
+		t.Run(tc.source, func(t *testing.T) {
+			// Direct zsh source is the behavioral control for the modeled row.
+			direct := "unsetopt extendedglob; " + tc.source + "; [[ ${options[extendedglob]} == " + tc.enabled + " ]]"
+			if out, err := exec.Command("zsh", "-f", "-c", direct).CombinedOutput(); err != nil {
+				t.Fatalf("direct source did not set %s: %v\n%s", tc.enabled, err, out)
+			}
+			persisted := forcePersistedPipelineProfile(t, provider, tc.source+"\n")
+			manifest := activate.Build(persisted)
+			if len(manifest.Options) != 1 || manifest.Options[0].Enabled != (tc.enabled == "on") {
+				t.Fatalf("supported source did not lower to one modeled option: %#v", manifest.Options)
+			}
+			apply, deactivate := emitPipelineListPlan(t, provider, manifest)
+			seed := "off"
+			seedCommand := "unsetopt extendedglob"
+			if tc.enabled == "off" {
+				seed, seedCommand = "on", "setopt extendedglob"
+			}
+			script := strings.Join([]string{seedCommand, apply, "zp_apply", "[[ ${options[extendedglob]} == " + tc.enabled + " ]] || exit 191", deactivate, "zp_deactivate", "[[ ${options[extendedglob]} == " + seed + " ]] || exit 192"}, "\n")
+			if out, err := exec.Command("zsh", "-f", "-c", script).CombinedOutput(); err != nil {
+				t.Fatalf("persisted option apply/deactivate failed: %v\n%s\nscript:\n%s", err, out, script)
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		source string
+		want   func(seed string) string
+	}{
+		{"setopt +o extendedglob", func(string) string { return "off" }},
+		{"unsetopt +o extendedglob", func(string) string { return "on" }},
+		{"setopt -m extendedglob", func(string) string { return "on" }},
+		{"unsetopt -m extendedglob", func(string) string { return "off" }},
+	} {
+		t.Run(tc.source, func(t *testing.T) {
+			// Capture the source behavior separately; +o has opposite polarity and
+			// -m is a filter, neither is a modeled SetOption operation.
+			for _, seed := range []struct{ command, state string }{{"setopt extendedglob", "on"}, {"unsetopt extendedglob", "off"}} {
+				direct := seed.command + "; " + tc.source + "; [[ ${options[extendedglob]} == " + tc.want(seed.state) + " ]]"
+				if out, err := exec.Command("zsh", "-f", "-c", direct).CombinedOutput(); err != nil {
+					t.Fatalf("direct rejected option control did not preserve its source semantics: %v\n%s", err, out)
+				}
+			}
+			persisted := forcePersistedPipelineProfile(t, provider, tc.source+"\n")
+			if got := string(ir.Regenerate(persisted, provider)); got != tc.source+"\n" {
+				t.Fatalf("rejected option regenerated as %q", got)
+			}
+			manifest := activate.Build(persisted)
+			if !pipelineManifestEmpty(manifest) {
+				t.Fatalf("rejected option created manifest intent: %#v", manifest)
+			}
+			apply, deactivate := emitPipelineListPlan(t, provider, manifest)
+			script := strings.Join([]string{"setopt extendedglob", "before=${options[extendedglob]}", apply, "zp_apply", "[[ ${options[extendedglob]} == $before ]] || exit 193", deactivate, "zp_deactivate", "[[ ${options[extendedglob]} == $before ]] || exit 194"}, "\n")
+			if out, err := exec.Command("zsh", "-f", "-c", script).CombinedOutput(); err != nil {
+				t.Fatalf("rejected persisted option changed state: %v\n%s\nscript:\n%s", err, out, script)
+			}
+		})
+	}
+}
+
+func TestPipelinePersistedDelimiterListAlias(t *testing.T) {
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("zsh not available")
+	}
+	provider := Provider{}
+	persisted := forcePersistedPipelineProfile(t, provider, "export -- PATH=$PATH:$HOME/bin:$EXTRA\nexport -- FPATH=$EXTRA:$FPATH:$HOME/fn\n")
+	manifest := activate.Build(persisted)
+	if len(manifest.Lists) != 2 || len(manifest.Lists[0].Additions) == 0 || len(manifest.Lists[1].Additions) == 0 {
+		t.Fatalf("delimiter declarations lost semantic list deltas: %#v", manifest.Lists)
+	}
+	apply, deactivate := emitPipelineListPlan(t, provider, manifest)
+	direct := "export -- PATH=$PATH:$HOME/bin:$EXTRA; export -- FPATH=$EXTRA:$FPATH:$HOME/fn"
+	script := strings.Join([]string{
+		"HOME=/runtime-home", "EXTRA=/runtime-extra", "PATH=/path-base", "FPATH=/fpath-base", direct,
+		"direct_path=$PATH direct_fpath=$FPATH", "PATH=/path-base", "FPATH=/fpath-base", "before_path=$PATH before_fpath=$FPATH",
+		apply, "zp_apply", "[[ $PATH == $direct_path && $FPATH == $direct_fpath ]] || exit 195", deactivate, "zp_deactivate", "[[ $PATH == $before_path && $FPATH == $before_fpath ]] || exit 196",
+	}, "\n")
+	if out, err := exec.Command("zsh", "-f", "-c", script).CombinedOutput(); err != nil {
+		t.Fatalf("persisted delimiter list pipeline differs from direct source: %v\n%s\nscript:\n%s", err, out, script)
+	}
+
+	emptyAlias := forcePersistedPipelineProfile(t, provider, "alias ll=\n")
+	emptyManifest := activate.Build(emptyAlias)
+	if len(emptyManifest.Aliases.Added) != 1 {
+		t.Fatalf("empty assigned alias was confused with a query: %#v", emptyManifest.Aliases)
+	}
+	apply, deactivate = emitPipelineListPlan(t, provider, emptyManifest)
+	emptyScript := strings.Join([]string{"alias ll='before'", apply, "zp_apply", "[[ ${+aliases[ll]} == 1 && -z ${aliases[ll]} ]] || exit 197", deactivate, "zp_deactivate", "[[ ${aliases[ll]} == before ]] || exit 198"}, "\n")
+	if out, err := exec.Command("zsh", "-f", "-c", emptyScript).CombinedOutput(); err != nil {
+		t.Fatalf("empty assigned alias persisted pipeline failed: %v\n%s", err, out)
+	}
+}
+
 func pipelineManifestEmpty(manifest model.Manifest) bool {
 	return len(manifest.Env) == 0 && len(manifest.Lists) == 0 && len(manifest.Aliases.Added) == 0 && len(manifest.Functions.Added) == 0 && len(manifest.Options) == 0
+}
+
+func forcePersistedPipelineProfile(t *testing.T, provider Provider, source string) model.Profile {
+	t.Helper()
+	blocks, err := provider.Parse([]byte(source))
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted := roundTripPipelineProfile(t, ir.Build(blocks, provider))
+	for i := range persisted.Entries {
+		persisted.Entries[i].Override = model.OverrideManaged
+	}
+	return persisted
 }
 
 func roundTripPipelineProfile(t *testing.T, profile model.Profile) model.Profile {
