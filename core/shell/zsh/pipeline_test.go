@@ -249,7 +249,7 @@ func TestPipelineStoreRoundTripLegacy(t *testing.T) {
 	}
 	provider := Provider{}
 	legacy := func(name, value string) model.Entry {
-		return model.Entry{Text: name + "=" + value, Category: model.CatPath, Kind: model.KindAssignment, Names: []string{name}, Value: value, Managed: true, ValueMode: model.ValueModeLegacy}
+		return model.Entry{Text: name + "=" + value, Category: model.CatPath, Kind: model.KindAssignment, Names: []string{name}, Value: value, Managed: true, ValueMode: model.ValueModeLegacy, StructuralFidelityKnown: true}
 	}
 	semantic := func(t *testing.T, source string) model.Entry {
 		t.Helper()
@@ -314,6 +314,53 @@ func TestPipelineStoreRoundTripLegacy(t *testing.T) {
 				t.Fatalf("live list pipeline: %v\n%s\nscript:\n%s", err, out, script)
 			}
 		})
+	}
+}
+
+func TestPipelineStoreRoundTripLegacyDynamic(t *testing.T) {
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("zsh not available")
+	}
+	provider := Provider{}
+	legacy := func(name, value string) model.Entry {
+		return model.Entry{Text: name + "=" + value, Category: model.CatPath, Kind: model.KindAssignment, Names: []string{name}, Value: value, Managed: true, ValueMode: model.ValueModeLegacy, StructuralFidelityKnown: true}
+	}
+	semantic := func(t *testing.T, source string) model.Entry {
+		t.Helper()
+		blocks, err := provider.Parse([]byte(source))
+		if err != nil {
+			t.Fatal(err)
+		}
+		profile := ir.Build(blocks, provider)
+		if len(profile.Entries) != 1 {
+			t.Fatalf("semantic source %q yielded %#v", source, profile)
+		}
+		return profile.Entries[0]
+	}
+	persisted := roundTripPipelineProfile(t, model.Profile{Entries: []model.Entry{
+		legacy("PATH", "$PATH:$HOME/bin"),
+		semantic(t, "PATH=$PATH:$EXTRA\n"),
+		semantic(t, "FPATH=$EXTRA:$FPATH\n"),
+		legacy("FPATH", "$FPATH:$EXTRA/bin"),
+	}})
+	manifest := activate.Build(persisted)
+	if len(manifest.Lists) != 2 || len(manifest.Lists[0].AdditionDynamic) != 2 || len(manifest.Lists[1].AdditionDynamic) != 2 || !manifest.Lists[0].AdditionDynamic[0] || !manifest.Lists[0].AdditionDynamic[1] || !manifest.Lists[1].AdditionDynamic[0] || !manifest.Lists[1].AdditionDynamic[1] {
+		t.Fatalf("dynamic legacy provenance lost: %#v", manifest.Lists)
+	}
+	apply, deactivate := emitPipelineListPlan(t, provider, manifest)
+	direct := "PATH=$PATH:$HOME/bin\nPATH=$PATH:$EXTRA\nFPATH=$EXTRA:$FPATH\nFPATH=$FPATH:$EXTRA/bin"
+	script := strings.Join([]string{
+		"HOME=/runtime-home", "EXTRA=/runtime-extra", "PATH=/path-base", "FPATH=/fpath-base", direct,
+		"typeset direct_path=$PATH direct_fpath=$FPATH",
+		"PATH=/path-base", "FPATH=/fpath-base", "typeset before_path=$PATH before_fpath=$FPATH",
+		apply, "zp_apply",
+		"[[ $PATH == $direct_path && $FPATH == $direct_fpath ]] || exit 141",
+		"[[ $PATH != *'$HOME'* && $PATH != *'$EXTRA'* && $FPATH != *'$HOME'* && $FPATH != *'$EXTRA'* ]] || exit 142",
+		deactivate, "zp_deactivate",
+		"[[ $PATH == $before_path && $FPATH == $before_fpath ]] || exit 143",
+	}, "\n")
+	if out, err := exec.Command("zsh", "-f", "-c", script).CombinedOutput(); err != nil {
+		t.Fatalf("dynamic legacy pipeline differs from direct source: %v\n%s\nscript:\n%s", err, out, script)
 	}
 }
 

@@ -7,7 +7,7 @@ import (
 
 func TestBuildAdmittedAndGuards(t *testing.T) {
 	body := "print ok"
-	p := model.Profile{Entries: []model.Entry{{Category: model.CatEnvironment, Kind: model.KindAssignment, Names: []string{"EDITOR"}, Value: "nvim", Managed: true}, {Category: model.CatPath, Kind: model.KindAssignment, Names: []string{"PATH"}, Value: "$HOME/bin:$PATH", Managed: true}, {Category: model.CatAliases, Kind: model.KindAlias, Names: []string{"gs"}, Value: "git status", Managed: true}, {Category: model.CatFunctions, Kind: model.KindFuncDecl, Names: []string{"foo"}, Managed: true, FunctionBody: &body}, {Category: model.CatOptions, Kind: model.KindCommand, CmdName: "setopt", Names: []string{"extendedglob"}, Managed: true}, {Category: model.CatEnvironment, Kind: model.KindAssignment, Names: []string{"BAD"}, Value: "x", Managed: true, Override: model.OverrideUnmanaged}}}
+	p := model.Profile{Entries: []model.Entry{{Category: model.CatEnvironment, Kind: model.KindAssignment, Names: []string{"EDITOR"}, Value: "nvim", Managed: true, StructuralFidelityKnown: true}, {Category: model.CatPath, Kind: model.KindAssignment, Names: []string{"PATH"}, Value: "$HOME/bin:$PATH", Managed: true, StructuralFidelityKnown: true}, {Category: model.CatAliases, Kind: model.KindAlias, Names: []string{"gs"}, Value: "git status", Managed: true, StructuralFidelityKnown: true}, {Category: model.CatFunctions, Kind: model.KindFuncDecl, Names: []string{"foo"}, Managed: true, StructuralFidelityKnown: true, FunctionBody: &body}, {Category: model.CatOptions, Kind: model.KindCommand, CmdName: "setopt", Names: []string{"extendedglob"}, Managed: true, StructuralFidelityKnown: true}, {Category: model.CatEnvironment, Kind: model.KindAssignment, Names: []string{"BAD"}, Value: "x", Managed: true, StructuralFidelityKnown: true, Override: model.OverrideUnmanaged}}}
 	m := Build(p)
 	if len(m.Env) != 1 || len(m.Lists) != 1 || len(m.Aliases.Added) != 1 || len(m.Functions.Added) != 1 || len(m.Options) != 1 {
 		t.Fatalf("manifest=%#v", m)
@@ -20,7 +20,7 @@ func TestBuildAdmittedAndGuards(t *testing.T) {
 	}
 }
 func TestBuildRejectsHostile(t *testing.T) {
-	for _, e := range []model.Entry{{Kind: model.KindAlias, Category: model.CatAliases, Names: []string{"gs;touch"}, Managed: true}, {Kind: model.KindFuncDecl, Category: model.CatFunctions, Names: []string{"x$(...)y"}, Managed: true}, {Kind: model.KindCommand, Category: model.CatOptions, CmdName: "setopt", Names: []string{"foo;bar"}, Managed: true}, {Kind: model.KindAssignment, Category: model.CatPath, Names: []string{"PATH"}, Value: "/x$(touch):$PATH", Managed: true}} {
+	for _, e := range []model.Entry{{Kind: model.KindAlias, Category: model.CatAliases, Names: []string{"gs;touch"}, Managed: true, StructuralFidelityKnown: true}, {Kind: model.KindFuncDecl, Category: model.CatFunctions, Names: []string{"x$(...)y"}, Managed: true, StructuralFidelityKnown: true}, {Kind: model.KindCommand, Category: model.CatOptions, CmdName: "setopt", Names: []string{"foo;bar"}, Managed: true, StructuralFidelityKnown: true}, {Kind: model.KindAssignment, Category: model.CatPath, Names: []string{"PATH"}, Value: "/x$(touch):$PATH", Managed: true, StructuralFidelityKnown: true}} {
 		m := Build(model.Profile{Entries: []model.Entry{e}})
 		if len(m.Aliases.Added) > 0 || len(m.Functions.Added) > 0 || len(m.Options) > 0 || len(m.Lists) > 0 {
 			t.Fatalf("hostile admitted: %#v", m)
@@ -32,7 +32,7 @@ func TestBuildPathShapes(t *testing.T) {
 		v  string
 		ok bool
 	}{{"$PATH:$HOME/bin", true}, {"$HOME/bin:$PATH", true}, {"$HOME/bin:$PATH:$HOME/go", false}, {"/usr/bin", false}, {"$PATH:/opt/tool*", true}, {"/opt/x;bad:$PATH", false}} {
-		m := Build(model.Profile{Entries: []model.Entry{{Kind: model.KindAssignment, Category: model.CatPath, Names: []string{"PATH"}, Value: tc.v, Managed: true}}})
+		m := Build(model.Profile{Entries: []model.Entry{{Kind: model.KindAssignment, Category: model.CatPath, Names: []string{"PATH"}, Value: tc.v, Managed: true, StructuralFidelityKnown: true}}})
 		if (len(m.Lists) > 0) != tc.ok {
 			t.Fatalf("%q got %#v", tc.v, m.Lists)
 		}
@@ -41,10 +41,10 @@ func TestBuildPathShapes(t *testing.T) {
 
 func TestBuildRequiresSemanticListOrLegacySameList(t *testing.T) {
 	legacy := func(name, value string) model.Entry {
-		return model.Entry{Kind: model.KindAssignment, Category: model.CatPath, Names: []string{name}, Value: value, Managed: true, ValueMode: model.ValueModeLegacy}
+		return model.Entry{Kind: model.KindAssignment, Category: model.CatPath, Names: []string{name}, Value: value, Managed: true, StructuralFidelityKnown: true, ValueMode: model.ValueModeLegacy}
 	}
 	parsed := func(name, value string, mode model.ValueMode) model.Entry {
-		return model.Entry{Kind: model.KindAssignment, Category: model.CatPath, Names: []string{name}, Value: value, Managed: true, ValueMode: mode}
+		return model.Entry{Kind: model.KindAssignment, Category: model.CatPath, Names: []string{name}, Value: value, Managed: true, StructuralFidelityKnown: true, ValueMode: mode}
 	}
 	cases := []struct {
 		name  string
@@ -71,9 +71,9 @@ func TestBuildRequiresSemanticListOrLegacySameList(t *testing.T) {
 func TestBuildComposesSemanticListsInSourceOrder(t *testing.T) {
 	list := func(segments ...model.ListSegment) *model.ListValue { return &model.ListValue{Segments: segments} }
 	p := model.Profile{Entries: []model.Entry{
-		{Category: model.CatPath, Kind: model.KindAssignment, Names: []string{"PATH"}, Managed: true, ListValue: list(model.ListSegment{Value: "/a"}, model.ListSegment{Self: true})},
-		{Category: model.CatPath, Kind: model.KindAssignment, Names: []string{"PATH"}, Managed: true, ListValue: list(model.ListSegment{Self: true}, model.ListSegment{Value: "/b"})},
-		{Category: model.CatPath, Kind: model.KindAssignment, Names: []string{"FPATH"}, Managed: true, ListValue: list(model.ListSegment{Dynamic: true, Source: "$EXTRA"}, model.ListSegment{Self: true})},
+		{Category: model.CatPath, Kind: model.KindAssignment, Names: []string{"PATH"}, Managed: true, StructuralFidelityKnown: true, ListValue: list(model.ListSegment{Value: "/a"}, model.ListSegment{Self: true})},
+		{Category: model.CatPath, Kind: model.KindAssignment, Names: []string{"PATH"}, Managed: true, StructuralFidelityKnown: true, ListValue: list(model.ListSegment{Self: true}, model.ListSegment{Value: "/b"})},
+		{Category: model.CatPath, Kind: model.KindAssignment, Names: []string{"FPATH"}, Managed: true, StructuralFidelityKnown: true, ListValue: list(model.ListSegment{Dynamic: true, Source: "$EXTRA"}, model.ListSegment{Self: true})},
 	}}
 	m := Build(p)
 	if len(m.Lists) != 2 {
@@ -93,7 +93,7 @@ func TestBuildComposesLegacyListsInSourceOrder(t *testing.T) {
 	legacy := func(name, value string) model.Entry {
 		return model.Entry{
 			Category: model.CatPath, Kind: model.KindAssignment, Names: []string{name},
-			Value: value, Managed: true, ValueMode: model.ValueModeLegacy,
+			Value: value, Managed: true, StructuralFidelityKnown: true, ValueMode: model.ValueModeLegacy,
 		}
 	}
 	cases := []struct {
@@ -128,10 +128,10 @@ func TestBuildComposesLegacyListsInSourceOrder(t *testing.T) {
 
 func TestBuildComposesLegacyAndSemanticListsInSourceOrder(t *testing.T) {
 	legacy := func(value string) model.Entry {
-		return model.Entry{Category: model.CatPath, Kind: model.KindAssignment, Names: []string{"PATH"}, Value: value, Managed: true, ValueMode: model.ValueModeLegacy}
+		return model.Entry{Category: model.CatPath, Kind: model.KindAssignment, Names: []string{"PATH"}, Value: value, Managed: true, StructuralFidelityKnown: true, ValueMode: model.ValueModeLegacy}
 	}
 	semantic := func(segments ...model.ListSegment) model.Entry {
-		return model.Entry{Category: model.CatPath, Kind: model.KindAssignment, Names: []string{"PATH"}, Managed: true, ListValue: &model.ListValue{Segments: segments}}
+		return model.Entry{Category: model.CatPath, Kind: model.KindAssignment, Names: []string{"PATH"}, Managed: true, StructuralFidelityKnown: true, ListValue: &model.ListValue{Segments: segments}}
 	}
 	cases := []struct {
 		name  string
@@ -165,6 +165,36 @@ func TestBuildComposesLegacyAndSemanticListsInSourceOrder(t *testing.T) {
 	}
 }
 
+func TestBuildPreservesLegacyListDynamicProvenanceAndSourceOrder(t *testing.T) {
+	legacy := func(name, value string) model.Entry {
+		return model.Entry{Category: model.CatPath, Kind: model.KindAssignment, Names: []string{name}, Value: value, Managed: true, StructuralFidelityKnown: true, ValueMode: model.ValueModeLegacy}
+	}
+	semantic := func(name string, segments ...model.ListSegment) model.Entry {
+		return model.Entry{Category: model.CatPath, Kind: model.KindAssignment, Names: []string{name}, Managed: true, StructuralFidelityKnown: true, ListValue: &model.ListValue{Segments: segments}}
+	}
+	profile := model.Profile{Entries: []model.Entry{
+		legacy("PATH", "$PATH:$HOME/bin"),
+		semantic("PATH", model.ListSegment{Self: true}, model.ListSegment{Dynamic: true, Source: "$EXTRA"}),
+		semantic("FPATH", model.ListSegment{Dynamic: true, Source: "$EXTRA"}, model.ListSegment{Self: true}),
+		legacy("FPATH", "$FPATH:$EXTRA/bin"),
+	}}
+	manifest := Build(profile)
+	if len(manifest.Lists) != 2 {
+		t.Fatalf("lists=%#v", manifest.Lists)
+	}
+	if got := manifest.Lists[0]; got.Name != "PATH" || !equalStrings(got.Additions, []string{"$HOME/bin", "$EXTRA"}) || !equalBools(got.AdditionDynamic, []bool{true, true}) || got.BaseIndex == nil || *got.BaseIndex != 0 {
+		t.Fatalf("PATH=%#v", got)
+	}
+	if got := manifest.Lists[1]; got.Name != "FPATH" || !equalStrings(got.Additions, []string{"$EXTRA", "$EXTRA/bin"}) || !equalBools(got.AdditionDynamic, []bool{true, true}) || got.BaseIndex == nil || *got.BaseIndex != 1 {
+		t.Fatalf("FPATH=%#v", got)
+	}
+	for _, unsafe := range []string{"$(id)", "`id`", "$HOME;id", "$HOME bad", "$FPATH/x", "$HOME/bin:$PATH:/tail"} {
+		if _, _, ok := composeLegacyList("PATH", "$PATH:"+unsafe, map[string][]listToken{}); ok {
+			t.Fatalf("unsafe legacy addition was admitted: %q", unsafe)
+		}
+	}
+}
+
 func TestBuildRejectsOverrideManagedDeclarations(t *testing.T) {
 	declaration := func(cmd, name string, category model.Category) model.Entry {
 		return model.Entry{
@@ -187,8 +217,8 @@ func TestBuildRejectsOverrideManagedDeclarations(t *testing.T) {
 
 func TestBuildKeepsRepresentableOverrideManagedAssignments(t *testing.T) {
 	m := Build(model.Profile{Entries: []model.Entry{
-		{Category: model.CatEnvironment, Kind: model.KindAssignment, Names: []string{"PLAIN"}, Value: "one", Override: model.OverrideManaged, ValueMode: model.ValueModeLegacy},
-		{Category: model.CatEnvironment, Kind: model.KindAssignment, CmdName: "export", Names: []string{"EXPORTED"}, Value: "two", Exported: true, Override: model.OverrideManaged, ValueMode: model.ValueModeLegacy},
+		{Category: model.CatEnvironment, Kind: model.KindAssignment, Names: []string{"PLAIN"}, Value: "one", Override: model.OverrideManaged, ValueMode: model.ValueModeLegacy, StructuralFidelityKnown: true},
+		{Category: model.CatEnvironment, Kind: model.KindAssignment, CmdName: "export", Names: []string{"EXPORTED"}, Value: "two", Exported: true, Override: model.OverrideManaged, ValueMode: model.ValueModeLegacy, StructuralFidelityKnown: true},
 	}})
 	if len(m.Env) != 2 || m.Env[0].Name != "PLAIN" || m.Env[1].Name != "EXPORTED" || m.Env[1].Exported == nil || !*m.Env[1].Exported {
 		t.Fatalf("representable forced-managed assignments were rejected: %#v", m.Env)
@@ -223,14 +253,14 @@ func TestBuildUsesExplicitRuntimeValueContract(t *testing.T) {
 	literalDollar := "$HOME"
 	empty := ""
 	p := model.Profile{Entries: []model.Entry{
-		{Category: model.CatEnvironment, Kind: model.KindAssignment, Names: []string{"LITERAL"}, Value: "'$HOME'", Managed: true, ValueMode: model.ValueModeLiteral, RuntimeValue: &literalDollar},
-		{Category: model.CatEnvironment, Kind: model.KindAssignment, Names: []string{"DYNAMIC"}, Value: "$HOME", Managed: true, Dynamic: true, ValueMode: model.ValueModeDynamic},
-		{Category: model.CatEnvironment, Kind: model.KindAssignment, Names: []string{"EMPTY"}, Value: "''", Managed: true, ValueMode: model.ValueModeLiteral, RuntimeValue: &empty},
-		{Category: model.CatAliases, Kind: model.KindAlias, Names: []string{"literal"}, Value: "'echo $HOME'", Managed: true, ValueMode: model.ValueModeLiteral, RuntimeValue: func() *string { s := "echo $HOME"; return &s }()},
-		{Category: model.CatAliases, Kind: model.KindAlias, Names: []string{"dynamic"}, Value: "echo $HOME", Managed: true, Dynamic: true, ValueMode: model.ValueModeDynamic},
-		{Category: model.CatEnvironment, Kind: model.KindAssignment, Names: []string{"UNSUPPORTED"}, Value: "${^spec}", Managed: true, ValueMode: model.ValueModeUnsupported},
-		{Category: model.CatEnvironment, Kind: model.KindAssignment, Names: []string{"BAD_LITERAL"}, Value: "'bad'", Managed: true, ValueMode: model.ValueModeLiteral},
-		{Category: model.CatAliases, Kind: model.KindAlias, Names: []string{"bad_dynamic"}, Value: "$HOME", Managed: true, ValueMode: model.ValueModeDynamic},
+		{Category: model.CatEnvironment, Kind: model.KindAssignment, Names: []string{"LITERAL"}, Value: "'$HOME'", Managed: true, StructuralFidelityKnown: true, ValueMode: model.ValueModeLiteral, RuntimeValue: &literalDollar},
+		{Category: model.CatEnvironment, Kind: model.KindAssignment, Names: []string{"DYNAMIC"}, Value: "$HOME", Managed: true, StructuralFidelityKnown: true, Dynamic: true, ValueMode: model.ValueModeDynamic},
+		{Category: model.CatEnvironment, Kind: model.KindAssignment, Names: []string{"EMPTY"}, Value: "''", Managed: true, StructuralFidelityKnown: true, ValueMode: model.ValueModeLiteral, RuntimeValue: &empty},
+		{Category: model.CatAliases, Kind: model.KindAlias, Names: []string{"literal"}, Value: "'echo $HOME'", Managed: true, StructuralFidelityKnown: true, ValueMode: model.ValueModeLiteral, RuntimeValue: func() *string { s := "echo $HOME"; return &s }()},
+		{Category: model.CatAliases, Kind: model.KindAlias, Names: []string{"dynamic"}, Value: "echo $HOME", Managed: true, StructuralFidelityKnown: true, Dynamic: true, ValueMode: model.ValueModeDynamic},
+		{Category: model.CatEnvironment, Kind: model.KindAssignment, Names: []string{"UNSUPPORTED"}, Value: "${^spec}", Managed: true, StructuralFidelityKnown: true, ValueMode: model.ValueModeUnsupported},
+		{Category: model.CatEnvironment, Kind: model.KindAssignment, Names: []string{"BAD_LITERAL"}, Value: "'bad'", Managed: true, StructuralFidelityKnown: true, ValueMode: model.ValueModeLiteral},
+		{Category: model.CatAliases, Kind: model.KindAlias, Names: []string{"bad_dynamic"}, Value: "$HOME", Managed: true, StructuralFidelityKnown: true, ValueMode: model.ValueModeDynamic},
 	}}
 
 	m := Build(p)
@@ -263,8 +293,8 @@ func TestBuildUsesExplicitRuntimeValueContract(t *testing.T) {
 
 func TestBuildLegacyValueFallback(t *testing.T) {
 	m := Build(model.Profile{Entries: []model.Entry{
-		{Category: model.CatEnvironment, Kind: model.KindAssignment, Names: []string{"LEGACY"}, Value: "$HOME", Managed: true, Dynamic: true},
-		{Category: model.CatAliases, Kind: model.KindAlias, Names: []string{"legacy"}, Value: "echo $HOME", Managed: true, Dynamic: true},
+		{Category: model.CatEnvironment, Kind: model.KindAssignment, Names: []string{"LEGACY"}, Value: "$HOME", Managed: true, StructuralFidelityKnown: true, Dynamic: true},
+		{Category: model.CatAliases, Kind: model.KindAlias, Names: []string{"legacy"}, Value: "echo $HOME", Managed: true, StructuralFidelityKnown: true, Dynamic: true},
 	}})
 	if len(m.Env) != 1 || m.Env[0].Applied != "$HOME" || m.Env[0].Dynamic == nil || !*m.Env[0].Dynamic {
 		t.Fatalf("legacy scalar fallback changed: %#v", m.Env)
@@ -278,9 +308,9 @@ func TestBuildRequiresAndPreservesFunctionBodies(t *testing.T) {
 	empty := ""
 	multiline := "print one\nprint two"
 	m := Build(model.Profile{Entries: []model.Entry{
-		{Category: model.CatFunctions, Kind: model.KindFuncDecl, Names: []string{"empty"}, Managed: true, FunctionBody: &empty},
-		{Category: model.CatFunctions, Kind: model.KindFuncDecl, Names: []string{"multiline"}, Managed: true, FunctionBody: &multiline},
-		{Category: model.CatFunctions, Kind: model.KindFuncDecl, Names: []string{"missing"}, Managed: true},
+		{Category: model.CatFunctions, Kind: model.KindFuncDecl, Names: []string{"empty"}, Managed: true, StructuralFidelityKnown: true, FunctionBody: &empty},
+		{Category: model.CatFunctions, Kind: model.KindFuncDecl, Names: []string{"multiline"}, Managed: true, StructuralFidelityKnown: true, FunctionBody: &multiline},
+		{Category: model.CatFunctions, Kind: model.KindFuncDecl, Names: []string{"missing"}, Managed: true, StructuralFidelityKnown: true},
 	}})
 	if len(m.Functions.Added) != 2 {
 		t.Fatalf("missing function body did not fail closed: %#v", m.Functions)
@@ -296,9 +326,9 @@ func TestBuildRequiresAndPreservesFunctionBodies(t *testing.T) {
 func TestBuildReducesFunctionNamesAtomically(t *testing.T) {
 	body := "print shared"
 	m := Build(model.Profile{Entries: []model.Entry{
-		{Category: model.CatFunctions, Kind: model.KindFuncDecl, Names: []string{"one", "two"}, Managed: true, FunctionBody: &body},
-		{Category: model.CatFunctions, Kind: model.KindFuncDecl, Names: []string{"good", "bad;name"}, Managed: true, FunctionBody: &body},
-		{Category: model.CatFunctions, Kind: model.KindFuncDecl, Names: []string{"missing", "also_missing"}, Managed: true},
+		{Category: model.CatFunctions, Kind: model.KindFuncDecl, Names: []string{"one", "two"}, Managed: true, StructuralFidelityKnown: true, FunctionBody: &body},
+		{Category: model.CatFunctions, Kind: model.KindFuncDecl, Names: []string{"good", "bad;name"}, Managed: true, StructuralFidelityKnown: true, FunctionBody: &body},
+		{Category: model.CatFunctions, Kind: model.KindFuncDecl, Names: []string{"missing", "also_missing"}, Managed: true, StructuralFidelityKnown: true},
 	}})
 	if len(m.Functions.Added) != 2 || m.Functions.Added[0] != "one" || m.Functions.Added[1] != "two" {
 		t.Fatalf("valid multi-name function was not fully admitted: %#v", m.Functions)
@@ -319,12 +349,12 @@ func TestBuildReducesRepeatedEffectiveIdentities(t *testing.T) {
 	firstBody := "print first"
 	lastBody := "print last"
 	p := model.Profile{Entries: []model.Entry{
-		{Category: model.CatEnvironment, Kind: model.KindAssignment, Names: []string{"EDITOR"}, Value: "one", Managed: true},
-		{Category: model.CatFunctions, Kind: model.KindFuncDecl, Names: []string{"work"}, Managed: true, FunctionBody: &firstBody},
-		{Category: model.CatOptions, Kind: model.KindCommand, CmdName: "setopt", Names: []string{"EXTENDED_GLOB"}, Managed: true},
-		{Category: model.CatEnvironment, Kind: model.KindAssignment, Names: []string{"EDITOR"}, Value: "two", Managed: true, Exported: true},
-		{Category: model.CatFunctions, Kind: model.KindFuncDecl, Names: []string{"work"}, Managed: true, FunctionBody: &lastBody},
-		{Category: model.CatOptions, Kind: model.KindCommand, CmdName: "unsetopt", Names: []string{"EXTENDED_GLOB"}, Managed: true},
+		{Category: model.CatEnvironment, Kind: model.KindAssignment, Names: []string{"EDITOR"}, Value: "one", Managed: true, StructuralFidelityKnown: true},
+		{Category: model.CatFunctions, Kind: model.KindFuncDecl, Names: []string{"work"}, Managed: true, StructuralFidelityKnown: true, FunctionBody: &firstBody},
+		{Category: model.CatOptions, Kind: model.KindCommand, CmdName: "setopt", Names: []string{"EXTENDED_GLOB"}, Managed: true, StructuralFidelityKnown: true},
+		{Category: model.CatEnvironment, Kind: model.KindAssignment, Names: []string{"EDITOR"}, Value: "two", Managed: true, StructuralFidelityKnown: true, Exported: true},
+		{Category: model.CatFunctions, Kind: model.KindFuncDecl, Names: []string{"work"}, Managed: true, StructuralFidelityKnown: true, FunctionBody: &lastBody},
+		{Category: model.CatOptions, Kind: model.KindCommand, CmdName: "unsetopt", Names: []string{"EXTENDED_GLOB"}, Managed: true, StructuralFidelityKnown: true},
 	}}
 
 	m := Build(p)
@@ -345,8 +375,8 @@ func TestBuildPreservesDistinctPunctuationIdentities(t *testing.T) {
 	for _, name := range names {
 		body := "print " + name
 		p.Entries = append(p.Entries,
-			model.Entry{Category: model.CatAliases, Kind: model.KindAlias, Names: []string{name}, Value: name, Managed: true},
-			model.Entry{Category: model.CatFunctions, Kind: model.KindFuncDecl, Names: []string{name}, Managed: true, FunctionBody: &body},
+			model.Entry{Category: model.CatAliases, Kind: model.KindAlias, Names: []string{name}, Value: name, Managed: true, StructuralFidelityKnown: true},
+			model.Entry{Category: model.CatFunctions, Kind: model.KindFuncDecl, Names: []string{name}, Managed: true, StructuralFidelityKnown: true, FunctionBody: &body},
 		)
 	}
 	m := Build(p)

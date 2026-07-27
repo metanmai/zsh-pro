@@ -481,13 +481,13 @@ func TestResidueStoreRoundTripLegacy(t *testing.T) {
 		return profile.Entries[0]
 	}
 	legacy := func(name, value string) model.Entry {
-		return model.Entry{Text: name + "=" + value, Category: model.CatPath, Kind: model.KindAssignment, Names: []string{name}, Value: value, Managed: true, ValueMode: model.ValueModeLegacy}
+		return model.Entry{Text: name + "=" + value, Category: model.CatPath, Kind: model.KindAssignment, Names: []string{name}, Value: value, Managed: true, ValueMode: model.ValueModeLegacy, StructuralFidelityKnown: true}
 	}
 	persisted := roundTripPipelineProfile(t, model.Profile{Entries: []model.Entry{
-		legacy("PATH", "$PATH:/legacy-path"),
+		legacy("PATH", "$PATH:$HOME/bin"),
 		semantic(t, "PATH=$PATH:$EXTRA\n"),
 		semantic(t, "FPATH=$FPATH:$EXTRA\n"),
-		legacy("FPATH", "$FPATH:/legacy-fpath"),
+		legacy("FPATH", "$FPATH:$EXTRA/bin"),
 	}})
 	manifest := activate.Build(persisted)
 	if len(manifest.Lists) != 2 {
@@ -495,7 +495,7 @@ func TestResidueStoreRoundTripLegacy(t *testing.T) {
 	}
 	apply, deactivate := emitPipelineListPlan(t, provider, manifest)
 	run := runSnapshotMutation(t,
-		"PATH=/base\nFPATH=/fbase\nEXTRA=/one:/two\n",
+		"HOME=/runtime-home\nPATH=/base\nFPATH=/fbase\nEXTRA=/runtime-extra\n",
 		apply+"\nzp_apply\n"+deactivate+"\nzp_deactivate\nunset -f zp_apply zp_deactivate zp_capture_scalar zp_restore_scalar\n",
 	)
 	if diff := snapshotDifference(run.before, run.after); diff != "" {
