@@ -28,3 +28,34 @@ func TestEffectiveManaged(t *testing.T) {
 		})
 	}
 }
+
+func TestEntryDeclarationRepresentability(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cmd  string
+	}{
+		{name: "integer", cmd: "typeset"},
+		{name: "readonly", cmd: "readonly"},
+		{name: "tied list", cmd: "typeset"},
+		{name: "local", cmd: "local"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := Entry{Kind: KindAssignment, CmdName: tc.cmd, Override: OverrideManaged}
+			if !e.EffectiveManaged() {
+				t.Fatal("forced-managed declaration lost persisted override semantics")
+			}
+			if e.DeclarationRepresentable() {
+				t.Fatalf("%s declaration was treated as representable", tc.cmd)
+			}
+		})
+	}
+
+	for _, e := range []Entry{
+		{Kind: KindAssignment, Names: []string{"EDITOR"}, Override: OverrideManaged},
+		{Kind: KindAssignment, CmdName: "export", Names: []string{"EDITOR"}, Override: OverrideManaged, Exported: true},
+	} {
+		if !e.DeclarationRepresentable() {
+			t.Fatalf("ordinary assignment became unrepresentable: %#v", e)
+		}
+	}
+}

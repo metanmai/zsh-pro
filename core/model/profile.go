@@ -121,6 +121,23 @@ func (e Entry) EffectiveManaged() bool {
 	}
 }
 
+// DeclarationRepresentable reports whether Entry contains enough declaration
+// semantics to recreate its source without weakening shell attributes or
+// scope. The IR intentionally records declaration command markers, but not
+// integer, readonly, tied-list, or local-scope attributes, so those forms must
+// remain verbatim even when a persisted override forces them managed.
+func (e Entry) DeclarationRepresentable() bool {
+	if e.Kind != KindAssignment {
+		return true
+	}
+	switch e.CmdName {
+	case "typeset", "declare", "local", "readonly":
+		return false
+	default:
+		return true
+	}
+}
+
 // Profile is the ordered intermediate representation of a parsed config: a single
 // source-ordered list of Entry (D-02). It is the spine the v2.0 store and manifest
 // builders serialize. Per-category views are deliberately NOT stored here;

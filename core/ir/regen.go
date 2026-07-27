@@ -14,7 +14,8 @@ import (
 // This file generates NO zsh syntax itself — all forward codegen is delegated
 // to r (the milestone invariant pins zsh syntax to core/shell/zsh; Pitfall 5).
 // The Regenerator is total (its default case returns verbatim Text), so the
-// gate here is purely EffectiveManaged() with no per-Kind qualifier (#3).
+// gate here also rejects declaration forms whose shell attributes or scope are
+// not represented by Entry, preserving their original source verbatim.
 //
 // Dynamic declarative values survive verbatim because the Regenerator emits
 // the captured Value unchanged (D-05) — no resolution happens anywhere here.
@@ -23,7 +24,7 @@ func Regenerate(p model.Profile, r shell.Regenerator) []byte {
 	for i := range p.Entries {
 		e := p.Entries[i]
 		var line string
-		if e.EffectiveManaged() {
+		if e.EffectiveManaged() && e.DeclarationRepresentable() {
 			line = r.Regenerate(e)
 		} else {
 			line = e.Text
