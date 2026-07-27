@@ -503,6 +503,84 @@ func TestResidueStoreRoundTripLegacy(t *testing.T) {
 	}
 }
 
+func TestResiduePersistedRejectedStructuralNoop(t *testing.T) {
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("zsh not installed")
+	}
+
+	provider := Provider{}
+	sources := []string{
+		"FOO[2]=bar",
+		"typeset -A MAP",
+		"MAP[key]=bar",
+		"export -i INTEGER=1",
+	}
+	blocks, err := provider.Parse([]byte(strings.Join(sources, "\n") + "\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := ir.Build(blocks, provider)
+	for i := range profile.Entries {
+		profile.Entries[i].Override = model.OverrideManaged
+	}
+	persisted := roundTripPipelineProfile(t, profile)
+	if got := string(ir.Regenerate(persisted, provider)); got != strings.Join(sources, "\n")+"\n" {
+		t.Fatalf("regenerated=%q, want verbatim source", got)
+	}
+	manifest := activate.Build(persisted)
+	if !pipelineManifestEmpty(manifest) {
+		t.Fatalf("persisted rejected source created activation intent: %#v", manifest)
+	}
+	applyPlan, err := activate.Diff(nil, &manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deactivatePlan, err := activate.Diff(&manifest, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	apply, deactivate, err := provider.Emit(activate.Plan{Activate: applyPlan.Activate, Deactivate: deactivatePlan.Deactivate})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	setup := strings.Join([]string{
+		"PATH=/rejected/one:/rejected/two",
+		"FPATH=/rejected/f-one:/rejected/f-two",
+		"ZP_BASE_PATH=$PATH",
+		"typeset ZP_REJECTED_SCALAR=scalar-before",
+		"typeset -a FOO=(zero indexed-before tail)",
+		"typeset -A MAP=(key assoc-before other stable)",
+		"typeset -ix INTEGER=7",
+	}, "\n") + "\n"
+	mutation := strings.Join([]string{
+		apply,
+		"zp_apply",
+		"[[ $ZP_REJECTED_SCALAR == scalar-before && ${(t)FOO} == array && $FOO[2] == indexed-before ]] || exit 171",
+		"[[ ${(t)MAP} == association && ${MAP[key]} == assoc-before ]] || exit 172",
+		"ZP__integer_before=$INTEGER",
+		"INTEGER+=2",
+		"[[ ${parameters[INTEGER]} == integer-export && $INTEGER == 9 ]] || exit 173",
+		"INTEGER=$ZP__integer_before",
+		"unset ZP__integer_before",
+		deactivate,
+		"zp_deactivate",
+		"unset -f zp_apply zp_deactivate zp_capture_scalar zp_restore_scalar",
+	}, "\n")
+	run := runSnapshotMutation(t, setup, mutation)
+	if diff := snapshotDifference(run.before, run.noop); diff != "" {
+		t.Fatalf("persisted rejected profile was not self-stable: %s", diff)
+	}
+	if diff := snapshotDifference(run.before, run.after); diff != "" {
+		t.Fatalf("persisted rejected profile left residue: %s", diff)
+	}
+	for _, want := range [][]byte{[]byte("$'indexed-before'"), []byte("$'assoc-before'"), []byte("$'integer-export'")} {
+		if !bytes.Contains(run.before, want) {
+			t.Fatalf("snapshot lacks rejected-source evidence %q", want)
+		}
+	}
+}
+
 func TestEffectiveIdentitySourcePipeline(t *testing.T) {
 	if _, err := exec.LookPath("zsh"); err != nil {
 		t.Skip("zsh not installed")
