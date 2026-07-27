@@ -63,7 +63,11 @@ func Build(p model.Profile) model.Manifest {
 				continue
 			}
 			if e.Category == model.CatPath {
-				if name, next, ok := composeList(e.Names[0], e.ListValue, lists); ok {
+				name, next, ok := composeList(e.Names[0], e.ListValue, lists)
+				if !ok && e.ListValue == nil && e.ValueMode == model.ValueModeLegacy {
+					name, next, ok = composeLegacyList(e.Names[0], e.Value, lists)
+				}
+				if ok {
 					if _, seen := lists[name]; seen {
 						for i, candidate := range listOrder {
 							if candidate == name {
@@ -74,10 +78,6 @@ func Build(p model.Profile) model.Manifest {
 					}
 					lists[name] = next
 					listOrder = append(listOrder, name)
-				} else if e.ListValue == nil && e.ValueMode == model.ValueModeLegacy {
-					if d, ok := pathDelta(e.Names[0], e.Value); ok {
-						m.Lists = append(m.Lists, d)
-					}
 				}
 			}
 		case model.KindAlias:
@@ -183,6 +183,31 @@ func composeList(raw string, value *model.ListValue, prior map[string][]listToke
 	return name, next, true
 }
 
+// composeLegacyList accepts only the historical same-list representation, then
+// translates its additions and base placement into the same token stream used
+// by parser-proven semantic list values. Keeping this compatibility boundary
+// here prevents stored legacy entries from bypassing source-order reduction.
+func composeLegacyList(raw, value string, prior map[string][]listToken) (string, []listToken, bool) {
+	delta, ok := pathDelta(raw, value)
+	if !ok || delta.BaseIndex == nil {
+		return "", nil, false
+	}
+	current := prior[delta.Name]
+	if current == nil {
+		current = []listToken{{base: true}}
+	}
+	next := make([]listToken, 0, len(current)+len(delta.Additions))
+	for i := 0; i <= len(delta.Additions); i++ {
+		if i == *delta.BaseIndex {
+			next = append(next, current...)
+		}
+		if i < len(delta.Additions) {
+			next = append(next, listToken{value: delta.Additions[i]})
+		}
+	}
+	return delta.Name, next, true
+}
+
 func canonicalList(name string) string {
 	if name == "PATH" || name == "path" {
 		return "PATH"
@@ -259,7 +284,17 @@ func pathDelta(name, value string) (model.ListDelta, bool) {
 			return model.ListDelta{}, false
 		}
 	}
-	return model.ListDelta{Name: canonical, Additions: adds, Deletions: []string{}}, true
+	baseIndex := idx
+	if idx == len(parts)-1 {
+		baseIndex = len(adds)
+	}
+	return model.ListDelta{
+		Name:            canonical,
+		Additions:       adds,
+		Deletions:       []string{},
+		BaseIndex:       &baseIndex,
+		AdditionDynamic: make([]bool, len(adds)),
+	}, true
 }
 
 func unsafeStatic(s string) bool {
