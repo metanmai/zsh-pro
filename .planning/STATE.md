@@ -5,16 +5,16 @@ milestone_name: Branchable Shell Environments
 current_phase: 04
 current_phase_name: manifest-builder-emit
 status: executing
-stopped_at: Validated 04-18/04-19 plans; executing remaining source-fidelity closure
-last_updated: "2026-07-27T12:44:16.296Z"
+stopped_at: Completed 04-18-PLAN.md
+last_updated: "2026-07-27T13:20:54.512Z"
 last_activity: 2026-07-27
-last_activity_desc: Validated 04-18/04-19 multi-assignment, alias, option, and delimiter export fidelity closure plans
+last_activity_desc: Validated 04-18/04-19 remaining source-fidelity closure plans
 progress:
   total_phases: 6
   completed_phases: 3
-  total_plans: 27
-  completed_plans: 25
-  percent: 67
+  total_plans: 29
+  completed_plans: 26
+  percent: 50
 ---
 
 # Project State
@@ -29,11 +29,11 @@ See: .planning/PROJECT.md (updated 2026-06-25)
 ## Current Position
 
 Phase: 04 (manifest-builder-emit) — EXECUTING
-Plan: 17 of 19 numeric plans complete (04-18 next)
+Plan: 18 of 19 numeric plans complete (04-18 next)
 Status: Two validated gap-closure plans ready to execute
 Last activity: 2026-07-27 — Validated 04-18/04-19 remaining source-fidelity closure plans
 
-Progress: [█████████░] 89%
+Progress: [█████████░] 90%
 
 ## Performance Metrics
 
@@ -82,6 +82,7 @@ Progress: [█████████░] 89%
 | Phase 04 P15 | 29 | 3 tasks | 12 files |
 | Phase 04-manifest-builder-emit P16 | 6 | 2 tasks | 12 files |
 | Phase 04 P17 | 8 | 2 tasks | 3 files |
+| Phase 04-manifest-builder-emit P18 | 7 | 2 tasks | 11 files |
 
 ## Accumulated Context
 
@@ -134,6 +135,8 @@ Recent decisions affecting current work:
 - [Phase ?]: OverrideManaged cannot erase indexed or declaration-attribute semantics; rejected entries remain verbatim and create no manifest intent.
 - [Phase ?]: 04-17: export -- is a non-semantic delimiter but its following assignment remains a supported exported scalar.
 - [Phase ?]: 04-17: persisted rejected indexed and flagged declarations are proven by type-aware live-zsh and full-state residue tests.
+- [Phase ?]: V3 structural fidelity preserves alias and option source shape; v1/v2 and partial records fail closed.
+- [Phase ?]: Forced management requires exact assignment, assigned alias, and modeled option syntax before lowering.
 
 ### Pending Todos
 
@@ -162,6 +165,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-27T12:44:16.289Z
-Stopped at: Completed 04-17-PLAN.md; phase-level verification pending
-Resume file: None
+Last session: 2026-07-27T13:20:54.505Z
+Stopped at: Completed 04-18-PLAN.md
+Resume file: 04-19-PLAN.md
