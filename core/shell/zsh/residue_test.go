@@ -581,6 +581,57 @@ func TestResiduePersistedRejectedStructuralNoop(t *testing.T) {
 	}
 }
 
+// TestResiduePersistedSourceShapeNoop binds the complete rejected source-shape
+// matrix to the durable byte-for-byte full-state oracle. It is intentionally a
+// persisted OverrideManaged profile, not a hand-written empty manifest.
+func TestResiduePersistedSourceShapeNoop(t *testing.T) {
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("zsh not installed")
+	}
+
+	manifest := buildPersistedRejectedSourceShapeManifest(t)
+	if !pipelineManifestEmpty(manifest) {
+		t.Fatalf("persisted mixed rejected profile created activation intent: %#v", manifest)
+	}
+	provider := Provider{}
+	applyPlan, err := activate.Diff(nil, &manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deactivatePlan, err := activate.Diff(&manifest, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	apply, deactivate, err := provider.Emit(activate.Plan{Activate: applyPlan.Activate, Deactivate: deactivatePlan.Deactivate})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	setup := strings.Join([]string{
+		"PATH=/rejected/one:/rejected/two", "FPATH=/rejected/f-one:/rejected/f-two", "ZP_BASE_PATH=$PATH",
+		"typeset A=before-a B=before-b C=before-c D=before-d E=before-e F=before-f",
+		"alias ll='query-before'", "alias one='one-before'", "alias two='two-before'", "setopt extendedglob",
+	}, "\n") + "\n"
+	mutation := strings.Join([]string{
+		apply, "zp_apply", deactivate, "zp_deactivate",
+		"unset -f zp_apply zp_deactivate zp_capture_scalar zp_restore_scalar",
+	}, "\n")
+	run := runSnapshotMutation(t, setup, mutation)
+	if diff := snapshotDifference(run.before, run.noop); diff != "" {
+		t.Fatalf("persisted mixed rejected profile was not self-stable: %s", diff)
+	}
+	if diff := snapshotDifference(run.before, run.after); diff != "" {
+		t.Fatalf("persisted mixed rejected profile left residue: %s", diff)
+	}
+
+	for _, mutation := range []string{"alias one='alias-only-mutation'", "unsetopt extendedglob"} {
+		mutated := runSnapshotMutation(t, setup, mutation)
+		if snapshotDifference(mutated.before, mutated.after) == "" {
+			t.Fatalf("snapshot oracle missed deliberate mutation %q", mutation)
+		}
+	}
+}
+
 func TestEffectiveIdentitySourcePipeline(t *testing.T) {
 	if _, err := exec.LookPath("zsh"); err != nil {
 		t.Skip("zsh not installed")
