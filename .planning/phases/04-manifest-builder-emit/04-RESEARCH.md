@@ -478,15 +478,14 @@ No external library or version is in play — the phase is stdlib + existing `mv
 
 ---
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-The four medium/low-confidence DECISIONS surfaced by this research are appended to
-`04-OPEN-QUESTIONS.md` as **OQ-8, OQ-9, OQ-10, OQ-11** (OQ-1..OQ-7 untouched). Summary:
+The following OQ-8 through OQ-11 decisions are resolved from the implemented Phase 4 architecture and its current verification evidence. `04-OPEN-QUESTIONS.md` remains the historical decision log; this section records the adopted, final-Phase-4 outcome.
 
-1. **OQ-8 (HIGH confidence in the fix):** the Phase 1 Loader Reference Snippet's shadow-restore guards (`-n` test; `${(P)+literalName}`) are BOTH wrong; `emit.go` and the harness must use `${+name}` set-tests. Evidence: POC-Z8b/8c/8e. *This is a correction to a carry-forward artifact, logged (not silently overridden) per the autonomy contract.*
-2. **OQ-9 (MEDIUM):** should `emit.go` emit a self-contained helper block (Hybrid, §4) so emitted code is testable/usable without the Phase 5 loader, or emit bare `zp_*` calls?
-3. **OQ-10 (MEDIUM):** how are runtime undo-slot names derived from `profile`+`name` so they are always valid zsh identifiers (sanitize vs hash)?
-4. **OQ-11 (MEDIUM):** OQ-4 resolution — two distinct types (Fork A, matches fixture) vs uniform map (Fork B, needs fixture edit). Research recommends Fork A.
+1. **OQ-8 — adopted direct set-tests for shadow-restore slots.** `core/shell/zsh/emit.go` emits literal-slot `${+slot}` guards for alias and function presence/restore, rather than `-n` or `${(P)+literalName}`. The implementation therefore preserves set-versus-empty state and does not indirect through a slot value. This matches the research POC-Z8b/Z8c/Z8e correction and the default zero-residue coverage reported in `04-VERIFICATION.md`.
+2. **OQ-9 — adopted self-contained runtime helpers in each emitted block.** `Provider.Emit` writes `runtimeHelpers` before both `zp_apply` and `zp_deactivate`; emitted apply/deactivate code is runnable under the Phase 4 `zsh -f` harness without a Phase 5 helper-definition dependency. Phase 5 owns sourcing/loader integration only. The verification report records default-suite emitter and live-zsh residue coverage, so no unresolved helper-ownership choice remains in Phase 4.
+3. **OQ-10 — adopted identifier-safe hex-encoded undo-slot names.** `core/shell/zsh/emit.go` derives slots through `encodeSlot`, which hex-encodes user-derived profile/symbol data under a fixed `ZP_<class>_` prefix before `typeset -g` or parameter tests are emitted. This injective encoding resolves the former sanitize-versus-hash choice; invalid emitted alias/function/option names continue to be rejected by their existing grammar guards.
+4. **OQ-11 — adopted distinct manifest wire types.** `core/model.Manifest` uses `AliasSet` with `aliases.added` as a body map and `FuncSet` with `functions.added` as a name array, matching the validated fixture. `core/model/manifest_test.go` verifies that fixture decodes, and `04-VERIFICATION.md` lists the manifest schema as verified. The uniform-map alternative is not used because it cannot decode the validated function-array wire shape.
 
 ---
 
