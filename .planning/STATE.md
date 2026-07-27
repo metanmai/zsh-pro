@@ -5,16 +5,16 @@ milestone_name: Branchable Shell Environments
 current_phase: 04
 current_phase_name: manifest-builder-emit
 status: executing
-stopped_at: Completed 04-16-PLAN.md; Plan 17 remains pending
-last_updated: "2026-07-27T12:33:12.843Z"
+stopped_at: Completed 04-17-PLAN.md; phase-level verification pending
+last_updated: "2026-07-27T12:44:16.296Z"
 last_activity: 2026-07-27
-last_activity_desc: Validated 04-16/04-17 indexed-assignment and semantic export-flag closure plans
+last_activity_desc: Completed Plan 17 persisted source-fidelity and full-state residue proof; phase verification pending
 progress:
   total_phases: 6
   completed_phases: 3
   total_plans: 27
-  completed_plans: 24
-  percent: 50
+  completed_plans: 25
+  percent: 67
 ---
 
 # Project State
@@ -29,9 +29,9 @@ See: .planning/PROJECT.md (updated 2026-06-25)
 ## Current Position
 
 Phase: 04 (manifest-builder-emit) — EXECUTING
-Plan: 16 of 17 numeric plans complete (04-17 next)
-Status: Plan 16 complete; Plan 17 remains pending live-zsh and residue proof
-Last activity: 2026-07-27 — Completed Plan 16 indexed-assignment and semantic export-flag source-fidelity closure
+Plan: 17 of 17 numeric plans complete
+Status: Plan 17 complete; phase-level verification remains pending
+Last activity: 2026-07-27 — Completed Plan 17 persisted source-fidelity and full-state residue proof
 
 Progress: [█████████░] 89%
 
@@ -81,6 +81,7 @@ Progress: [█████████░] 89%
 | Phase 04 P14 | 8 min | 3 tasks | 9 files |
 | Phase 04 P15 | 29 | 3 tasks | 12 files |
 | Phase 04-manifest-builder-emit P16 | 6 | 2 tasks | 12 files |
+| Phase 04 P17 | 8 | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -131,6 +132,8 @@ Recent decisions affecting current work:
 - [Phase ?]: 04-15: Legacy PATH/FPATH additions retain late binding only for strict simple parameter plus path-safe suffix source.
 - [Phase ?]: Structural fidelity is known only for complete v2 records; absent, v1, partial, and unsupported DTO data re-saves unknown.
 - [Phase ?]: OverrideManaged cannot erase indexed or declaration-attribute semantics; rejected entries remain verbatim and create no manifest intent.
+- [Phase ?]: 04-17: export -- is a non-semantic delimiter but its following assignment remains a supported exported scalar.
+- [Phase ?]: 04-17: persisted rejected indexed and flagged declarations are proven by type-aware live-zsh and full-state residue tests.
 
 ### Pending Todos
 
@@ -159,6 +162,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-27T12:33:12.836Z
-Stopped at: Completed 04-16-PLAN.md; Plan 17 remains pending
+Last session: 2026-07-27T12:44:16.289Z
+Stopped at: Completed 04-17-PLAN.md; phase-level verification pending
 Resume file: None
