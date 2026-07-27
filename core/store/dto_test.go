@@ -123,18 +123,27 @@ func TestRoundTripStructuralFidelity(t *testing.T) {
 			t.Fatalf("entry %d lost known structural fidelity: %#v", i, entry)
 		}
 	}
+	if !got.Entries[4].Indexed || !reflect.DeepEqual(got.Entries[5].DeclarationFlags, []string{"-i"}) || !reflect.DeepEqual(got.Entries[6].DeclarationFlags, []string{}) {
+		t.Fatalf("new structural metadata did not round-trip: %#v", got.Entries[4:])
+	}
 }
 
 func TestStructuralFidelityDTOCompatibilityMatrix(t *testing.T) {
+	entry := func(fidelity string) string {
+		return `{"entries":[{"text":"export FOO=bar","startLine":1,"category":"environment","kind":"assignment","cmdName":"export","names":["FOO"],"value":"bar","exported":true,"managed":false,"override":"forced-managed","dynamic":false` + fidelity + `}]}`
+	}
 	rows := []struct {
 		name string
 		raw  string
 	}{
-		{name: "absent", raw: `{"entries":[{"text":"FOO+=bar","startLine":1,"category":"environment","kind":"assignment","cmdName":"","names":["FOO"],"value":"bar","exported":false,"managed":false,"override":"forced-managed","dynamic":false}]}`},
-		{name: "append omitted", raw: `{"entries":[{"text":"plugins=(git zsh-autosuggestions)","startLine":1,"category":"environment","kind":"assignment","cmdName":"","names":["plugins"],"value":"","exported":false,"managed":false,"override":"forced-managed","dynamic":false,"structuralFidelity":{"version":1,"array":true,"flagged":false}}]}`},
-		{name: "array omitted", raw: `{"entries":[{"text":"alias -g G='| grep'","startLine":1,"category":"aliases","kind":"alias","cmdName":"alias","names":["G"],"value":"| grep","exported":false,"managed":false,"override":"forced-managed","dynamic":false,"structuralFidelity":{"version":1,"append":false,"flagged":true}}]}`},
-		{name: "flagged omitted", raw: `{"entries":[{"text":"FOO+=bar","startLine":1,"category":"environment","kind":"assignment","cmdName":"","names":["FOO"],"value":"bar","exported":false,"managed":false,"override":"forced-managed","dynamic":false,"structuralFidelity":{"version":1,"append":true,"array":false}}]}`},
-		{name: "unsupported version", raw: `{"entries":[{"text":"alias -g G='| grep'","startLine":1,"category":"aliases","kind":"alias","cmdName":"alias","names":["G"],"value":"| grep","exported":false,"managed":false,"override":"forced-managed","dynamic":false,"structuralFidelity":{"version":99,"append":false,"array":false,"flagged":true}}]}`},
+		{name: "absent", raw: entry("")},
+		{name: "complete v1", raw: entry(`,"structuralFidelity":{"version":1,"append":false,"array":false,"flagged":false}`)},
+		{name: "v2 append omitted", raw: entry(`,"structuralFidelity":{"version":2,"array":false,"flagged":false,"indexed":false,"declarationFlags":[]}`)},
+		{name: "v2 array omitted", raw: entry(`,"structuralFidelity":{"version":2,"append":false,"flagged":false,"indexed":false,"declarationFlags":[]}`)},
+		{name: "v2 flagged omitted", raw: entry(`,"structuralFidelity":{"version":2,"append":false,"array":false,"indexed":false,"declarationFlags":[]}`)},
+		{name: "v2 indexed omitted", raw: entry(`,"structuralFidelity":{"version":2,"append":false,"array":false,"flagged":false,"declarationFlags":[]}`)},
+		{name: "v2 declaration flags omitted", raw: entry(`,"structuralFidelity":{"version":2,"append":false,"array":false,"flagged":false,"indexed":false}`)},
+		{name: "unsupported version", raw: entry(`,"structuralFidelity":{"version":99,"append":false,"array":false,"flagged":false,"indexed":false,"declarationFlags":[]}`)},
 	}
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {

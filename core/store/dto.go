@@ -44,15 +44,17 @@ type entryDTO struct {
 	ListValue    *listValueDTO `json:"listValue,omitempty"`
 }
 
-const structuralFidelityVersion = 1
+const structuralFidelityVersion = 2
 
 // structuralFidelityDTO is presence-aware on purpose: absent bool fields are
 // historical unknowns, never inferred as false.
 type structuralFidelityDTO struct {
-	Version int   `json:"version"`
-	Append  *bool `json:"append"`
-	Array   *bool `json:"array"`
-	Flagged *bool `json:"flagged"`
+	Version          int       `json:"version"`
+	Append           *bool     `json:"append"`
+	Array            *bool     `json:"array"`
+	Flagged          *bool     `json:"flagged"`
+	Indexed          *bool     `json:"indexed"`
+	DeclarationFlags *[]string `json:"declarationFlags"`
 }
 
 // listValueDTO is the optional persistence form of parser-verified PATH/FPATH
@@ -160,6 +162,8 @@ func fromEntryDTO(d entryDTO) model.Entry {
 		Append:                  structuralFidelityMarker(d.StructuralFidelity, func(f *structuralFidelityDTO) *bool { return f.Append }),
 		Array:                   structuralFidelityMarker(d.StructuralFidelity, func(f *structuralFidelityDTO) *bool { return f.Array }),
 		Flagged:                 structuralFidelityMarker(d.StructuralFidelity, func(f *structuralFidelityDTO) *bool { return f.Flagged }),
+		Indexed:                 structuralFidelityMarker(d.StructuralFidelity, func(f *structuralFidelityDTO) *bool { return f.Indexed }),
+		DeclarationFlags:        structuralFidelityFlags(d.StructuralFidelity),
 	}
 }
 
@@ -167,16 +171,22 @@ func toStructuralFidelityDTO(e model.Entry) *structuralFidelityDTO {
 	if !e.StructuralFidelityKnown {
 		return nil
 	}
+	flags := cloneStrings(e.DeclarationFlags)
+	if flags == nil {
+		flags = []string{}
+	}
 	return &structuralFidelityDTO{
-		Version: structuralFidelityVersion,
-		Append:  boolPointer(e.Append),
-		Array:   boolPointer(e.Array),
-		Flagged: boolPointer(e.Flagged),
+		Version:          structuralFidelityVersion,
+		Append:           boolPointer(e.Append),
+		Array:            boolPointer(e.Array),
+		Flagged:          boolPointer(e.Flagged),
+		Indexed:          boolPointer(e.Indexed),
+		DeclarationFlags: &flags,
 	}
 }
 
 func structuralFidelityKnown(in *structuralFidelityDTO) bool {
-	return in != nil && in.Version == structuralFidelityVersion && in.Append != nil && in.Array != nil && in.Flagged != nil
+	return in != nil && in.Version == structuralFidelityVersion && in.Append != nil && in.Array != nil && in.Flagged != nil && in.Indexed != nil && in.DeclarationFlags != nil
 }
 
 func structuralFidelityMarker(in *structuralFidelityDTO, marker func(*structuralFidelityDTO) *bool) bool {
@@ -186,11 +196,27 @@ func structuralFidelityMarker(in *structuralFidelityDTO, marker func(*structural
 	return *marker(in)
 }
 
+func structuralFidelityFlags(in *structuralFidelityDTO) []string {
+	if !structuralFidelityKnown(in) {
+		return nil
+	}
+	return cloneStrings(*in.DeclarationFlags)
+}
+
 func boolPointer(value bool) *bool { return &value }
 
 // cloneNames returns a fresh copy of the slice (nil stays nil so a no-names entry
 // round-trips as nil, not []string{}, preserving reflect.DeepEqual equality).
 func cloneNames(in []string) []string {
+	if in == nil {
+		return nil
+	}
+	out := make([]string, len(in))
+	copy(out, in)
+	return out
+}
+
+func cloneStrings(in []string) []string {
 	if in == nil {
 		return nil
 	}

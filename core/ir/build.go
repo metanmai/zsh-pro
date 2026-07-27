@@ -39,13 +39,15 @@ func Build(blocks []model.Block, c shell.Classifier) model.Profile {
 			Managed:  routeManaged(b, cat),
 			Override: model.OverrideAuto,
 			Dynamic:  b.Dynamic,
-			// Parser Blocks always carry all source-shape markers, including false
-			// values. Persist that complete contract so a later override cannot
-			// mistake append, array, or flagged-alias syntax for a scalar form.
-			StructuralFidelityKnown: true,
+			// Parser Blocks carry every source-shape marker unless an unavailable
+			// declaration shape made the statement opaque. Keep that state unknown
+			// so a later override cannot promote it into scalar lowering.
+			StructuralFidelityKnown: !b.Opaque,
 			Append:                  b.Append,
 			Array:                   b.Array,
 			Flagged:                 b.Flagged,
+			Indexed:                 b.Indexed,
+			DeclarationFlags:        completeStringSlice(b.DeclarationFlags),
 			ValueMode:               b.ValueMode,
 			// The Block remains independently reusable after Build. Copy pointed-to
 			// values instead of sharing mutable storage across the IR boundary.
@@ -63,6 +65,22 @@ func cloneString(s *string) *string {
 	}
 	v := *s
 	return &v
+}
+
+func cloneStrings(values []string) []string {
+	if values == nil {
+		return nil
+	}
+	cloned := make([]string, len(values))
+	copy(cloned, values)
+	return cloned
+}
+
+func completeStringSlice(values []string) []string {
+	if values == nil {
+		return []string{}
+	}
+	return cloneStrings(values)
 }
 
 func cloneListValue(v *model.ListValue) *model.ListValue {

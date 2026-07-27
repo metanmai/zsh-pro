@@ -100,6 +100,8 @@ type Entry struct {
 	Append                  bool       // assignment used +=; never lower it to =
 	Array                   bool       // assignment used (...); never lower it to a scalar
 	Flagged                 bool       // alias used a flag; never drop its attributes
+	Indexed                 bool       // assignment used a subscript; never erase its index semantics
+	DeclarationFlags        []string   // semantic declaration attributes in source order; never erase them
 	Secret                  *SecretRef // non-nil iff this entry is a secret-replaced literal (D-07); the literal Value is cleared when set so the secret never round-trips
 	ValueMode               ValueMode  // parser-owned semantic mode; zero remains backward-compatible legacy
 	// RuntimeValue is the AST-decoded scalar or alias value for literal mode.
@@ -154,6 +156,9 @@ func (e Entry) Representable() bool {
 		return false
 	}
 	if !e.DeclarationRepresentable() {
+		return false
+	}
+	if e.Indexed || len(e.DeclarationFlags) > 0 {
 		return false
 	}
 	switch e.Kind {

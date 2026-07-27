@@ -106,10 +106,10 @@ func TestBuildPreservesSourceOrderAndFields(t *testing.T) {
 
 func TestBuildCopiesStructuralFidelity(t *testing.T) {
 	blocks := []model.Block{
-		{Kind: model.KindAssignment, Names: []string{"FOO"}, Append: true},
-		{Kind: model.KindAssignment, Names: []string{"plugins"}, Array: true},
-		{Kind: model.KindAlias, Names: []string{"G"}, Flagged: true},
-		{Kind: model.KindAssignment, Names: []string{"FOO"}, Indexed: true},
+		{Kind: model.KindAssignment, Names: []string{"FOO"}, Append: true, DeclarationFlags: []string{}},
+		{Kind: model.KindAssignment, Names: []string{"plugins"}, Array: true, DeclarationFlags: []string{}},
+		{Kind: model.KindAlias, Names: []string{"G"}, Flagged: true, DeclarationFlags: []string{}},
+		{Kind: model.KindAssignment, Names: []string{"FOO"}, Indexed: true, DeclarationFlags: []string{}},
 		{Kind: model.KindAssignment, CmdName: "export", Names: []string{"COUNT"}, DeclarationFlags: []string{"-i"}},
 	}
 	profile := Build(blocks, stubClassifier{cat: model.CatEnvironment})
