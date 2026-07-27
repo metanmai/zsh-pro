@@ -74,7 +74,7 @@ func Build(p model.Profile) model.Manifest {
 					}
 					lists[name] = next
 					listOrder = append(listOrder, name)
-				} else if e.ListValue == nil {
+				} else if e.ListValue == nil && e.ValueMode == model.ValueModeLegacy {
 					if d, ok := pathDelta(e.Names[0], e.Value); ok {
 						m.Lists = append(m.Lists, d)
 					}
@@ -90,8 +90,20 @@ func Build(p model.Profile) model.Manifest {
 				m.Aliases.Dynamic[e.Names[0]] = dynamic
 			}
 		case model.KindFuncDecl:
-			if len(e.Names) == 1 && symbolNameRE.MatchString(e.Names[0]) && e.FunctionBody != nil {
-				name := e.Names[0]
+			if e.FunctionBody == nil || len(e.Names) == 0 {
+				continue
+			}
+			valid := true
+			for _, name := range e.Names {
+				if !symbolNameRE.MatchString(name) {
+					valid = false
+					break
+				}
+			}
+			if !valid {
+				continue
+			}
+			for _, name := range e.Names {
 				if previous, ok := functionIndexes[name]; ok {
 					m.Functions.Added = append(m.Functions.Added[:previous], m.Functions.Added[previous+1:]...)
 					for function, index := range functionIndexes {
@@ -210,7 +222,16 @@ func pathDelta(name, value string) (model.ListDelta, bool) {
 	if name != "PATH" && name != "path" && name != "FPATH" && name != "fpath" {
 		return model.ListDelta{}, false
 	}
-	base := map[string]bool{"$PATH": true, "$path": true, "${PATH}": true, "$FPATH": true, "$fpath": true, "${FPATH}": true}
+	canonical := canonicalList(name)
+	if canonical == "" {
+		return model.ListDelta{}, false
+	}
+	var base map[string]bool
+	if canonical == "PATH" {
+		base = map[string]bool{"$PATH": true, "$path": true, "${PATH}": true}
+	} else {
+		base = map[string]bool{"$FPATH": true, "$fpath": true, "${FPATH}": true}
+	}
 	parts := strings.Split(value, ":")
 	idx := -1
 	for i, p := range parts {
@@ -238,14 +259,7 @@ func pathDelta(name, value string) (model.ListDelta, bool) {
 			return model.ListDelta{}, false
 		}
 	}
-	canon := name
-	if canon == "path" {
-		canon = "PATH"
-	}
-	if canon == "fpath" {
-		canon = "FPATH"
-	}
-	return model.ListDelta{Name: canon, Additions: adds, Deletions: []string{}}, true
+	return model.ListDelta{Name: canonical, Additions: adds, Deletions: []string{}}, true
 }
 
 func unsafeStatic(s string) bool {
