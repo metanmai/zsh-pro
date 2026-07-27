@@ -3,9 +3,12 @@ package store
 import (
 	"bytes"
 	"reflect"
+	"strings"
 	"testing"
 
+	"zsh-pro/core/ir"
 	"zsh-pro/core/model"
+	"zsh-pro/core/shell/zsh"
 )
 
 // mixedProfile is a representative profile covering every declarative class plus
@@ -47,6 +50,45 @@ func mixedProfile() model.Profile {
 			Managed: true, Override: model.OverrideUnmanaged,
 		},
 	}}
+}
+
+func TestRoundTripPersistedOverrideManagedDeclarations(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		cmd  string
+	}{
+		{name: "integer", src: "typeset -i COUNT=2\n", cmd: "typeset"},
+		{name: "readonly", src: "readonly LOCKED=value\n", cmd: "readonly"},
+		{name: "tied", src: "typeset -T PATH path\n", cmd: "typeset"},
+		{name: "local", src: "local scoped=value\n", cmd: "local"},
+	}
+	provider := zsh.Provider{}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			blocks, err := provider.Parse([]byte(tc.src))
+			if err != nil {
+				t.Fatal(err)
+			}
+			profile := ir.Build(blocks, provider)
+			if len(profile.Entries) != 1 {
+				t.Fatalf("profile=%#v", profile)
+			}
+			profile.Entries[0].Override = model.OverrideManaged
+			payload, err := MarshalProfile(profile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := UnmarshalProfile(payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			entry := got.Entries[0]
+			if entry.Text != strings.TrimSuffix(tc.src, "\n") || entry.CmdName != tc.cmd || entry.Override != model.OverrideManaged {
+				t.Fatalf("round trip lost declaration state: %#v", entry)
+			}
+		})
+	}
 }
 
 // TestRoundTripLossless proves UnmarshalProfile(MarshalProfile(p)) == p for a

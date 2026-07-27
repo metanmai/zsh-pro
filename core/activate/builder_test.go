@@ -165,6 +165,36 @@ func TestBuildComposesLegacyAndSemanticListsInSourceOrder(t *testing.T) {
 	}
 }
 
+func TestBuildRejectsOverrideManagedDeclarations(t *testing.T) {
+	declaration := func(cmd, name string, category model.Category) model.Entry {
+		return model.Entry{
+			Text: "verbatim declaration", Category: category, Kind: model.KindAssignment,
+			CmdName: cmd, Names: []string{name}, Value: "value", Managed: false,
+			Override: model.OverrideManaged, ValueMode: model.ValueModeLegacy,
+		}
+	}
+	p := model.Profile{Entries: []model.Entry{
+		declaration("typeset", "COUNT", model.CatEnvironment),
+		declaration("readonly", "LOCKED", model.CatEnvironment),
+		declaration("typeset", "PATH", model.CatPath),
+		declaration("local", "SCOPED", model.CatEnvironment),
+	}}
+	m := Build(p)
+	if len(m.Env) != 0 || len(m.Lists) != 0 {
+		t.Fatalf("persisted declarations became activation intent: %#v", m)
+	}
+}
+
+func TestBuildKeepsRepresentableOverrideManagedAssignments(t *testing.T) {
+	m := Build(model.Profile{Entries: []model.Entry{
+		{Category: model.CatEnvironment, Kind: model.KindAssignment, Names: []string{"PLAIN"}, Value: "one", Override: model.OverrideManaged, ValueMode: model.ValueModeLegacy},
+		{Category: model.CatEnvironment, Kind: model.KindAssignment, CmdName: "export", Names: []string{"EXPORTED"}, Value: "two", Exported: true, Override: model.OverrideManaged, ValueMode: model.ValueModeLegacy},
+	}})
+	if len(m.Env) != 2 || m.Env[0].Name != "PLAIN" || m.Env[1].Name != "EXPORTED" || m.Env[1].Exported == nil || !*m.Env[1].Exported {
+		t.Fatalf("representable forced-managed assignments were rejected: %#v", m.Env)
+	}
+}
+
 func equalStrings(got, want []string) bool {
 	if len(got) != len(want) {
 		return false

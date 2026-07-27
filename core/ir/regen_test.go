@@ -77,6 +77,23 @@ func TestRegenerateDynamicValueDelegated(t *testing.T) {
 	}
 }
 
+func TestRegenerateDeclarationOverridesStayVerbatim(t *testing.T) {
+	entries := []model.Entry{
+		{Text: "typeset -i COUNT=2", Kind: model.KindAssignment, CmdName: "typeset", Names: []string{"COUNT"}, Value: "2", Override: model.OverrideManaged},
+		{Text: "readonly LOCKED=value", Kind: model.KindAssignment, CmdName: "readonly", Names: []string{"LOCKED"}, Value: "value", Override: model.OverrideManaged},
+		{Text: "typeset -T PATH path", Kind: model.KindAssignment, CmdName: "typeset", Names: []string{"PATH"}, Override: model.OverrideManaged},
+		{Text: "local scoped=value", Kind: model.KindAssignment, CmdName: "local", Names: []string{"scoped"}, Value: "value", Override: model.OverrideManaged},
+	}
+	for _, entry := range entries {
+		t.Run(entry.CmdName+"/"+entry.Names[0], func(t *testing.T) {
+			got := string(Regenerate(model.Profile{Entries: []model.Entry{entry}}, stubRegenerator{}))
+			if got != entry.Text+"\n" {
+				t.Fatalf("Regenerate() = %q, want original declaration %q", got, entry.Text+"\n")
+			}
+		})
+	}
+}
+
 type echoValueRegenerator struct{}
 
 func (echoValueRegenerator) Regenerate(e model.Entry) string { return e.Value }
