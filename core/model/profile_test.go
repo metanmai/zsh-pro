@@ -72,6 +72,9 @@ func TestEntryRepresentabilityRequiresKnownStructuralFidelity(t *testing.T) {
 		{name: "append", e: Entry{Kind: KindAssignment, StructuralFidelityKnown: true, Append: true}, want: false},
 		{name: "array", e: Entry{Kind: KindAssignment, StructuralFidelityKnown: true, Array: true}, want: false},
 		{name: "flagged alias", e: Entry{Kind: KindAlias, StructuralFidelityKnown: true, Flagged: true}, want: false},
+		{name: "indexed assignment", e: Entry{Kind: KindAssignment, StructuralFidelityKnown: true, Indexed: true}, want: false},
+		{name: "semantic declaration flag", e: Entry{Kind: KindAssignment, CmdName: "export", StructuralFidelityKnown: true, DeclarationFlags: []string{"-i"}}, want: false},
+		{name: "unflagged export", e: Entry{Kind: KindAssignment, CmdName: "export", Exported: true, StructuralFidelityKnown: true, DeclarationFlags: []string{}}, want: true},
 		{name: "declaration", e: Entry{Kind: KindAssignment, CmdName: "typeset", StructuralFidelityKnown: true}, want: false},
 	}
 	for _, tc := range cases {

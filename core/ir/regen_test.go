@@ -99,6 +99,9 @@ func TestRegenerateForcedManagedStructuralShapesStayVerbatim(t *testing.T) {
 		{Text: "FOO+=bar", Kind: model.KindAssignment, Names: []string{"FOO"}, Value: "bar", Override: model.OverrideManaged, StructuralFidelityKnown: true, Append: true},
 		{Text: "plugins=(git zsh-autosuggestions)", Kind: model.KindAssignment, Names: []string{"plugins"}, Override: model.OverrideManaged, StructuralFidelityKnown: true, Array: true},
 		{Text: "alias -g G='| grep'", Kind: model.KindAlias, CmdName: "alias", Names: []string{"G"}, Override: model.OverrideManaged, StructuralFidelityKnown: true, Flagged: true},
+		{Text: "FOO[2]=bar", Kind: model.KindAssignment, Names: []string{"FOO"}, Value: "bar", Override: model.OverrideManaged, StructuralFidelityKnown: true, Indexed: true},
+		{Text: "MAP[key]=bar", Kind: model.KindAssignment, Names: []string{"MAP"}, Value: "bar", Override: model.OverrideManaged, StructuralFidelityKnown: true, Indexed: true},
+		{Text: "export -i COUNT=1", Kind: model.KindAssignment, CmdName: "export", Names: []string{"COUNT"}, Value: "1", Exported: true, Override: model.OverrideManaged, StructuralFidelityKnown: true, DeclarationFlags: []string{"-i"}},
 		{Text: "FOO=legacy", Kind: model.KindAssignment, Names: []string{"FOO"}, Value: "legacy", Override: model.OverrideManaged},
 	}
 	for _, entry := range entries {

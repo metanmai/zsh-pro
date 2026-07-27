@@ -1,6 +1,7 @@
 package ir
 
 import (
+	"reflect"
 	"testing"
 
 	"zsh-pro/core/model"
@@ -108,13 +109,19 @@ func TestBuildCopiesStructuralFidelity(t *testing.T) {
 		{Kind: model.KindAssignment, Names: []string{"FOO"}, Append: true},
 		{Kind: model.KindAssignment, Names: []string{"plugins"}, Array: true},
 		{Kind: model.KindAlias, Names: []string{"G"}, Flagged: true},
+		{Kind: model.KindAssignment, Names: []string{"FOO"}, Indexed: true},
+		{Kind: model.KindAssignment, CmdName: "export", Names: []string{"COUNT"}, DeclarationFlags: []string{"-i"}},
 	}
 	profile := Build(blocks, stubClassifier{cat: model.CatEnvironment})
 	for i, want := range blocks {
 		got := profile.Entries[i]
-		if !got.StructuralFidelityKnown || got.Append != want.Append || got.Array != want.Array || got.Flagged != want.Flagged {
+		if !got.StructuralFidelityKnown || got.Append != want.Append || got.Array != want.Array || got.Flagged != want.Flagged || got.Indexed != want.Indexed || !reflect.DeepEqual(got.DeclarationFlags, want.DeclarationFlags) {
 			t.Fatalf("entry %d lost structural fidelity: got=%#v want=%#v", i, got, want)
 		}
+	}
+	profile.Entries[4].DeclarationFlags[0] = "-r"
+	if blocks[4].DeclarationFlags[0] != "-i" {
+		t.Fatal("Entry.DeclarationFlags shares Block backing storage")
 	}
 }
 

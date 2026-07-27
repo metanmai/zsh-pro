@@ -97,6 +97,9 @@ func TestRoundTripStructuralFidelity(t *testing.T) {
 		{Text: "FOO+=baz", Kind: model.KindAssignment, Names: []string{"FOO"}, Value: "baz", StructuralFidelityKnown: true, Append: true},
 		{Text: "plugins=(git zsh-autosuggestions)", Kind: model.KindAssignment, Names: []string{"plugins"}, StructuralFidelityKnown: true, Array: true},
 		{Text: "alias -g G='| grep'", Kind: model.KindAlias, CmdName: "alias", Names: []string{"G"}, Value: "| grep", StructuralFidelityKnown: true, Flagged: true},
+		{Text: "FOO[2]=bar", Kind: model.KindAssignment, Names: []string{"FOO"}, Value: "bar", StructuralFidelityKnown: true, Indexed: true},
+		{Text: "export -i COUNT=1", Kind: model.KindAssignment, CmdName: "export", Names: []string{"COUNT"}, Value: "1", Exported: true, StructuralFidelityKnown: true, DeclarationFlags: []string{"-i"}},
+		{Text: "export -- FOO=1", Kind: model.KindAssignment, CmdName: "export", Names: []string{"FOO"}, Value: "1", Exported: true, StructuralFidelityKnown: true, DeclarationFlags: []string{}},
 	}}
 
 	payload, err := MarshalProfile(profile)
@@ -106,7 +109,7 @@ func TestRoundTripStructuralFidelity(t *testing.T) {
 	if got := bytes.Count(payload, []byte(`"structuralFidelity"`)); got != len(profile.Entries) {
 		t.Fatalf("structural fidelity objects=%d, want %d:\n%s", got, len(profile.Entries), payload)
 	}
-	for _, marker := range []string{`"version"`, `"append"`, `"array"`, `"flagged"`} {
+	for _, marker := range []string{`"version"`, `"append"`, `"array"`, `"flagged"`, `"indexed"`, `"declarationFlags"`} {
 		if !bytes.Contains(payload, []byte(marker)) {
 			t.Fatalf("payload missing %s:\n%s", marker, payload)
 		}

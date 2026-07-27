@@ -209,6 +209,11 @@ func TestBuildRejectsOverrideManagedDeclarations(t *testing.T) {
 		declaration("typeset", "PATH", model.CatPath),
 		declaration("local", "SCOPED", model.CatEnvironment),
 	}}
+	p.Entries = append(p.Entries,
+		model.Entry{Text: "FOO[2]=bar", Category: model.CatEnvironment, Kind: model.KindAssignment, Names: []string{"FOO"}, Value: "bar", Override: model.OverrideManaged, StructuralFidelityKnown: true, Indexed: true},
+		model.Entry{Text: "MAP[key]=bar", Category: model.CatEnvironment, Kind: model.KindAssignment, Names: []string{"MAP"}, Value: "bar", Override: model.OverrideManaged, StructuralFidelityKnown: true, Indexed: true},
+		model.Entry{Text: "export -i COUNT=1", Category: model.CatEnvironment, Kind: model.KindAssignment, CmdName: "export", Names: []string{"COUNT"}, Value: "1", Exported: true, Override: model.OverrideManaged, StructuralFidelityKnown: true, DeclarationFlags: []string{"-i"}},
+	)
 	m := Build(p)
 	if len(m.Env) != 0 || len(m.Lists) != 0 {
 		t.Fatalf("persisted declarations became activation intent: %#v", m)
