@@ -5,10 +5,10 @@ milestone_name: Branchable Shell Environments
 current_phase: 04
 current_phase_name: manifest-builder-emit
 status: executing
-stopped_at: Completed 04-14-PLAN.md; awaiting independent Phase 4 review
-last_updated: "2026-07-27T11:03:47.744Z"
+stopped_at: Validated 04-15-PLAN.md; executing final Phase 4 persisted-fidelity closure
+last_updated: "2026-07-27T11:55:00Z"
 last_activity: 2026-07-27
-last_activity_desc: Planned 04-14 legacy-list composition and persisted declaration gap closure
+last_activity_desc: Validated 04-15 legacy dynamic-list and persisted structural-fidelity gap closure
 progress:
   total_phases: 6
   completed_phases: 4
@@ -29,9 +29,9 @@ See: .planning/PROJECT.md (updated 2026-06-25)
 ## Current Position
 
 Phase: 04 (manifest-builder-emit) — EXECUTING
-Plan: 13 of 14 numeric plans complete (04-14 next)
-Status: Gap-closure plan ready to execute
-Last activity: 2026-07-27 — Planned 04-14 legacy-list composition and persisted declaration gap closure
+Plan: 14 of 15 numeric plans complete (04-15 next)
+Status: Final gap-closure plan validated and ready to execute
+Last activity: 2026-07-27 — Validated 04-15 legacy dynamic-list and persisted structural-fidelity gap closure
 
 Progress: [█████████░] 91%
 
@@ -124,6 +124,7 @@ Recent decisions affecting current work:
 - [Phase ?]: Unmodeled declaration commands stay verbatim-imperative; only ValueModeLegacy may use same-list raw list fallback; multi-name functions reduce atomically.
 - [Phase ?]: 04-14: Legacy PATH/FPATH entries now flow through the semantic token reducer, preserving source order and provenance.
 - [Phase ?]: 04-14: Persisted forced declarations require representability and otherwise regenerate verbatim with no manifest intent.
+- [Phase ?]: 04-15: Structural syntax markers must remain presence-aware across DTO persistence; unknown historical state fails closed.
 
 ### Pending Todos
 
@@ -152,6 +153,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-27T11:03:47.737Z
-Stopped at: Completed 04-14-PLAN.md; awaiting independent Phase 4 review
+Last session: 2026-07-27T11:55:00Z
+Stopped at: Validated 04-15-PLAN.md; executing final Phase 4 persisted-fidelity closure
 Resume file: None

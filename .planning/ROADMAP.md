@@ -134,7 +134,7 @@ Plans:
   3. Restore is ownership-aware: deactivate removes only what this profile added (drift guard — restore a value only if the live value still equals what was applied) and never strips base/unmanaged state a profile merely also added (e.g. `/usr/local/bin`).
   4. A shadowed prior alias/function is captured before override and re-established on deactivate; PATH is stored as a delta against the captured base, never a wholesale overwrite.
 
-**Plans**: 13/14 plans executed; 1 gap-closure plan ready
+**Plans**: 14/15 plans executed; 1 gap-closure plan ready
 
 Plans:
 
@@ -185,7 +185,11 @@ Plans:
 
 **Wave 11** *(gap closure; blocked on Wave 10)*
 
-- [ ] 04-14-PLAN.md — compose legacy and semantic PATH/FPATH in source order and stop persisted forced declarations crossing the manifest boundary
+- [x] 04-14-PLAN.md — compose legacy and semantic PATH/FPATH in source order and stop persisted forced declarations crossing the manifest boundary
+
+**Wave 12** *(gap closure; blocked on Wave 11)*
+
+- [ ] 04-15-PLAN.md — preserve legacy dynamic PATH/FPATH provenance and fail closed for persisted structural syntax, including historical DTOs
 
 ### Phase 5: Runtime Loader + CLI + Bootstrap
 
