@@ -5,16 +5,16 @@ milestone_name: Branchable Shell Environments
 current_phase: 04
 current_phase_name: manifest-builder-emit
 status: executing
-stopped_at: Validated 04-16/04-17 plans; executing indexed and export fidelity closure
-last_updated: "2026-07-27T11:55:45.063Z"
+stopped_at: Completed 04-16-PLAN.md; Plan 17 remains pending
+last_updated: "2026-07-27T12:33:12.843Z"
 last_activity: 2026-07-27
 last_activity_desc: Validated 04-16/04-17 indexed-assignment and semantic export-flag closure plans
 progress:
   total_phases: 6
-  completed_phases: 4
-  total_plans: 25
-  completed_plans: 23
-  percent: 67
+  completed_phases: 3
+  total_plans: 27
+  completed_plans: 24
+  percent: 50
 ---
 
 # Project State
@@ -29,11 +29,11 @@ See: .planning/PROJECT.md (updated 2026-06-25)
 ## Current Position
 
 Phase: 04 (manifest-builder-emit) — EXECUTING
-Plan: 15 of 17 numeric plans complete (04-16 next)
+Plan: 16 of 17 numeric plans complete (04-16 next)
 Status: Two validated gap-closure plans ready to execute
 Last activity: 2026-07-27 — Validated 04-16/04-17 indexed-assignment and semantic export-flag closure plans
 
-Progress: [█████████░] 91%
+Progress: [█████████░] 89%
 
 ## Performance Metrics
 
@@ -80,6 +80,7 @@ Progress: [█████████░] 91%
 | Phase 04 P13 | 3 min | 3 tasks | 7 files |
 | Phase 04 P14 | 8 min | 3 tasks | 9 files |
 | Phase 04 P15 | 29 | 3 tasks | 12 files |
+| Phase 04-manifest-builder-emit P16 | 6 | 2 tasks | 12 files |
 
 ## Accumulated Context
 
@@ -128,6 +129,8 @@ Recent decisions affecting current work:
 - [Phase ?]: 04-15: Structural syntax markers must remain presence-aware across DTO persistence; unknown historical state fails closed.
 - [Phase ?]: 04-15: Structural syntax markers are presence-aware; absent, partial, and unsupported DTO fidelity remains unknown and verbatim/no-operation.
 - [Phase ?]: 04-15: Legacy PATH/FPATH additions retain late binding only for strict simple parameter plus path-safe suffix source.
+- [Phase ?]: Structural fidelity is known only for complete v2 records; absent, v1, partial, and unsupported DTO data re-saves unknown.
+- [Phase ?]: OverrideManaged cannot erase indexed or declaration-attribute semantics; rejected entries remain verbatim and create no manifest intent.
 
 ### Pending Todos
 
@@ -156,6 +159,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-27T11:55:45.057Z
-Stopped at: Completed 04-15-PLAN.md; Phase 4 awaits independent verification
+Last session: 2026-07-27T12:33:12.836Z
+Stopped at: Completed 04-16-PLAN.md; Plan 17 remains pending
 Resume file: None
