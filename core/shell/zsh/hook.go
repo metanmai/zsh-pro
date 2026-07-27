@@ -69,7 +69,7 @@ _zp_eval_block() {
     print -u2 -- "zsh-pro: emitted shell source failed validation; shell state unchanged"
     return 1
   fi
-  unsetopt xtrace 2>/dev/null
+  setopt NOXTRACE 2>/dev/null
   fc -p 2>/dev/null
   eval "$block"
   rc=$?
