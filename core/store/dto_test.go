@@ -129,6 +129,45 @@ func TestRoundTripStructuralFidelity(t *testing.T) {
 	}
 }
 
+func TestStructuralFidelityDTOPreservesNewMarkerPresenceAndCopies(t *testing.T) {
+	flags := []string{"-o"}
+	entry := model.Entry{
+		Kind:                    model.KindCommand,
+		CmdName:                 "setopt",
+		Names:                   []string{"EXTENDED_GLOB"},
+		StructuralFidelityKnown: true,
+		AliasAssignment:         false,
+		OptionFlags:             flags,
+	}
+	dto := toEntryDTO(entry)
+	flags[0] = "+o"
+	if dto.StructuralFidelity.OptionFlags == nil || dto.StructuralFidelity.OptionFlags.Values[0] != "-o" {
+		t.Fatalf("DTO OptionFlags aliases caller storage: %#v", dto.StructuralFidelity)
+	}
+	decoded := fromEntryDTO(dto)
+	decoded.OptionFlags[0] = "--"
+	if dto.StructuralFidelity.OptionFlags.Values[0] != "-o" {
+		t.Fatalf("decoded OptionFlags aliases DTO storage: %#v", dto.StructuralFidelity)
+	}
+
+	profile := model.Profile{Entries: []model.Entry{
+		{Kind: model.KindAlias, Names: []string{"ll"}, StructuralFidelityKnown: true, AliasAssignment: false, OptionFlags: nil},
+		{Kind: model.KindAlias, Names: []string{"ll"}, StructuralFidelityKnown: true, AliasAssignment: true, OptionFlags: []string{}},
+		{Kind: model.KindCommand, CmdName: "setopt", Names: []string{"EXTENDED_GLOB"}, StructuralFidelityKnown: true, AliasAssignment: false, OptionFlags: []string{"-o"}},
+	}}
+	payload, err := MarshalProfile(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := UnmarshalProfile(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Entries[0].AliasAssignment || got.Entries[0].OptionFlags != nil || !got.Entries[1].AliasAssignment || got.Entries[1].OptionFlags == nil || len(got.Entries[1].OptionFlags) != 0 || !reflect.DeepEqual(got.Entries[2].OptionFlags, []string{"-o"}) {
+		t.Fatalf("new marker presence did not round-trip: %#v", got.Entries)
+	}
+}
+
 func TestStructuralFidelityDTOCompatibilityMatrix(t *testing.T) {
 	entry := func(fidelity string) string {
 		return `{"entries":[{"text":"export FOO=bar","startLine":1,"category":"environment","kind":"assignment","cmdName":"export","names":["FOO"],"value":"bar","exported":true,"managed":false,"override":"forced-managed","dynamic":false` + fidelity + `}]}`

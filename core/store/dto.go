@@ -44,17 +44,27 @@ type entryDTO struct {
 	ListValue    *listValueDTO `json:"listValue,omitempty"`
 }
 
-const structuralFidelityVersion = 2
+const structuralFidelityVersion = 3
 
 // structuralFidelityDTO is presence-aware on purpose: absent bool fields are
 // historical unknowns, never inferred as false.
 type structuralFidelityDTO struct {
-	Version          int       `json:"version"`
-	Append           *bool     `json:"append"`
-	Array            *bool     `json:"array"`
-	Flagged          *bool     `json:"flagged"`
-	Indexed          *bool     `json:"indexed"`
-	DeclarationFlags *[]string `json:"declarationFlags"`
+	Version          int             `json:"version"`
+	Append           *bool           `json:"append"`
+	Array            *bool           `json:"array"`
+	Flagged          *bool           `json:"flagged"`
+	Indexed          *bool           `json:"indexed"`
+	AliasAssignment  *bool           `json:"aliasAssignment"`
+	DeclarationFlags *[]string       `json:"declarationFlags"`
+	OptionFlags      *stringSliceDTO `json:"optionFlags"`
+}
+
+// stringSliceDTO preserves nil, explicit-empty, and populated marker slices.
+// A pointer to this wrapper records field presence separately from Values, so
+// a current fidelity record cannot confuse a missing optionFlags marker with a
+// deliberately nil source-control slice.
+type stringSliceDTO struct {
+	Values []string `json:"values"`
 }
 
 // listValueDTO is the optional persistence form of parser-verified PATH/FPATH
@@ -163,7 +173,9 @@ func fromEntryDTO(d entryDTO) model.Entry {
 		Array:                   structuralFidelityMarker(d.StructuralFidelity, func(f *structuralFidelityDTO) *bool { return f.Array }),
 		Flagged:                 structuralFidelityMarker(d.StructuralFidelity, func(f *structuralFidelityDTO) *bool { return f.Flagged }),
 		Indexed:                 structuralFidelityMarker(d.StructuralFidelity, func(f *structuralFidelityDTO) *bool { return f.Indexed }),
+		AliasAssignment:         structuralFidelityMarker(d.StructuralFidelity, func(f *structuralFidelityDTO) *bool { return f.AliasAssignment }),
 		DeclarationFlags:        structuralFidelityFlags(d.StructuralFidelity),
+		OptionFlags:             structuralFidelityOptionFlags(d.StructuralFidelity),
 	}
 }
 
@@ -181,12 +193,14 @@ func toStructuralFidelityDTO(e model.Entry) *structuralFidelityDTO {
 		Array:            boolPointer(e.Array),
 		Flagged:          boolPointer(e.Flagged),
 		Indexed:          boolPointer(e.Indexed),
+		AliasAssignment:  boolPointer(e.AliasAssignment),
 		DeclarationFlags: &flags,
+		OptionFlags:      &stringSliceDTO{Values: cloneStrings(e.OptionFlags)},
 	}
 }
 
 func structuralFidelityKnown(in *structuralFidelityDTO) bool {
-	return in != nil && in.Version == structuralFidelityVersion && in.Append != nil && in.Array != nil && in.Flagged != nil && in.Indexed != nil && in.DeclarationFlags != nil
+	return in != nil && in.Version == structuralFidelityVersion && in.Append != nil && in.Array != nil && in.Flagged != nil && in.Indexed != nil && in.AliasAssignment != nil && in.DeclarationFlags != nil && in.OptionFlags != nil
 }
 
 func structuralFidelityMarker(in *structuralFidelityDTO, marker func(*structuralFidelityDTO) *bool) bool {
@@ -201,6 +215,13 @@ func structuralFidelityFlags(in *structuralFidelityDTO) []string {
 		return nil
 	}
 	return cloneStrings(*in.DeclarationFlags)
+}
+
+func structuralFidelityOptionFlags(in *structuralFidelityDTO) []string {
+	if !structuralFidelityKnown(in) {
+		return nil
+	}
+	return cloneStrings(in.OptionFlags.Values)
 }
 
 func boolPointer(value bool) *bool { return &value }

@@ -165,11 +165,31 @@ func (e Entry) Representable() bool {
 	}
 	switch e.Kind {
 	case KindAssignment:
-		return !e.Append && !e.Array
+		return len(e.Names) == 1 && !e.Append && !e.Array
 	case KindAlias:
-		return !e.Flagged
+		return len(e.Names) == 1 && e.AliasAssignment && !e.Flagged
+	case KindCommand:
+		if e.CmdName != "setopt" && e.CmdName != "unsetopt" {
+			return false
+		}
+		return len(e.Names) > 0 && optionSyntaxRepresentable(e.OptionFlags)
 	default:
 		return true
+	}
+}
+
+// optionSyntaxRepresentable admits only invocation controls whose option
+// polarity matches the command verb. Other controls can query, filter, or
+// invert the command and must remain verbatim even when a profile overrides
+// the managed axis.
+func optionSyntaxRepresentable(flags []string) bool {
+	switch len(flags) {
+	case 0:
+		return true
+	case 1:
+		return flags[0] == "--" || flags[0] == "-o"
+	default:
+		return false
 	}
 }
 
