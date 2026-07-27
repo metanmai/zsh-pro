@@ -1,6 +1,7 @@
 package zsh
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
@@ -114,6 +115,82 @@ func TestParseCapturesAppendAndFlags(t *testing.T) {
 						t.Errorf("Names[%d] = %q, want %q", i, b.Names[i], n)
 					}
 				}
+			}
+		})
+	}
+}
+
+func TestParseCapturesAliasAssignmentForm(t *testing.T) {
+	cases := []struct {
+		name       string
+		src        string
+		wantNames  []string
+		assignment bool
+		wantValue  string
+	}{
+		{name: "query", src: "alias ll\n", wantNames: []string{"ll"}, assignment: false},
+		{name: "empty definition", src: "alias ll=\n", wantNames: []string{"ll"}, assignment: true, wantValue: ""},
+		{name: "multi definition", src: "alias a=one b=two\n", wantNames: []string{"a", "b"}, assignment: true, wantValue: "two"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			blocks, err := (Provider{}).Parse([]byte(tc.src))
+			if err != nil || len(blocks) != 1 {
+				t.Fatalf("Parse() blocks=%#v err=%v", blocks, err)
+			}
+			got := blocks[0]
+			if !reflect.DeepEqual(got.Names, tc.wantNames) || got.AliasAssignment != tc.assignment || got.Value != tc.wantValue {
+				t.Fatalf("alias provenance = %#v, want names=%v assignment=%v value=%q", got, tc.wantNames, tc.assignment, tc.wantValue)
+			}
+		})
+	}
+}
+
+func TestParseCapturesOptionControls(t *testing.T) {
+	cases := []struct {
+		name      string
+		src       string
+		cmd       string
+		wantFlags []string
+		wantNames []string
+	}{
+		{name: "bare setopt", src: "setopt EXTENDED_GLOB\n", cmd: "setopt", wantNames: []string{"EXTENDED_GLOB"}},
+		{name: "delimiter setopt", src: "setopt -- EXTENDED_GLOB\n", cmd: "setopt", wantFlags: []string{"--"}, wantNames: []string{"EXTENDED_GLOB"}},
+		{name: "dash o setopt", src: "setopt -o EXTENDED_GLOB\n", cmd: "setopt", wantFlags: []string{"-o"}, wantNames: []string{"EXTENDED_GLOB"}},
+		{name: "plus o setopt", src: "setopt +o EXTENDED_GLOB\n", cmd: "setopt", wantFlags: []string{"+o"}, wantNames: []string{"EXTENDED_GLOB"}},
+		{name: "query setopt", src: "setopt -m EXTENDED_GLOB\n", cmd: "setopt", wantFlags: []string{"-m"}, wantNames: []string{"EXTENDED_GLOB"}},
+		{name: "dash o unsetopt", src: "unsetopt -o EXTENDED_GLOB\n", cmd: "unsetopt", wantFlags: []string{"-o"}, wantNames: []string{"EXTENDED_GLOB"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			blocks, err := (Provider{}).Parse([]byte(tc.src))
+			if err != nil || len(blocks) != 1 {
+				t.Fatalf("Parse() blocks=%#v err=%v", blocks, err)
+			}
+			got := blocks[0]
+			if got.Kind != model.KindCommand || got.CmdName != tc.cmd || !reflect.DeepEqual(got.OptionFlags, tc.wantFlags) || !reflect.DeepEqual(got.Names, tc.wantNames) {
+				t.Fatalf("option provenance = %#v, want cmd=%q flags=%v names=%v", got, tc.cmd, tc.wantFlags, tc.wantNames)
+			}
+		})
+	}
+}
+
+func TestParseDelimiterListValue(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		src  string
+		want []model.ListSegment
+	}{
+		{name: "path", src: "export -- PATH=$PATH:$EXTRA\n", want: []model.ListSegment{{Self: true}, {Dynamic: true, Source: "$EXTRA"}}},
+		{name: "fpath", src: "export -- FPATH=$FPATH:$EXTRA\n", want: []model.ListSegment{{Self: true}, {Dynamic: true, Source: "$EXTRA"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			blocks, err := (Provider{}).Parse([]byte(tc.src))
+			if err != nil || len(blocks) != 1 {
+				t.Fatalf("Parse() blocks=%#v err=%v", blocks, err)
+			}
+			if got := blocks[0].ListValue; got == nil || !reflect.DeepEqual(got.Segments, tc.want) {
+				t.Fatalf("ListValue = %#v, want %#v", got, tc.want)
 			}
 		})
 	}

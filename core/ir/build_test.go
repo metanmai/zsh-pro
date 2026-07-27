@@ -106,22 +106,33 @@ func TestBuildPreservesSourceOrderAndFields(t *testing.T) {
 
 func TestBuildCopiesStructuralFidelity(t *testing.T) {
 	blocks := []model.Block{
-		{Kind: model.KindAssignment, Names: []string{"FOO"}, Append: true, DeclarationFlags: []string{}},
-		{Kind: model.KindAssignment, Names: []string{"plugins"}, Array: true, DeclarationFlags: []string{}},
-		{Kind: model.KindAlias, Names: []string{"G"}, Flagged: true, DeclarationFlags: []string{}},
-		{Kind: model.KindAssignment, Names: []string{"FOO"}, Indexed: true, DeclarationFlags: []string{}},
-		{Kind: model.KindAssignment, CmdName: "export", Names: []string{"COUNT"}, DeclarationFlags: []string{"-i"}},
+		{Kind: model.KindAssignment, Names: []string{"FOO"}, Append: true, DeclarationFlags: []string{}, OptionFlags: []string{}},
+		{Kind: model.KindAssignment, Names: []string{"plugins"}, Array: true, DeclarationFlags: []string{}, OptionFlags: []string{}},
+		{Kind: model.KindAlias, Names: []string{"G"}, Flagged: true, DeclarationFlags: []string{}, OptionFlags: []string{}},
+		{Kind: model.KindAssignment, Names: []string{"FOO"}, Indexed: true, DeclarationFlags: []string{}, OptionFlags: []string{}},
+		{Kind: model.KindAssignment, CmdName: "export", Names: []string{"COUNT"}, DeclarationFlags: []string{"-i"}, OptionFlags: []string{}},
+		{Kind: model.KindAlias, Names: []string{"ll"}, AliasAssignment: false, DeclarationFlags: []string{}, OptionFlags: nil},
+		{Kind: model.KindAlias, Names: []string{"ll"}, AliasAssignment: true, DeclarationFlags: []string{}, OptionFlags: []string{}},
+		{Kind: model.KindCommand, CmdName: "setopt", Names: []string{"EXTENDED_GLOB"}, DeclarationFlags: []string{}, OptionFlags: []string{"-o"}},
 	}
 	profile := Build(blocks, stubClassifier{cat: model.CatEnvironment})
 	for i, want := range blocks {
 		got := profile.Entries[i]
-		if !got.StructuralFidelityKnown || got.Append != want.Append || got.Array != want.Array || got.Flagged != want.Flagged || got.Indexed != want.Indexed || !reflect.DeepEqual(got.DeclarationFlags, want.DeclarationFlags) {
+		if !got.StructuralFidelityKnown || got.Append != want.Append || got.Array != want.Array || got.Flagged != want.Flagged || got.Indexed != want.Indexed || got.AliasAssignment != want.AliasAssignment || !reflect.DeepEqual(got.DeclarationFlags, want.DeclarationFlags) || !reflect.DeepEqual(got.OptionFlags, want.OptionFlags) {
 			t.Fatalf("entry %d lost structural fidelity: got=%#v want=%#v", i, got, want)
 		}
 	}
 	profile.Entries[4].DeclarationFlags[0] = "-r"
 	if blocks[4].DeclarationFlags[0] != "-i" {
 		t.Fatal("Entry.DeclarationFlags shares Block backing storage")
+	}
+	profile.Entries[7].OptionFlags[0] = "--"
+	if blocks[7].OptionFlags[0] != "-o" {
+		t.Fatal("Entry.OptionFlags shares Block backing storage")
+	}
+	blocks[7].OptionFlags[0] = "+o"
+	if profile.Entries[7].OptionFlags[0] != "--" {
+		t.Fatal("Block.OptionFlags shares Entry backing storage")
 	}
 }
 
