@@ -151,8 +151,6 @@ func (p Provider) describe(stmt *syntax.Stmt, b *model.Block, src []byte) {
 					b.Array = true // `export ARR=(x y)`: keep out of the templated path (UAT array gap)
 				}
 			}
-			ensureExplicitValueMode(b)
-			captureListValue(b, c.Assigns, src)
 			for _, w := range c.Args[1:] {
 				lit := p.wordLitPrefix(w)
 				if lit == "" || strings.HasPrefix(lit, "-") {
@@ -160,10 +158,22 @@ func (p Provider) describe(stmt *syntax.Stmt, b *model.Block, src []byte) {
 				}
 				if i := strings.IndexByte(lit, '='); i > 0 {
 					b.Names = append(b.Names, lit[:i])
+					// `export -- NAME=value` is represented by mvdan/sh as a
+					// declaration word rather than an Assign. The delimiter has
+					// already been recorded as non-semantic by
+					// captureDeclarationFlags; capture this one assignment with
+					// the same source/value contract as ordinary export assigns.
+					span := sliceSrc(src, w.Pos().Offset(), w.End().Offset())
+					if equals := strings.IndexByte(span, '='); equals >= 0 {
+						b.Value = span[equals+1:]
+						captureWordSemantics(b, w, lit[:i+1])
+					}
 				} else {
 					b.Names = append(b.Names, lit)
 				}
 			}
+			ensureExplicitValueMode(b)
+			captureListValue(b, c.Assigns, src)
 		case "setopt", "unsetopt":
 			// setopt/unsetopt carry their reversible state in the option-name
 			// args (e.g. `setopt EXTENDED_GLOB`). Capture each option name into
