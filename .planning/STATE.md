@@ -5,16 +5,16 @@ milestone_name: Branchable Shell Environments
 current_phase: 05
 current_phase_name: Runtime Loader + CLI + Bootstrap
 status: executing
-stopped_at: Completed 05-01-PLAN.md
-last_updated: "2026-07-27T14:34:28.506Z"
+stopped_at: Completed 05-02-PLAN.md (phase completion held for orchestrator)
+last_updated: "2026-07-27T14:47:10.108Z"
 last_activity: 2026-07-27
-last_activity_desc: Phase 04 complete, transitioned to Phase 05
+last_activity_desc: Completed 05-01 runtime loader and CLI seams
 progress:
   total_phases: 6
-  completed_phases: 4
+  completed_phases: 5
   total_plans: 29
-  completed_plans: 28
-  percent: 67
+  completed_plans: 29
+  percent: 83
 ---
 
 # Project State
@@ -33,7 +33,7 @@ Plan: 02
 Status: Ready to execute
 Last activity: 2026-07-27 — Completed 05-01 runtime loader and CLI seams
 
-Progress: [██████████] 97%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
@@ -85,6 +85,7 @@ Progress: [██████████] 97%
 | Phase 04 P17 | 8 | 2 tasks | 3 files |
 | Phase 04-manifest-builder-emit P18 | 7 | 2 tasks | 11 files |
 | Phase 05 P01 | 8 min | 4 tasks | 11 files |
+| Phase 05 P02 | 10 min | 3 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -142,6 +143,8 @@ Recent decisions affecting current work:
 - [Phase ?]: Phase 4 emit blocks keep their scalar helpers self-contained; the Phase 5 loader only owns named env helpers and terminal base state.
 - [Phase ?]: The Phase 5 composition root injects the real Phase 4 runtime emitter, retaining NotReadyEmitter only as a fail-closed fallback.
 - [Phase ?]: Store initialization failure becomes an explicit nil cli.Store interface so only store-backed verbs fail rather than panic.
+- [Phase ?]: 05-02: Installer and stub share ZSHPRO_HOME or HOME/.zsh-pro; cached loader skew is explicit and refreshed by install.
+- [Phase ?]: 05-02: Switches validate one emitted block and report runtime partial failure; last-good advances only after success.
 
 ### Pending Todos
 
@@ -170,6 +173,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-27T14:34:28.499Z
-Stopped at: Completed 05-01-PLAN.md
-Resume file: 05-02-PLAN.md
+Last session: 2026-07-27T14:47:10.101Z
+Stopped at: Completed 05-02-PLAN.md (phase completion held for orchestrator)
+Resume file: None

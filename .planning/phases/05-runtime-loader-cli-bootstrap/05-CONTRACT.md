@@ -68,7 +68,9 @@ path not yet available` and never output fake apply code.
 
 ## Blocking phase-exit obligation
 
-- [ ] RE-DIFF loader surface + CLI->emit subcommand surface against `emit.go` (BLOCKING phase-exit)
+- [x] RE-DIFF loader surface + CLI->emit subcommand surface against `emit.go` (completed 2026-07-27)
+
+Re-diff evidence: `rg -n "func \\(Provider\\) Emit|zp_capture_scalar|zp_restore_scalar|ZP_BASE_PATH" core/shell/zsh/emit.go core/activate --glob '*.go'` confirms the shipped emitter remains self-contained for scalar helpers and uses the loader-owned `ZP_BASE_PATH` state. The loader invokes the reconciled `zsh-pro emit apply <name>` / `zsh-pro emit deactivate <name>` surface and does not add speculative `zp_rebuild_path` or `zp_shadow_*` calls. Runtime hardening landed in commits `c587aad` and `0e438bc`.
 
 Before Phase 5 can be marked complete, repeat the exact probes above after
 both Plan 05-01 and Plan 05-02 have landed, verify the loader's shared eval
