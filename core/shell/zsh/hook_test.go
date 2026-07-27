@@ -37,6 +37,15 @@ func TestHookScriptIsParseableAndDefinesRuntimeSurface(t *testing.T) {
 	}
 }
 
+func TestHookScriptStartPathIsZeroSubprocessAndNonSpeculative(t *testing.T) {
+	top := loaderTopLevel((Provider{}).HookScript())
+	for _, forbidden := range []string{"$(", "`", "git ", "zsh-pro", "zp_rebuild_path", "zp_shadow"} {
+		if strings.Contains(top, forbidden) {
+			t.Fatalf("loader start path contains %q:\n%s", forbidden, top)
+		}
+	}
+}
+
 // loaderTopLevel extracts lines outside function bodies. The loader may shell
 // out only when a user explicitly invokes a verb, never while it is sourced.
 func loaderTopLevel(script string) string {
@@ -45,16 +54,14 @@ func loaderTopLevel(script string) string {
 	for _, line := range strings.Split(script, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasSuffix(trimmed, "() {") {
-			depth++
+			depth = strings.Count(line, "{") - strings.Count(line, "}")
 			continue
 		}
 		if depth == 0 {
 			lines = append(lines, line)
 			continue
 		}
-		if trimmed == "}" {
-			depth--
-		}
+		depth += strings.Count(line, "{") - strings.Count(line, "}")
 	}
 	return strings.Join(lines, "\n")
 }

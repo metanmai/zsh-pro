@@ -188,5 +188,84 @@ func TestRenderedStubIsFailOpenAndParseable(t *testing.T) {
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("stub does not parse: %v\n%s", err, out)
 		}
+		cmd = exec.Command("zsh", "-f", "-c", "setopt NO_UNSET WARN_CREATE_GLOBAL; source \"$1\"; [[ $? -eq 0 ]]", "zsh-pro-test", "/dev/stdin")
+		cmd.Stdin = strings.NewReader(stub)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("stub is not fail-open under hostile options: %v\n%s", err, out)
+		}
 	}
+}
+
+func TestInstalledStubFailsOpenForDisabledMissingAndCorruptLoaders(t *testing.T) {
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("zsh not installed")
+	}
+	run := func(t *testing.T, env []string, body string) string {
+		t.Helper()
+		cmd := exec.Command("zsh", "-f", "-c", "source \"$1\"; "+body, "zsh-pro-test", filepath.Join(envValue(env, "HOME"), ".zshrc"))
+		cmd.Env = append(os.Environ(), env...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("stub did not fail open: %v\n%s", err, out)
+		}
+		return string(out)
+	}
+	t.Run("missing binary", func(t *testing.T) {
+		home := t.TempDir()
+		if err := os.WriteFile(filepath.Join(home, ".zshrc"), renderInstallBlock(), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		out := run(t, []string{"HOME=" + home, "PATH=/usr/bin:/bin"}, "print -r -- after")
+		if !strings.Contains(out, "after") {
+			t.Fatal("line after stub did not run")
+		}
+	})
+	t.Run("disabled", func(t *testing.T) {
+		home, bin := t.TempDir(), t.TempDir()
+		if err := os.WriteFile(filepath.Join(home, ".zshrc"), renderInstallBlock(), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(filepath.Join(home, ".zsh-pro"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(home, ".zsh-pro", "loader.zsh"), []byte("typeset -g ZP_LOADED=1\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(bin, "zsh-pro"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		out := run(t, []string{"HOME=" + home, "PATH=" + bin + ":/usr/bin:/bin", "ZSHPRO_DISABLE=1"}, "[[ -z \"${ZP_LOADED+x}\" ]] || exit 20; print -r -- after")
+		if !strings.Contains(out, "after") {
+			t.Fatal("line after disabled stub did not run")
+		}
+	})
+	t.Run("corrupt cache", func(t *testing.T) {
+		home, bin := t.TempDir(), t.TempDir()
+		if err := os.WriteFile(filepath.Join(home, ".zshrc"), renderInstallBlock(), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(filepath.Join(home, ".zsh-pro"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(home, ".zsh-pro", "loader.zsh"), []byte("this is ( corrupt\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(bin, "zsh-pro"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		out := run(t, []string{"HOME=" + home, "PATH=" + bin + ":/usr/bin:/bin"}, "print -r -- after")
+		if !strings.Contains(out, "after") {
+			t.Fatal("corrupt loader blocked startup")
+		}
+	})
+}
+
+func envValue(env []string, name string) string {
+	prefix := name + "="
+	for _, value := range env {
+		if strings.HasPrefix(value, prefix) {
+			return strings.TrimPrefix(value, prefix)
+		}
+	}
+	return ""
 }

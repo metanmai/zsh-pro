@@ -98,3 +98,46 @@ checkout bad && exit 10
 		t.Fatal("invalid emit never ran zsh -n validation")
 	}
 }
+
+func TestLiveTerminalLoaderGatesEmptyEmitAndReportsRuntimeFailure(t *testing.T) {
+	realZsh, err := exec.LookPath("zsh")
+	if err != nil {
+		t.Skip("zsh not installed")
+	}
+	for _, tc := range []struct {
+		name, emit, assertion string
+	}{
+		{"empty emit", "#!/bin/sh\nexit 0\n", `[[ "$ZSHPRO_PROFILE" == good ]] || exit 11; [[ "$ZP_LAST_GOOD_PROFILE" == good ]] || exit 12`},
+		{"runtime failure", "#!/bin/sh\nprintf '%s\\n' 'zp_apply() { export ZP_PARTIAL=1; return 9; }'\n", `[[ "$ZP_LAST_GOOD_PROFILE" == good ]] || exit 21; [[ "$ZP_PARTIAL" == 1 ]] || exit 22`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			loader := filepath.Join(dir, "loader.zsh")
+			if err := os.WriteFile(loader, []byte((Provider{}).HookScript()), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "zsh-pro"), []byte(tc.emit), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			marker := filepath.Join(dir, "validated")
+			validator := "#!/bin/sh\ntouch \"$ZP_VALIDATION_MARKER\"\nexec \"$ZP_REAL_ZSH\" \"$@\"\n"
+			if err := os.WriteFile(filepath.Join(dir, "zsh"), []byte(validator), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			body := "source \"$1\"; export ZSHPRO_PROFILE=good ZP_LAST_GOOD_PROFILE=good; activate bad && exit 10; " + tc.assertion
+			cmd := exec.Command(realZsh, "-f", "-c", body, "zsh-pro-test", loader)
+			cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "ZP_VALIDATION_MARKER="+marker, "ZP_REAL_ZSH="+realZsh)
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("loader gate behavior failed: %v\n%s", err, out)
+			}
+			if tc.name == "empty emit" {
+				if _, err := os.Stat(marker); !os.IsNotExist(err) {
+					t.Fatal("empty emit reached zsh -n instead of aborting before validation")
+				}
+			} else if !strings.Contains(string(out), "switch failed at runtime") {
+				t.Fatalf("runtime failure had no recovery/report path: %s", out)
+			}
+		})
+	}
+}
