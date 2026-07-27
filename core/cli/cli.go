@@ -8,6 +8,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -22,10 +23,16 @@ import (
 )
 
 // CLI wires flags and I/O to the engine for a given shell Provider.
-type CLI struct{ provider shell.Provider }
+type CLI struct {
+	provider shell.Provider
+	store    Store
+	emitter  Emitter
+}
 
 // New returns a CLI bound to a Provider.
-func New(p shell.Provider) *CLI { return &CLI{provider: p} }
+func New(p shell.Provider, s Store, e Emitter) *CLI {
+	return &CLI{provider: p, store: s, emitter: e}
+}
 
 // Run executes a command. Exit codes: 0 clean, 1 runtime error, 2 usage,
 // 3 actionable.
@@ -40,10 +47,64 @@ func (c *CLI) Run(args []string, stdout, stderr io.Writer) int {
 		return int(model.ExitClean)
 	case buildinfo.Command:
 		return c.runAnalyze(args[1:], stdout, stderr)
+	case "hook":
+		_, _ = fmt.Fprint(stdout, c.provider.HookScript())
+		return int(model.ExitClean)
+	case "list":
+		return c.runList(stdout, stderr)
+	case "status":
+		return c.runStatus(stdout, stderr)
+	case "emit":
+		return c.runEmit(args[1:], stdout, stderr)
 	default:
 		_, _ = fmt.Fprintf(stderr, "zsh-pro: unknown command %q\n", args[0])
 		return int(model.ExitUsageErr)
 	}
+}
+
+func (c *CLI) runList(stdout, stderr io.Writer) int {
+	if c.store == nil {
+		return c.fail(stdout, stderr, false, "profile store unavailable")
+	}
+	branches, err := c.store.Branches(context.Background())
+	if err != nil {
+		return c.fail(stdout, stderr, false, fmt.Sprintf("list profiles: %v", err))
+	}
+	for _, branch := range branches {
+		_, _ = fmt.Fprintln(stdout, branch)
+	}
+	return int(model.ExitClean)
+}
+
+func (c *CLI) runStatus(stdout, stderr io.Writer) int {
+	if c.store == nil {
+		return c.fail(stdout, stderr, false, "profile store unavailable")
+	}
+	current := c.store.Current()
+	if current == "" {
+		current = "main"
+	}
+	_, _ = fmt.Fprintln(stdout, current)
+	return int(model.ExitClean)
+}
+
+func (c *CLI) runEmit(args []string, stdout, stderr io.Writer) int {
+	if len(args) != 2 || (args[0] != "apply" && args[0] != "deactivate") || args[1] == "" {
+		_, _ = fmt.Fprintln(stderr, "usage: zsh-pro emit <apply|deactivate> <profile>")
+		return int(model.ExitUsageErr)
+	}
+	if c.emitter == nil {
+		return c.fail(stdout, stderr, false, "emit path not yet available")
+	}
+	source, err := c.emitter.Emit(context.Background(), args[0], args[1])
+	if err != nil {
+		return c.fail(stdout, stderr, false, err.Error())
+	}
+	if source == "" {
+		return c.fail(stdout, stderr, false, "emit produced empty output")
+	}
+	_, _ = fmt.Fprintln(stdout, source)
+	return int(model.ExitClean)
 }
 
 func (c *CLI) runAnalyze(args []string, stdout, stderr io.Writer) int {

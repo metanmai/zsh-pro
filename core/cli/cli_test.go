@@ -2,7 +2,9 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,8 +12,29 @@ import (
 
 	"zsh-pro/core/buildinfo"
 	"zsh-pro/core/dto"
+	"zsh-pro/core/model"
 	"zsh-pro/core/shell/zsh"
 )
+
+type fakeStore struct {
+	branches []string
+	current  string
+	err      error
+}
+
+func (s fakeStore) Branches(context.Context) ([]string, error) { return s.branches, s.err }
+func (s fakeStore) Current() string                            { return s.current }
+func (s fakeStore) Checkout(context.Context, string) error     { return s.err }
+func (s fakeStore) Read(context.Context, string) (model.Profile, error) {
+	return model.Profile{}, s.err
+}
+
+type fakeEmitter struct {
+	text string
+	err  error
+}
+
+func (e fakeEmitter) Emit(context.Context, string, string) (string, error) { return e.text, e.err }
 
 func writeRC(t *testing.T, content string) string {
 	t.Helper()
@@ -23,10 +46,12 @@ func writeRC(t *testing.T, content string) string {
 	return p
 }
 
+func newTestCLI() *CLI { return New(zsh.Provider{}, nil, NotReadyEmitter()) }
+
 func TestRunCleanConfigExitsZero(t *testing.T) {
 	p := writeRC(t, "export EDITOR=nvim\nalias ll='ls -l'\n")
 	var out, errBuf bytes.Buffer
-	code := New(zsh.Provider{}).Run([]string{"analyze", p}, &out, &errBuf)
+	code := newTestCLI().Run([]string{"analyze", p}, &out, &errBuf)
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0\nstderr: %s", code, errBuf.String())
 	}
@@ -38,7 +63,7 @@ func TestRunCleanConfigExitsZero(t *testing.T) {
 func TestRunDuplicateExitsThree(t *testing.T) {
 	p := writeRC(t, "alias gs='git status'\nalias gs='git switch'\n")
 	var out, errBuf bytes.Buffer
-	code := New(zsh.Provider{}).Run([]string{"analyze", p}, &out, &errBuf)
+	code := newTestCLI().Run([]string{"analyze", p}, &out, &errBuf)
 	if code != 3 {
 		t.Fatalf("exit code = %d, want 3", code)
 	}
@@ -52,7 +77,7 @@ func TestRunDuplicateExitsThree(t *testing.T) {
 func TestRunJSONEmitsOneObject(t *testing.T) {
 	p := writeRC(t, "alias gs='git status'\nalias gs='git switch'\n")
 	var out, errBuf bytes.Buffer
-	code := New(zsh.Provider{}).Run([]string{"analyze", p, "--json"}, &out, &errBuf)
+	code := newTestCLI().Run([]string{"analyze", p, "--json"}, &out, &errBuf)
 	if code != 3 {
 		t.Fatalf("exit code = %d, want 3\nstdout: %s\nstderr: %s", code, out.String(), errBuf.String())
 	}
@@ -91,7 +116,7 @@ func TestRunJSONEmitsOneObject(t *testing.T) {
 
 func TestRunMissingFileExitsOne(t *testing.T) {
 	var out, errBuf bytes.Buffer
-	code := New(zsh.Provider{}).Run([]string{"analyze", "/no/such/rc"}, &out, &errBuf)
+	code := newTestCLI().Run([]string{"analyze", "/no/such/rc"}, &out, &errBuf)
 	if code != 1 {
 		t.Fatalf("exit code = %d, want 1", code)
 	}
@@ -102,7 +127,7 @@ func TestRunMissingFileExitsOne(t *testing.T) {
 // with "ok": false, and still return exit code 1.
 func TestRunMissingFileJSONErrorOnStdout(t *testing.T) {
 	var outBuf, errBuf bytes.Buffer
-	code := New(zsh.Provider{}).Run([]string{"analyze", "/no/such/file", "--json"}, &outBuf, &errBuf)
+	code := newTestCLI().Run([]string{"analyze", "/no/such/file", "--json"}, &outBuf, &errBuf)
 	if code != 1 {
 		t.Fatalf("exit code = %d, want 1\nstdout: %s\nstderr: %s", code, outBuf.String(), errBuf.String())
 	}
@@ -128,8 +153,51 @@ func TestRunMissingFileJSONErrorOnStdout(t *testing.T) {
 
 func TestRunUnknownCommandExitsTwo(t *testing.T) {
 	var out, errBuf bytes.Buffer
-	code := New(zsh.Provider{}).Run([]string{"frobnicate"}, &out, &errBuf)
+	code := newTestCLI().Run([]string{"frobnicate"}, &out, &errBuf)
 	if code != 2 {
 		t.Fatalf("exit code = %d, want 2", code)
+	}
+}
+
+func TestRuntimeVerbsUseInjectedSeams(t *testing.T) {
+	var out, errBuf bytes.Buffer
+	c := New(zsh.Provider{}, fakeStore{branches: []string{"main", "dev"}, current: "dev"}, fakeEmitter{text: "export EDITOR=nvim"})
+	if code := c.Run([]string{"hook"}, &out, &errBuf); code != int(model.ExitClean) || out.String() != (zsh.Provider{}).HookScript() {
+		t.Fatalf("hook = (%d, %q), want loader", code, out.String())
+	}
+	out.Reset()
+	if code := c.Run([]string{"list"}, &out, &errBuf); code != int(model.ExitClean) || out.String() != "main\ndev\n" {
+		t.Fatalf("list = (%d, %q)", code, out.String())
+	}
+	out.Reset()
+	if code := c.Run([]string{"status"}, &out, &errBuf); code != int(model.ExitClean) || out.String() != "dev\n" {
+		t.Fatalf("status = (%d, %q)", code, out.String())
+	}
+	out.Reset()
+	if code := c.Run([]string{"emit", "apply", "dev"}, &out, &errBuf); code != int(model.ExitClean) || out.String() != "export EDITOR=nvim\n" {
+		t.Fatalf("emit = (%d, %q)", code, out.String())
+	}
+}
+
+func TestRuntimeVerbsFailClosedForEmitterAndNilStore(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cli  *CLI
+		args []string
+	}{
+		{"emitter error", New(zsh.Provider{}, fakeStore{}, fakeEmitter{err: errors.New("boom")}), []string{"emit", "apply", "dev"}},
+		{"not ready", New(zsh.Provider{}, fakeStore{}, NotReadyEmitter()), []string{"emit", "apply", "dev"}},
+		{"nil store list", New(zsh.Provider{}, nil, fakeEmitter{}), []string{"list"}},
+		{"nil store status", New(zsh.Provider{}, nil, fakeEmitter{}), []string{"status"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out, errBuf bytes.Buffer
+			if code := tc.cli.Run(tc.args, &out, &errBuf); code != int(model.ExitRuntimeErr) {
+				t.Fatalf("code = %d, want runtime failure", code)
+			}
+			if out.Len() != 0 || errBuf.Len() == 0 {
+				t.Fatalf("failure output = stdout %q stderr %q", out.String(), errBuf.String())
+			}
+		})
 	}
 }
