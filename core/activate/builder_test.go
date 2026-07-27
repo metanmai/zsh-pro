@@ -39,6 +39,35 @@ func TestBuildPathShapes(t *testing.T) {
 	}
 }
 
+func TestBuildRequiresSemanticListOrLegacySameList(t *testing.T) {
+	legacy := func(name, value string) model.Entry {
+		return model.Entry{Kind: model.KindAssignment, Category: model.CatPath, Names: []string{name}, Value: value, Managed: true, ValueMode: model.ValueModeLegacy}
+	}
+	parsed := func(name, value string, mode model.ValueMode) model.Entry {
+		return model.Entry{Kind: model.KindAssignment, Category: model.CatPath, Names: []string{name}, Value: value, Managed: true, ValueMode: mode}
+	}
+	cases := []struct {
+		name  string
+		entry model.Entry
+		want  bool
+	}{
+		{name: "legacy PATH self", entry: legacy("PATH", "$PATH:/a"), want: true},
+		{name: "legacy FPATH self", entry: legacy("FPATH", "$fpath:/a"), want: true},
+		{name: "legacy PATH rejects FPATH", entry: legacy("PATH", "$FPATH:/a")},
+		{name: "legacy FPATH rejects PATH", entry: legacy("FPATH", "$path:/a")},
+		{name: "parsed unsupported parameter stays inert", entry: parsed("PATH", "${PATH:-/a}", model.ValueModeUnsupported)},
+		{name: "parsed rejected cross list stays inert", entry: parsed("PATH", "$FPATH:/a", model.ValueModeDynamic)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Build(model.Profile{Entries: []model.Entry{tc.entry}})
+			if (len(got.Lists) == 1) != tc.want {
+				t.Fatalf("Lists=%#v, want operation=%v", got.Lists, tc.want)
+			}
+		})
+	}
+}
+
 func TestBuildComposesSemanticListsInSourceOrder(t *testing.T) {
 	list := func(segments ...model.ListSegment) *model.ListValue { return &model.ListValue{Segments: segments} }
 	p := model.Profile{Entries: []model.Entry{
@@ -131,6 +160,28 @@ func TestBuildRequiresAndPreservesFunctionBodies(t *testing.T) {
 	}
 	if m.Functions.Bodies["multiline"] != multiline {
 		t.Fatalf("multiline body changed: %q", m.Functions.Bodies["multiline"])
+	}
+}
+
+func TestBuildReducesFunctionNamesAtomically(t *testing.T) {
+	body := "print shared"
+	m := Build(model.Profile{Entries: []model.Entry{
+		{Category: model.CatFunctions, Kind: model.KindFuncDecl, Names: []string{"one", "two"}, Managed: true, FunctionBody: &body},
+		{Category: model.CatFunctions, Kind: model.KindFuncDecl, Names: []string{"good", "bad;name"}, Managed: true, FunctionBody: &body},
+		{Category: model.CatFunctions, Kind: model.KindFuncDecl, Names: []string{"missing", "also_missing"}, Managed: true},
+	}})
+	if len(m.Functions.Added) != 2 || m.Functions.Added[0] != "one" || m.Functions.Added[1] != "two" {
+		t.Fatalf("valid multi-name function was not fully admitted: %#v", m.Functions)
+	}
+	for _, name := range []string{"one", "two"} {
+		if m.Functions.Bodies[name] != body {
+			t.Fatalf("body for %q=%q, want %q", name, m.Functions.Bodies[name], body)
+		}
+	}
+	for _, rejected := range []string{"good", "bad;name", "missing", "also_missing"} {
+		if _, ok := m.Functions.Bodies[rejected]; ok {
+			t.Fatalf("partial invalid function declaration admitted %q: %#v", rejected, m.Functions)
+		}
 	}
 }
 
