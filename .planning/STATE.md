@@ -5,10 +5,10 @@ milestone_name: Branchable Shell Environments
 current_phase: 04
 current_phase_name: manifest-builder-emit
 status: executing
-stopped_at: Completed 04-15-PLAN.md; Phase 4 awaits independent verification
+stopped_at: Validated 04-16/04-17 plans; executing indexed and export fidelity closure
 last_updated: "2026-07-27T11:55:45.063Z"
 last_activity: 2026-07-27
-last_activity_desc: Validated 04-15 legacy dynamic-list and persisted structural-fidelity gap closure
+last_activity_desc: Validated 04-16/04-17 indexed-assignment and semantic export-flag closure plans
 progress:
   total_phases: 6
   completed_phases: 4
@@ -29,9 +29,9 @@ See: .planning/PROJECT.md (updated 2026-06-25)
 ## Current Position
 
 Phase: 04 (manifest-builder-emit) — EXECUTING
-Plan: 14 of 15 numeric plans complete (04-15 next)
-Status: Final gap-closure plan validated and ready to execute
-Last activity: 2026-07-27 — Validated 04-15 legacy dynamic-list and persisted structural-fidelity gap closure
+Plan: 15 of 17 numeric plans complete (04-16 next)
+Status: Two validated gap-closure plans ready to execute
+Last activity: 2026-07-27 — Validated 04-16/04-17 indexed-assignment and semantic export-flag closure plans
 
 Progress: [█████████░] 91%
 
