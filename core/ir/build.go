@@ -47,7 +47,9 @@ func Build(blocks []model.Block, c shell.Classifier) model.Profile {
 			Array:                   b.Array,
 			Flagged:                 b.Flagged,
 			Indexed:                 b.Indexed,
+			AliasAssignment:         b.AliasAssignment,
 			DeclarationFlags:        completeStringSlice(b.DeclarationFlags),
+			OptionFlags:             cloneStrings(b.OptionFlags),
 			ValueMode:               b.ValueMode,
 			// The Block remains independently reusable after Build. Copy pointed-to
 			// values instead of sharing mutable storage across the IR boundary.

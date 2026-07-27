@@ -117,7 +117,13 @@ func (p Provider) describe(stmt *syntax.Stmt, b *model.Block, src []byte) {
 				prefix := ""
 				if i := strings.IndexByte(lit, '='); i > 0 {
 					b.Names = append(b.Names, lit[:i])
+					b.AliasAssignment = true
 					prefix = lit[:i+1]
+				} else if lit != "" {
+					// Preserve a query name even though it has no assignment
+					// value. A later persisted override must not turn it into an
+					// empty alias definition.
+					b.Names = append(b.Names, lit)
 				}
 				// Value is the text AFTER the first '=' in the word's verbatim
 				// source span, quotes preserved (no re-quoting). Alias args are
@@ -135,6 +141,10 @@ func (p Provider) describe(stmt *syntax.Stmt, b *model.Block, src []byte) {
 			b.Kind = model.KindAssignment
 			b.Exported = name == "export"
 			p.captureDeclarationFlags(b, c.Args[1:])
+			afterDelimiter := false
+			delimiterAssignments := 0
+			var delimiterListName string
+			var delimiterListWord *syntax.Word
 			for _, a := range c.Assigns {
 				captureAssignmentShape(b, a)
 				if a.Name != nil {
@@ -153,7 +163,11 @@ func (p Provider) describe(stmt *syntax.Stmt, b *model.Block, src []byte) {
 			}
 			for _, w := range c.Args[1:] {
 				lit := p.wordLitPrefix(w)
-				if lit == "" || strings.HasPrefix(lit, "-") {
+				if lit == "--" {
+					afterDelimiter = true
+					continue
+				}
+				if lit == "" || (!afterDelimiter && strings.HasPrefix(lit, "-")) {
 					continue
 				}
 				if i := strings.IndexByte(lit, '='); i > 0 {
@@ -168,12 +182,23 @@ func (p Provider) describe(stmt *syntax.Stmt, b *model.Block, src []byte) {
 						b.Value = span[equals+1:]
 						captureWordSemantics(b, w, lit[:i+1])
 					}
+					if afterDelimiter {
+						delimiterAssignments++
+						if delimiterAssignments == 1 {
+							delimiterListName = lit[:i]
+							delimiterListWord = w
+						}
+					}
 				} else {
 					b.Names = append(b.Names, lit)
 				}
 			}
 			ensureExplicitValueMode(b)
-			captureListValue(b, c.Assigns, src)
+			if len(c.Assigns) > 0 {
+				captureListValue(b, c.Assigns, src)
+			} else if delimiterAssignments == 1 {
+				captureListWord(b, delimiterListName, delimiterListWord, src)
+			}
 		case "setopt", "unsetopt":
 			// setopt/unsetopt carry their reversible state in the option-name
 			// args (e.g. `setopt EXTENDED_GLOB`). Capture each option name into
@@ -183,7 +208,15 @@ func (p Provider) describe(stmt *syntax.Stmt, b *model.Block, src []byte) {
 			b.Kind = model.KindCommand
 			for _, w := range c.Args[1:] {
 				lit := p.wordLitPrefix(w)
-				if lit == "" || strings.HasPrefix(lit, "-") {
+				if lit == "" {
+					// A dynamic option word can become an invocation control at
+					// execution time. Do not pretend it is an ordinary option
+					// name that a persisted override may lower.
+					b.Opaque = true
+					continue
+				}
+				if lit == "--" || strings.HasPrefix(lit, "-") || strings.HasPrefix(lit, "+") {
+					b.OptionFlags = append(b.OptionFlags, lit)
 					continue
 				}
 				b.Names = append(b.Names, lit)
@@ -331,14 +364,33 @@ func captureWordSemantics(b *model.Block, w *syntax.Word, prefix string) {
 // captureListValue records the PATH/FPATH semantic list only for a single
 // scalar assignment. The normal Value/RuntimeValue contract remains untouched.
 func captureListValue(b *model.Block, assigns []*syntax.Assign, src []byte) {
-	if len(assigns) != 1 || b.Append || b.Array {
+	// Declaration clauses represent their option delimiter as a naked Assign.
+	// Count only actual name=value assignments so `export -- PATH=...` has the
+	// same one-assignment contract as an ordinary scalar assignment.
+	values := make([]*syntax.Assign, 0, len(assigns))
+	for _, a := range assigns {
+		if a != nil && a.Name != nil && a.Value != nil {
+			values = append(values, a)
+		}
+	}
+	if len(values) != 1 || b.Append || b.Array {
 		return
 	}
-	a := assigns[0]
-	if a.Name == nil || a.Value == nil || canonicalListName(a.Name.Value) == "" {
+	a := values[0]
+	if canonicalListName(a.Name.Value) == "" {
 		return
 	}
 	b.ListValue = decodeListValue(a.Name.Value, a.Value, src)
+}
+
+// captureListWord applies the same AST-derived PATH/FPATH semantics to a
+// declaration word after an export delimiter. mvdan/sh represents that form as
+// a Word rather than syntax.Assign, but it is still one scalar assignment.
+func captureListWord(b *model.Block, name string, word *syntax.Word, src []byte) {
+	if b.Append || b.Array || canonicalListName(name) == "" {
+		return
+	}
+	b.ListValue = decodeListValue(name, word, src)
 }
 
 func canonicalListName(name string) string {

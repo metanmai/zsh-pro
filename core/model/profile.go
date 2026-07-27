@@ -101,7 +101,9 @@ type Entry struct {
 	Array                   bool       // assignment used (...); never lower it to a scalar
 	Flagged                 bool       // alias used a flag; never drop its attributes
 	Indexed                 bool       // assignment used a subscript; never erase its index semantics
+	AliasAssignment         bool       // alias used NAME=VALUE, including an explicitly empty value
 	DeclarationFlags        []string   // semantic declaration attributes in source order; never erase them
+	OptionFlags             []string   // setopt/unsetopt invocation controls in source order
 	Secret                  *SecretRef // non-nil iff this entry is a secret-replaced literal (D-07); the literal Value is cleared when set so the secret never round-trips
 	ValueMode               ValueMode  // parser-owned semantic mode; zero remains backward-compatible legacy
 	// RuntimeValue is the AST-decoded scalar or alias value for literal mode.

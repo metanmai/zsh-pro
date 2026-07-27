@@ -126,6 +126,10 @@ func TestBuildCopiesStructuralFidelity(t *testing.T) {
 	if blocks[4].DeclarationFlags[0] != "-i" {
 		t.Fatal("Entry.DeclarationFlags shares Block backing storage")
 	}
+	blocks[4].DeclarationFlags[0] = "-x"
+	if profile.Entries[4].DeclarationFlags[0] != "-r" {
+		t.Fatal("Block.DeclarationFlags shares Entry backing storage")
+	}
 	profile.Entries[7].OptionFlags[0] = "--"
 	if blocks[7].OptionFlags[0] != "-o" {
 		t.Fatal("Entry.OptionFlags shares Block backing storage")
@@ -179,6 +183,10 @@ func TestBuildCopiesNamesSlice(t *testing.T) {
 	got[0] = "MUTATED"
 	if names[0] != "EDITOR" {
 		t.Errorf("Entry.Names shares backing array with source Block.Names: source mutated to %q", names[0])
+	}
+	names[0] = "SOURCE"
+	if got[0] != "MUTATED" {
+		t.Errorf("source Block.Names shares backing array with Entry.Names: entry mutated to %q", got[0])
 	}
 }
 

@@ -40,11 +40,18 @@ type Block struct {
 	Flagged   bool       // alias carried a type flag (`-g`/`-s`/...) — kept out of the templated path so the flag is never dropped (WR-02)
 	Array     bool       // assignment is array-valued (`name=(...)`): mvdan/sh populates a.Array and leaves a.Value nil, so the scalar templater cannot reproduce it; kept out of the templated path so the array value is never dropped (UAT array gap, same class as WR-01/WR-02)
 	Indexed   bool       // assignment carried a subscript (`name[index]=...`); never lower it as scalar/list state
+	// AliasAssignment distinguishes an alias definition (`alias name=value`),
+	// including an empty value, from an alias query (`alias name`).
+	AliasAssignment bool
 	// DeclarationFlags retains semantic declaration attribute words in source
 	// order (for example `-i` in `export -i COUNT=1`). It is distinct from
 	// alias Flagged, which records only that an alias type flag was present.
 	DeclarationFlags []string
-	ValueMode        ValueMode // semantic meaning of Value for activation; parser-owned, additive to the verbatim source contract
+	// OptionFlags retains setopt/unsetopt invocation controls in source order.
+	// Nil means no controls appeared; an explicit empty slice remains distinct
+	// for persistence fidelity.
+	OptionFlags []string
+	ValueMode   ValueMode // semantic meaning of Value for activation; parser-owned, additive to the verbatim source contract
 	// RuntimeValue is the AST-decoded scalar or alias value when ValueMode is
 	// ValueModeLiteral. Pointer presence distinguishes a decoded empty string
 	// from a value that was not decoded.
