@@ -415,6 +415,116 @@ func TestPipelinePersistedOverrideManaged(t *testing.T) {
 	}
 }
 
+func TestPipelinePersistedOverrideManagedIndexedAndFlagged(t *testing.T) {
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("zsh not available")
+	}
+
+	provider := Provider{}
+	sources := []string{
+		"FOO[2]=bar",
+		"typeset -A MAP",
+		"MAP[key]=bar",
+		"export -i INTEGER=1",
+	}
+	blocks, err := provider.Parse([]byte(strings.Join(sources, "\n") + "\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := ir.Build(blocks, provider)
+	if len(profile.Entries) != len(sources) {
+		t.Fatalf("profile=%#v", profile)
+	}
+	for i := range profile.Entries {
+		profile.Entries[i].Override = model.OverrideManaged
+	}
+	persisted := roundTripPipelineProfile(t, profile)
+	if got := string(ir.Regenerate(persisted, provider)); got != strings.Join(sources, "\n")+"\n" {
+		t.Fatalf("regenerated=%q, want verbatim source", got)
+	}
+	manifest := activate.Build(persisted)
+	if !pipelineManifestEmpty(manifest) {
+		t.Fatalf("persisted indexed or flagged source created activation intent: %#v", manifest)
+	}
+	apply, deactivate := emitPipelineListPlan(t, provider, manifest)
+
+	// These direct controls establish why the rejected source cannot be lowered
+	// to a scalar/export operation: zsh exposes type, keyed state, and arithmetic
+	// semantics that an unstructured manifest scalar cannot preserve.
+	direct := strings.Join([]string{
+		"FOO[2]=bar",
+		"[[ ${(t)FOO} == array && $FOO[2] == bar ]] || exit 141",
+		"typeset -A MAP",
+		"MAP[key]=bar",
+		"[[ ${(t)MAP} == association && ${MAP[key]} == bar ]] || exit 142",
+		"export -i INTEGER=1",
+		"INTEGER+=2",
+		"[[ ${parameters[INTEGER]} == integer-export && $INTEGER == 3 ]] || exit 143",
+		"export PLAIN=1",
+		"PLAIN+=2",
+		"[[ ${parameters[PLAIN]} == scalar-export && $PLAIN == 12 ]] || exit 144",
+	}, "\n")
+	if out, err := exec.Command("zsh", "-f", "-c", direct).CombinedOutput(); err != nil {
+		t.Fatalf("direct indexed and export controls: %v\n%s\nscript:\n%s", err, out, direct)
+	}
+
+	script := strings.Join([]string{
+		"typeset ZP_SCALAR_SENTINEL=scalar-before",
+		"typeset -a FOO=(zero before tail)",
+		"typeset -A MAP=(key before other stable)",
+		"typeset -ix INTEGER=7",
+		"before_scalar=$ZP_SCALAR_SENTINEL before_foo=$FOO[2] before_map=${MAP[key]} before_integer=$INTEGER",
+		"before_foo_type=${(t)FOO} before_map_type=${(t)MAP} before_integer_type=${parameters[INTEGER]}",
+		apply,
+		"zp_apply",
+		"[[ $ZP_SCALAR_SENTINEL == $before_scalar && $FOO[2] == $before_foo && ${MAP[key]} == $before_map && $INTEGER == $before_integer ]] || exit 151",
+		"[[ ${(t)FOO} == $before_foo_type && ${(t)MAP} == $before_map_type && ${parameters[INTEGER]} == $before_integer_type ]] || exit 152",
+		deactivate,
+		"zp_deactivate",
+		"[[ $ZP_SCALAR_SENTINEL == $before_scalar && $FOO[2] == $before_foo && ${MAP[key]} == $before_map && $INTEGER == $before_integer ]] || exit 153",
+		"[[ ${(t)FOO} == $before_foo_type && ${(t)MAP} == $before_map_type && ${parameters[INTEGER]} == $before_integer_type ]] || exit 154",
+	}, "\n")
+	if out, err := exec.Command("zsh", "-f", "-c", script).CombinedOutput(); err != nil {
+		t.Fatalf("persisted indexed and flagged pipeline changed live state: %v\n%s\nscript:\n%s", err, out, script)
+	}
+}
+
+func TestPipelineExportDelimiterControls(t *testing.T) {
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("zsh not available")
+	}
+
+	provider := Provider{}
+	const source = "export PLAIN=1\nexport -- DELIMITED=2\n"
+	blocks, err := provider.Parse([]byte(source))
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted := roundTripPipelineProfile(t, ir.Build(blocks, provider))
+	if got := string(ir.Regenerate(persisted, provider)); got != source {
+		t.Fatalf("regenerated=%q, want %q", got, source)
+	}
+	manifest := activate.Build(persisted)
+	if len(manifest.Env) != 2 {
+		t.Fatalf("ordinary and delimiter exports were overblocked: %#v", manifest.Env)
+	}
+	apply, deactivate := emitPipelineListPlan(t, provider, manifest)
+	script := strings.Join([]string{
+		"unset PLAIN DELIMITED",
+		apply,
+		"zp_apply",
+		"PLAIN+=2",
+		"[[ ${parameters[PLAIN]} == scalar-export && $PLAIN == 12 ]] || exit 161",
+		"[[ ${parameters[DELIMITED]} == scalar-export && $DELIMITED == 2 ]] || exit 162",
+		deactivate,
+		"zp_deactivate",
+		"[[ ${+PLAIN} == 0 && ${+DELIMITED} == 0 ]] || exit 163",
+	}, "\n")
+	if out, err := exec.Command("zsh", "-f", "-c", script).CombinedOutput(); err != nil {
+		t.Fatalf("supported export pipeline: %v\n%s\nscript:\n%s", err, out, script)
+	}
+}
+
 func TestPipelineLegacyStructuralFidelityMatrix(t *testing.T) {
 	if _, err := exec.LookPath("zsh"); err != nil {
 		t.Skip("zsh not available")
@@ -425,7 +535,10 @@ func TestPipelineLegacyStructuralFidelityMatrix(t *testing.T) {
 		raw  string
 		text string
 	}{
-		{name: "absent append", text: "FOO+=bar", raw: `{"entries":[{"text":"FOO+=bar","startLine":1,"category":"environment","kind":"assignment","cmdName":"","names":["FOO"],"value":"bar","exported":false,"managed":false,"override":"forced-managed","dynamic":false}]}`},
+		{name: "absent indexed", text: "FOO[2]=bar", raw: `{"entries":[{"text":"FOO[2]=bar","startLine":1,"category":"environment","kind":"assignment","cmdName":"","names":["FOO"],"value":"bar","exported":false,"managed":false,"override":"forced-managed","dynamic":false}]}`},
+		{name: "v1 indexed", text: "MAP[key]=bar", raw: `{"entries":[{"text":"MAP[key]=bar","startLine":1,"category":"environment","kind":"assignment","cmdName":"","names":["MAP"],"value":"bar","exported":false,"managed":false,"override":"forced-managed","dynamic":false,"structuralFidelity":{"version":1,"append":false,"array":false,"flagged":false}}]}`},
+		{name: "partial v2 indexed", text: "FOO[2]=bar", raw: `{"entries":[{"text":"FOO[2]=bar","startLine":1,"category":"environment","kind":"assignment","cmdName":"","names":["FOO"],"value":"bar","exported":false,"managed":false,"override":"forced-managed","dynamic":false,"structuralFidelity":{"version":2,"append":false,"array":false,"flagged":false,"declarationFlags":[]}}]}`},
+		{name: "partial v2 declaration flags", text: "export -i INTEGER=1", raw: `{"entries":[{"text":"export -i INTEGER=1","startLine":1,"category":"environment","kind":"assignment","cmdName":"export","names":["INTEGER"],"value":"1","exported":true,"managed":false,"override":"forced-managed","dynamic":false,"structuralFidelity":{"version":2,"append":false,"array":false,"flagged":false,"indexed":false}}]}`},
 		{name: "partial array", text: "plugins=(git zsh-autosuggestions)", raw: `{"entries":[{"text":"plugins=(git zsh-autosuggestions)","startLine":1,"category":"environment","kind":"assignment","cmdName":"","names":["plugins"],"value":"","exported":false,"managed":false,"override":"forced-managed","dynamic":false,"structuralFidelity":{"version":1,"append":false,"flagged":false}}]}`},
 		{name: "partial flagged alias", text: "alias -g G='| grep'", raw: `{"entries":[{"text":"alias -g G='| grep'","startLine":1,"category":"aliases","kind":"alias","cmdName":"alias","names":["G"],"value":"| grep","exported":false,"managed":false,"override":"forced-managed","dynamic":false,"structuralFidelity":{"version":1,"append":false,"array":false}}]}`},
 		{name: "unsupported version", text: "FOO+=bar", raw: `{"entries":[{"text":"FOO+=bar","startLine":1,"category":"environment","kind":"assignment","cmdName":"","names":["FOO"],"value":"bar","exported":false,"managed":false,"override":"forced-managed","dynamic":false,"structuralFidelity":{"version":99,"append":true,"array":false,"flagged":false}}]}`},
@@ -451,23 +564,27 @@ func TestPipelineLegacyStructuralFidelityMatrix(t *testing.T) {
 				t.Fatalf("regenerated=%q, want verbatim %q", got, row.text+"\n")
 			}
 			manifest := activate.Build(persisted)
-			if len(manifest.Env) != 0 || len(manifest.Lists) != 0 || len(manifest.Aliases.Added) != 0 || len(manifest.Functions.Added) != 0 || len(manifest.Options) != 0 {
+			if !pipelineManifestEmpty(manifest) {
 				t.Fatalf("historical shape created manifest intent: %#v", manifest)
 			}
 			apply, deactivate := emitPipelineListPlan(t, provider, manifest)
 			script := strings.Join([]string{
-				"PATH=/baseline", "FPATH=/fbaseline", "FOO=before", "plugins=(before)", "alias G='before'",
-				"before_path=$PATH", "before_fpath=$FPATH", "before_foo=$FOO", "before_plugins=${plugins[*]}", "before_g=${aliases[G]}",
+				"PATH=/baseline", "FPATH=/fbaseline", "typeset -a FOO=(zero before tail)", "typeset -A MAP=(key before)", "typeset -ix INTEGER=7", "plugins=(before)", "alias G='before'",
+				"before_path=$PATH", "before_fpath=$FPATH", "before_foo=$FOO[2]", "before_map=${MAP[key]}", "before_integer=$INTEGER", "before_foo_type=${(t)FOO}", "before_map_type=${(t)MAP}", "before_integer_type=${parameters[INTEGER]}", "before_plugins=${plugins[*]}", "before_g=${aliases[G]}",
 				apply, "zp_apply",
-				"[[ $PATH == $before_path && $FPATH == $before_fpath && $FOO == $before_foo && ${plugins[*]} == $before_plugins && ${aliases[G]} == $before_g ]] || exit 131",
+				"[[ $PATH == $before_path && $FPATH == $before_fpath && $FOO[2] == $before_foo && ${MAP[key]} == $before_map && $INTEGER == $before_integer && ${(t)FOO} == $before_foo_type && ${(t)MAP} == $before_map_type && ${parameters[INTEGER]} == $before_integer_type && ${plugins[*]} == $before_plugins && ${aliases[G]} == $before_g ]] || exit 131",
 				deactivate, "zp_deactivate",
-				"[[ $PATH == $before_path && $FPATH == $before_fpath && $FOO == $before_foo && ${plugins[*]} == $before_plugins && ${aliases[G]} == $before_g ]] || exit 132",
+				"[[ $PATH == $before_path && $FPATH == $before_fpath && $FOO[2] == $before_foo && ${MAP[key]} == $before_map && $INTEGER == $before_integer && ${(t)FOO} == $before_foo_type && ${(t)MAP} == $before_map_type && ${parameters[INTEGER]} == $before_integer_type && ${plugins[*]} == $before_plugins && ${aliases[G]} == $before_g ]] || exit 132",
 			}, "\n")
 			if out, err := exec.Command("zsh", "-f", "-c", script).CombinedOutput(); err != nil {
 				t.Fatalf("historical fidelity pipeline changed sentinels: %v\n%s\nscript:\n%s", err, out, script)
 			}
 		})
 	}
+}
+
+func pipelineManifestEmpty(manifest model.Manifest) bool {
+	return len(manifest.Env) == 0 && len(manifest.Lists) == 0 && len(manifest.Aliases.Added) == 0 && len(manifest.Functions.Added) == 0 && len(manifest.Options) == 0
 }
 
 func roundTripPipelineProfile(t *testing.T, profile model.Profile) model.Profile {
