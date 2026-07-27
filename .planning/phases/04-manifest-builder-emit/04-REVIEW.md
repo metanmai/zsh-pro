@@ -1,67 +1,70 @@
 ---
 phase: 04-manifest-builder-emit
-reviewed: 2026-07-27T11:20:00Z
+reviewed: 2026-07-27T12:00:22Z
 depth: standard
-files_reviewed: 9
+files_reviewed: 12
 files_reviewed_list:
-  - core/activate/builder.go
   - core/model/profile.go
-  - core/ir/regen.go
-  - core/activate/builder_test.go
   - core/model/profile_test.go
-  - core/ir/regen_test.go
+  - core/store/dto.go
   - core/store/dto_test.go
+  - core/ir/build.go
+  - core/ir/build_test.go
+  - core/ir/regen.go
+  - core/ir/regen_test.go
+  - core/activate/builder.go
+  - core/activate/builder_test.go
   - core/shell/zsh/pipeline_test.go
   - core/shell/zsh/residue_test.go
 findings:
   critical: 2
-  warning: 1
+  warning: 0
   info: 0
-  total: 3
+  total: 2
 status: issues_found
 ---
 
-# Phase 04: Code Review Report
+# Phase 4: Code Review Report
 
-**Reviewed:** 2026-07-27T11:20:00Z
+**Reviewed:** 2026-07-27T12:00:22Z
 **Depth:** standard
-**Files Reviewed:** 9
+**Files Reviewed:** 12
 **Status:** issues_found
 
 ## Summary
 
-The 04-14 reducer fixes the prior duplicate-delta loss for the static PATH/FPATH fixtures, and the four targeted declaration forms now remain verbatim and operation-free after DTO persistence. However, two persisted-profile paths still change shell semantics: canonicalizing a legacy dynamic list freezes its expansion, and a forced-managed append assignment is still lowered as an overwrite. The passing full suite, vet, build, and `make check` do not exercise either path.
+Plan 04-15 closes the tested append, array-literal, flagged-alias, legacy-dynamic-list, and historical-DTO cases. However, its new structural-fidelity contract still declares two behavior-bearing zsh assignment forms representable without retaining their semantics. Both can enter regeneration and/or manifest emission, so the phase cannot claim faithful managed-state handling or zero-residue reversibility for those valid source forms.
+
+Targeted package tests and `GOTOOLCHAIN=auto go test -count=1 ./...` / `go build ./...` pass, but neither blocker is exercised by the new matrix.
+
+## Narrative Findings (AI reviewer)
+
+The findings below are from direct source and live-zsh semantic tracing.
 
 ## Critical Issues
 
-### CR-01 [BLOCKER]: Legacy dynamic PATH/FPATH additions are frozen as literals
+### CR-01: Indexed assignments are treated as ordinary scalar declarations
 
-**File:** `core/activate/builder.go:190-208,291-297`
+**File:** `core/model/profile.go:96-102`
 
-**Issue:** `pathDelta` accepts a legacy addition such as `$HOME/bin` (it is not rejected by `unsafeStatic`), but always creates `AdditionDynamic: []bool{false...}`. `composeLegacyList` then copies every addition into a token with `dynamic=false`. The new final delta has complete metadata, so `renderListDelta` trusts it and single-quotes that addition instead of using the former legacy heuristic. A stored legacy `PATH=$PATH:$HOME/bin` therefore emits `PATH=$ZP_BASE_PATH:'$HOME/bin'` and creates a literal `$HOME/bin`, violating late binding and changing the activated shell.
+**Issue:** The persisted structural-fidelity contract records only `Append`, `Array`, and `Flagged`; it has no marker for `syntax.Assign.Index`. `core/shell/zsh/parse.go:70-94` records a subscripted source such as `FOO[2]=bar` as `KindAssignment`, `Names:[FOO]`, and `Value:"bar"` without setting any existing marker. Consequently `Entry.Representable()` returns true at lines 152-166. The managed regeneration path turns it into `FOO=bar`, and the manifest builder can emit a scalar operation for it.
 
-**Fix:** Preserve per-addition dynamic provenance while translating a legacy delta. Either add a shell-agnostic, strict compatibility classifier for only the legacy expansions the emitter previously accepted, or retain an explicit legacy-segment marker that the emitter resolves using its existing safe dynamic rule. Add DTO-to-`zsh -f` coverage for dynamic legacy PATH and FPATH, including a mixed semantic/legacy profile, with a different runtime `HOME`/parameter value.
+Those are not equivalent in zsh: under `zsh -f`, `FOO[2]=bar` creates an array (`${(t)FOO} == array`, element 2 is `bar`), whereas `FOO=bar` leaves a scalar. The live property tests do mutate array elements, but their profile fixtures never ingest an indexed assignment, so the bad promotion is invisible.
 
-### CR-02 [BLOCKER]: Persisted forced append assignments are still regenerated and activated as overwrites
+**Fix:** Add a presence-aware `Indexed` (or a richer assignment-shape enum) to `Block`, `Entry`, `structuralFidelityDTO`, and the IR/store copies. Set it from `a.Index != nil` in every parser assignment loop. Make `Representable()` return false for indexed assignments until the manifest/emitter has a reversible indexed-operation model. Add Parse → DTO re-save → forced-managed → Regenerate/Build → `zsh -f` tests for numeric and associative subscripts.
 
-**File:** `core/model/profile.go:124-138`, `core/ir/regen.go:27-30`, `core/activate/builder.go:35-63`
+### CR-02: `export` attribute flags lose zsh variable type semantics
 
-**Issue:** `DeclarationRepresentable` rejects only four declaration command names. The parse-time `Block.Append` flag is intentionally used by the router to keep `FOO+=bar` out of the templated path, but it is not present on `Entry` (nor copied by `ir.Build`). Once a persisted entry is marked `OverrideManaged`, it is considered representable. `ir.Regenerate` calls the zsh regenerator, which emits `FOO=bar`, and `Build` emits a `SetScalar{FOO, "bar"}`. Thus a persisted `export FOO+=bar` silently replaces the current value rather than appending, defeating the stated persisted representability boundary and mutating live shell state incorrectly.
+**File:** `core/model/profile.go:131-166`
 
-**Fix:** Persist the structural fidelity markers needed after routing (at least `Append`; audit `Array` and alias flags too), replace the declaration-only predicate with one shared representability predicate, and require it in both regeneration and manifest construction. Until those markers are represented, forced-managed append entries must regenerate from `Text` and yield no manifest operation. Add a parse -> DTO round trip -> forced override -> regeneration/build/live-zsh test for `FOO+=bar` and `export PATH+=:/x`.
+**Issue:** `DeclarationRepresentable()` rejects only `typeset`, `declare`, `local`, and `readonly`; it treats every `export` assignment as an ordinary scalar. But the parser also does not retain flags passed to `export` (`core/shell/zsh/parse.go:133-163` skips flag words). A valid `export -i FOO=1` is therefore classified as a managed environment assignment with known `Append/Array/Flagged` markers. Regeneration emits `export FOO=1`, while activation emits an ordinary exported scalar, silently discarding the integer attribute even after `OverrideManaged`.
 
-## Warnings
+This changes observable behavior: in `zsh -f`, `export -i FOO=1; FOO+=2` yields `3` with `parameters[FOO] == integer-export`; the regenerated/plain-export equivalent yields `12` and `scalar-export`. The Plan 04-15 override matrix covers `typeset -i`, but not the equally valid `export -i` form, so the tests do not detect the loss.
 
-### WR-01 [WARNING]: New end-to-end cases omit both regression inputs
-
-**File:** `core/shell/zsh/pipeline_test.go:245-364`
-
-**Issue:** The legacy profile factory only covers static additions, and the persisted override table contains only the four declaration commands. Consequently the new pipeline tests pass while missing the dynamic legacy provenance loss and forced append override bypass above.
-
-**Fix:** Extend the table with the inputs described in CR-01 and CR-02, assert the generated `AdditionDynamic` flags, and source the emitted code with runtime values that distinguish a real expansion from a quoted literal and an append from an overwrite.
+**Fix:** Preserve declaration/export flags as part of the source-shape DTO and reject any flagged assignment from `Representable()` unless the exact attribute semantics are modeled. At minimum, fail closed for `export` invocations with flags other than an explicitly supported no-op terminator. Add a persisted forced-managed `export -i FOO=1` regression that verifies regeneration remains verbatim and Build produces no scalar operation.
 
 ---
 
-_Reviewed: 2026-07-27T11:20:00Z_
+_Reviewed: 2026-07-27T12:00:22Z_
 _Reviewer: the agent (gsd-code-reviewer)_
 _Depth: standard_
