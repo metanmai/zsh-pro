@@ -207,7 +207,7 @@ func (p Provider) describe(stmt *syntax.Stmt, b *model.Block, src []byte) {
 			if a.Append {
 				b.Append = true // WR-01: `export PATH+=:/x` parses as a DeclClause
 			}
-			if a.Value != nil {
+			if a.Value != nil && !a.Naked {
 				b.Value = sliceSrc(src, a.Value.Pos().Offset(), a.Value.End().Offset())
 				captureWordSemantics(b, a.Value, "")
 			}
