@@ -253,6 +253,13 @@ func (p Provider) captureDeclarationFlags(b *model.Block, words []*syntax.Word) 
 	options := true
 	for _, w := range words {
 		lit := p.wordLitPrefix(w)
+		if lit == "" {
+			// A dynamically produced argument can become a declaration option at
+			// execution time. The AST cannot expose its semantic attributes, so
+			// leave the whole source shape opaque instead of claiming no flags.
+			b.Opaque = true
+			continue
+		}
 		if options && lit == "--" {
 			options = false
 			continue

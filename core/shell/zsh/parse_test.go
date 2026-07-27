@@ -172,6 +172,16 @@ func TestParseCapturesIndexedAndDeclarationFlags(t *testing.T) {
 	}
 }
 
+func TestParseMakesDynamicDeclarationArgumentsOpaque(t *testing.T) {
+	blocks, err := (Provider{}).Parse([]byte("export $FLAGS FOO=1\n"))
+	if err != nil || len(blocks) != 1 {
+		t.Fatalf("Parse() blocks=%#v err=%v", blocks, err)
+	}
+	if !blocks[0].Opaque {
+		t.Fatalf("dynamic declaration argument was treated as known-unflagged: %#v", blocks[0])
+	}
+}
+
 func TestParseRetainsDeclarationCommandMarkers(t *testing.T) {
 	cases := []struct {
 		name string
