@@ -8,6 +8,7 @@ import (
 
 var optionNameRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 var symbolNameRE = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]*$`)
+var legacyDynamicPathRE = regexp.MustCompile(`^\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})(?:/[A-Za-z0-9_@%+=,.-]+)*$`)
 
 const unsetOptCommand = "unset" + "opt"
 
@@ -202,7 +203,7 @@ func composeLegacyList(raw, value string, prior map[string][]listToken) (string,
 			next = append(next, current...)
 		}
 		if i < len(delta.Additions) {
-			next = append(next, listToken{value: delta.Additions[i]})
+			next = append(next, listToken{value: delta.Additions[i], dynamic: delta.AdditionDynamic[i]})
 		}
 	}
 	return delta.Name, next, true
@@ -279,10 +280,16 @@ func pathDelta(name, value string) (model.ListDelta, bool) {
 	} else {
 		adds = parts[:len(parts)-1]
 	}
-	for _, a := range adds {
-		if unsafeStatic(a) {
+	dynamic := make([]bool, len(adds))
+	for i, a := range adds {
+		isDynamic, ok := legacyDynamicPath(a)
+		if isDynamic && legacyListReference(a) {
+			ok = false
+		}
+		if !ok {
 			return model.ListDelta{}, false
 		}
+		dynamic[i] = isDynamic
 	}
 	baseIndex := idx
 	if idx == len(parts)-1 {
@@ -293,8 +300,38 @@ func pathDelta(name, value string) (model.ListDelta, bool) {
 		Additions:       adds,
 		Deletions:       []string{},
 		BaseIndex:       &baseIndex,
-		AdditionDynamic: make([]bool, len(adds)),
+		AdditionDynamic: dynamic,
 	}, true
+}
+
+// legacyDynamicPath recognizes only the no-evaluation parameter form that can
+// remain late-bound in a zsh list. It is intentionally narrower than shell
+// expansion: a single simple parameter followed by path-safe literal segments.
+func legacyDynamicPath(value string) (dynamic, ok bool) {
+	if legacyDynamicPathRE.MatchString(value) {
+		return true, true
+	}
+	if strings.Contains(value, "$") || unsafeStatic(value) {
+		return false, false
+	}
+	return false, true
+}
+
+// legacyListReference rejects PATH/FPATH aliases in an addition. The one
+// supported same-list reference is consumed as the explicit base marker above;
+// admitting another list reference would invent cross-list semantics.
+func legacyListReference(value string) bool {
+	name := strings.TrimPrefix(value, "$")
+	if strings.HasPrefix(name, "{") {
+		end := strings.IndexByte(name, '}')
+		if end < 0 {
+			return true
+		}
+		name = name[1:end]
+	} else if slash := strings.IndexByte(name, '/'); slash >= 0 {
+		name = name[:slash]
+	}
+	return name == "PATH" || name == "path" || name == "FPATH" || name == "fpath"
 }
 
 func unsafeStatic(s string) bool {
