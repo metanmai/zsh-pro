@@ -1,68 +1,58 @@
 ---
 phase: 04-manifest-builder-emit
-verified: 2026-07-27T08:38:33Z
+verified: 2026-07-27T09:49:10Z
 status: gaps_found
-score: 6/9 must-haves verified
+score: 7/9 must-haves verified
 behavior_unverified: 0
 overrides_applied: 0
 re_verification:
   previous_status: gaps_found
-  previous_score: 4/11
+  previous_score: 6/9
   gaps_closed:
-    - "Repeated identities now reduce to final effective identities with collision-free, presence-aware undo state."
-    - "Literal values, dynamic provenance, function bodies, introspection source failures, and transactional secret writes have dedicated code and passing regressions."
-    - "The full-state zero-residue oracle now covers repeated scalar/function identities, punctuation-distinct names, PATH and FPATH, sentinel data, and renderer/state mutants."
-  gaps_remaining: []
-  regressions:
-    - "The parser/IR route admits list and declaration shapes that the manifest builder cannot represent faithfully."
-    - "The parser/IR route admits multi-name functions that Build silently omits."
+    - "Parsed unsupported/cross-list forms are inert; raw list fallback is restricted to ValueModeLegacy with a same-list base marker."
+    - "Auto-routed typeset, declare, local, and readonly forms stay imperative, and valid multi-name functions now apply and restore."
+  gaps_remaining:
+    - "Legacy list fallbacks bypass source-ordered list composition."
+    - "Persisted OverrideManaged declarations bypass the builder's faithful-representation boundary."
+  regressions: []
 gaps:
-  - truth: "Only declarative profile entries that can be represented faithfully become PATH/FPATH manifest operations."
+  - truth: "Every accepted legacy or semantic PATH/FPATH entry is composed in source order into one faithful reversible delta."
     status: failed
-    reason: "A parsed list with nil ListValue falls back to raw source splitting; the fallback accepts PATH/FPATH base markers interchangeably and ignores ValueMode."
+    reason: "Legacy fallback deltas are appended directly to Manifest.Lists rather than the semantic composition state; later operations rebuild from the captured base and discard earlier legacy additions."
     artifacts:
       - path: "core/activate/builder.go"
-        issue: "Lines 77-80 invoke pathDelta after semantic parsing rejected the list; lines 209-248 accept $FPATH/$fpath as a PATH base and vice versa."
-      - path: "core/ir/route.go"
-        issue: "Lines 46-59 mark the entry managed without requiring a valid ListValue."
+        issue: "Lines 77-80 append pathDelta directly, while lines 65-76 and 139-152 compose only semantic ListValue entries."
+      - path: "core/shell/zsh/emit.go"
+        issue: "Lines 181-190 capture one base slot, and renderList/renderListDelta each rebuild from that same base, so two PATH operations cannot preserve accumulated prior additions."
     missing:
-      - "Restrict raw pathDelta fallback to explicitly legacy entries and require a same-variable base marker."
-      - "Add Parse -> IR -> Build regressions for PATH=$FPATH:/a, FPATH=$PATH:/a, and unsupported list syntax asserting no list operation."
-  - truth: "Only attribute-free declarative scalar assignments are applied as reversible scalar operations."
+      - "Convert a valid legacy pathDelta into listTokens and feed it through the same per-canonical-list source-order composition path as semantic lists."
+      - "Add Parse/IR/store/Build/Diff/Emit live-zsh regressions for legacy+legacy and legacy+semantic PATH and FPATH in both source orders."
+  - truth: "Only faithfully representable declarative assignments can cross a persisted profile into reversible scalar/list manifest operations."
     status: failed
-    reason: "typeset, declare, local, and readonly declarations are recorded as KindAssignment without their declaration flags/attributes, routed managed, then emitted as plain export/typeset -g assignments."
+    reason: "EffectiveManaged honors persisted OverrideManaged before Build inspects declaration semantics, so typeset/declare/local/readonly entries are emitted as ordinary scalars and lose attributes or scope."
     artifacts:
-      - path: "core/shell/zsh/parse.go"
-        issue: "Lines 133-205 collapse declaration forms to a normal assignment and preserve neither flags nor attributes."
-      - path: "core/ir/route.go"
-        issue: "Lines 46-59 admit every single-name non-array KindAssignment in the scalar categories."
+      - path: "core/model/profile.go"
+        issue: "Lines 109-121 make OverrideManaged return true regardless of the router's auto verdict."
       - path: "core/activate/builder.go"
-        issue: "Lines 43-63 reduce the entry to Scalar{Name, Applied, Exported}, discarding integer, readonly, tied, and local semantics."
+        issue: "Lines 34-48 accept every effective managed KindAssignment in environment/secrets categories without excluding declaration CmdName values."
+      - path: "core/store/dto.go"
+        issue: "Lines 31-43 and 103-146 persist and restore CmdName plus Override, making this reachable from profile.json."
     missing:
-      - "Route declaration/attribute-bearing forms to the imperative verbatim path until their semantics are modeled."
-      - "Add parser-to-manifest tests for typeset -i, readonly, tied, and local declarations."
-  - truth: "Every managed function declaration contributes a reversible function operation."
-    status: failed
-    reason: "The parser explicitly accepts zsh's function one two { ... } form and routeManaged marks every KindFuncDecl managed, but Build emits only when len(Names) == 1, dropping the declaration silently."
-    artifacts:
-      - path: "core/shell/zsh/parse.go"
-        issue: "Lines 206-220 append every declared function name and capture one body."
-      - path: "core/ir/route.go"
-        issue: "Lines 44-45 admit all function declarations."
-      - path: "core/activate/builder.go"
-        issue: "Lines 92-106 require len(e.Names) == 1 and otherwise produce no manifest function."
-    missing:
-      - "Either route multi-name functions as imperative or emit one final function identity per declared name."
-      - "Add a Parse -> IR -> Build -> Diff -> Emit live-zsh test that checks both names apply and restore."
+      - "At the builder boundary reject unmodeled declaration commands regardless of EffectiveManaged, and make regeneration retain their Text as a second guard."
+      - "Add a Parse -> persisted profile -> Build regression for typeset -i, readonly, tied, and local forms with OverrideManaged, asserting no scalar/list operation and verbatim regeneration."
+deferred:
+  - truth: "A sourced loader evals emitted code into the parent terminal."
+    addressed_in: "Phase 5"
+    evidence: "Phase 5 goal explicitly wires the hook loader and eval into the live terminal; Phase 4 supplies the emitter seam."
 ---
 
 # Phase 4: Manifest Builder + Emit Verification Report
 
-**Phase Goal:** Build a versioned, shell-agnostic activation manifest from the declarative profile IR, diff it to executable operations, and emit safe reversible zsh activation/deactivation scripts while preserving late-bound values and zero residue.
+**Phase Goal:** Build a versioned shell-agnostic manifest/diff/emitter that applies only faithfully representable declarative profile state, preserves late-bound values, and reverses with zero residue.
 
-**Verified:** 2026-07-27T08:38:33Z
-**Status:** gaps_found
-**Re-verification:** Yes — independent regression check after earlier gap closure.
+**Verified:** 2026-07-27T09:49:10Z  
+**Status:** gaps_found  
+**Re-verification:** Yes — after Plan 04-13
 
 ## Goal Achievement
 
@@ -70,93 +60,88 @@ gaps:
 
 | # | Truth | Status | Evidence |
 | --- | --- | --- | --- |
-| 1 | Manifest v1 is a versioned, shell-agnostic record and Diff enforces SchemaV1 before plan generation. | ✓ VERIFIED | `core/model/manifest.go:3-69`; `core/activate/diff.go:11-45`; fresh model/activate and full-suite tests passed. |
-| 2 | The parser/IR admits only profile entries the manifest can represent faithfully, preserving literal and late-bound values. | ✗ FAILED | PATH/FPATH semantic rejection is bypassed by `builder.go:77-80,209-248`; declaration attributes are discarded by `parse.go:133-205` before `route.go:46-59` admits them. |
-| 3 | `core/activate` produces a shell-agnostic deactivate-then-activate plan, with reverse zsh syntax generated only by the zsh emitter. | ✓ VERIFIED | `Diff` builds deactivate first (`diff.go:38-45`); `TestReverseSyntaxHasSingleEmitHome` passed; manual lexical trace locates reverse commands only in `emit.go` (apart from non-reverse forward regen terminology). |
-| 4 | Emitter operations are injected safely, preserve explicit dynamic provenance, and restore scalar/list/alias/function/option state for the supported manifest domain. | ✓ VERIFIED | Fresh live-zsh pipeline tests for values/functions, punctuation collisions/sentinel/export restoration, and composed PATH/FPATH all passed; `TestZeroResidueFullStateProperty` passed in its non-empty, present-empty, and unset-FPATH baselines. |
-| 5 | Alias/function bodies are captured before override and introspection fails closed without interpreting body bytes as protocol controls. | ✓ VERIFIED | `introspect.go:18-97` exits on nonzero `source`, isolates line prefix before NUL body records, and the full suite passed the introspection regressions. |
-| 6 | Every accepted managed function declaration reaches activation and deactivation. | ✗ FAILED | Multi-name function declarations are accepted by parser/route then suppressed by the single-name guard in `builder.go:92-106`; no test exercises this source form. |
-| 7 | Repeated scalar/function/option/list identities, sentinel-valued data, PATH/FPATH presence, and renderer mutants are rejected by a full-state residue oracle. | ✓ VERIFIED | `residue_test.go` builds manifests through Parse -> IR -> Build -> Diff -> Emit; the named property and mutant checks passed under `zsh -f`. |
-| 8 | Secrets are carried as semantic runtime values and Commit preserves backend/Git atomicity on failure. | ✓ VERIFIED | Fresh `core/store` transaction run passed `TestCommitRollsBackSecretWritesBeforeMovingRef` and `TestCommitCompensatesAmbiguousRefFailure`, plus literal/dynamic secret regressions. |
-| 9 | Applying then deactivating any Phase-4 admitted declarative profile is reversible and zero-residue. | ✗ FAILED | Truths 2 and 6 show admitted source shapes that change semantics or disappear before emitting; green residue fixtures do not cover either shape. |
+| 1 | Manifest v1 is a versioned, shell-agnostic reversible record; Diff rejects incompatible schemas. | ✓ VERIFIED | `core/model/manifest.go` supplies the v1 model; `core/activate/diff.go` validates schema before building operations. |
+| 2 | Only faithfully representable declarative state reaches manifest operations. | ✗ FAILED | Persisted `OverrideManaged` declarations bypass the parser/router guard and Build lowers them to ordinary scalars. |
+| 3 | `core/activate` creates a shell-agnostic deactivate-then-activate plan; reverse zsh syntax is owned by the emitter. | ✓ VERIFIED | `core/activate` imports only `core/model`; `Diff` orders deactivate before activate; reverse-token ownership remains in `core/shell/zsh/emit.go`. |
+| 4 | Supported scalar/list/alias/function/option operations preserve literal versus late-bound provenance and reverse ownership-aware state. | ✓ VERIFIED | Focused live-zsh pipeline tests passed for values, function bodies, cross-list rejection, multi-name restoration, and semantic PATH/FPATH expansion. |
+| 5 | Introspection captures shadowable alias/function bodies and fails closed on source/framing failure. | ✓ VERIFIED | `core/shell/zsh/introspect.go` uses NUL-framed body records and propagates source errors; prior focused regression suite remains present. |
+| 6 | Every accepted function declaration has a reversible operation for every valid declared name. | ✓ VERIFIED | Builder atomically validates/reduces all names (`builder.go:92-118`); `TestPipelineMultiNameFunctionRoundTrip` passed under `zsh -f`. |
+| 7 | The residue oracle exercises source-derived profiles and rejects renderer/state mutants. | ✓ VERIFIED | `residue_test.go` uses Parse -> IR -> Build -> Diff -> Emit under `zsh -f`; its property and invariant are wired into the standard package tests. |
+| 8 | Secret values retain semantic treatment and storage commits are transactional. | ✓ VERIFIED | Store DTO preserves semantic fields; focused store round-trip/transaction tests passed. |
+| 9 | Applying and deactivating any admitted legacy or semantic profile is path-independent and zero-residue. | ✗ FAILED | Repeated/mixed legacy PATH/FPATH additions are accepted but earlier additions are lost at the builder/emitter boundary; existing property fixtures do not cover that domain. |
 
-**Score:** 6/9 must-haves verified (0 present-but-behavior-unverified).
+**Score:** 7/9 truths verified (0 present-but-behavior-unverified).
 
 ## Required Artifacts
 
-All 40 declared artifacts exist and are substantive except for one plan-location mismatch: `verify.artifacts` marks `core/store/store_test.go` incomplete because its required `Rollback` pattern is absent. The transactional regressions actually live in `core/store/secret_test.go` and passed, so this is a documentation/test-placement warning rather than evidence that the transaction behavior is missing.
-
-| Artifact group | Status | Details |
-| --- | --- | --- |
-| `core/model/manifest.go`, `core/activate/{builder,plan,diff}.go` | ⚠️ WIRED, incomplete | Manifest/diff are substantive and used by live tests; Builder has the two lossy admission paths above. |
-| `core/shell/zsh/{emit,introspect,parse}.go` | ⚠️ WIRED, incomplete | Emit and introspection work for supported plans; parse/route do not preserve declaration attributes or constrain multi-name function admission. |
-| `core/shell/zsh/{pipeline,residue,invariant}_test.go` | ✓ VERIFIED | Tests execute real zsh, trace the production path, and include property/mutant coverage. Their input domain omits the three failed source shapes. |
-| `core/store/{secret,store,errors}.go` and transaction tests | ✓ VERIFIED | Side-effect-free preparation, rollback/compensation, and typed errors are wired and exercised by focused tests. |
+| Artifact | Expected | Status | Details |
+| --- | --- | --- | --- |
+| `core/model/manifest.go`, `core/activate/{plan,diff}.go` | Versioned shell-agnostic manifest and plan | ✓ VERIFIED | Substantive and wired through live pipeline tests. |
+| `core/activate/builder.go` | Faithful source-order reduction to manifest parts | ✗ FAILED | Two boundary failures below make an otherwise substantive/wired artifact lossy. |
+| `core/shell/zsh/{emit,introspect}.go` | Sole zsh emitter and recoverable live-state capture | ✓ VERIFIED for one operation per list | A second list operation resets to the same captured base, exposing the Builder's duplicate-delta defect. |
+| `core/store/dto.go` | Lossless persisted Profile fields | ✓ VERIFIED, security-relevant | It correctly persists `CmdName` and `Override`; that proves the forced-managed declaration gap is reachable, not a synthetic in-memory-only case. |
+| `core/shell/zsh/{pipeline,residue,invariant}_test.go` | Real shell regression/property coverage | ⚠️ INCOMPLETE | Tests are substantive and pass, but omit mixed/repeated legacy-list and persisted forced-managed declaration paths. |
 
 ## Key Link Verification
 
-| From | To | Status | Evidence |
+| From | To | Via | Status | Details |
 | --- | --- | --- | --- |
-| zsh parser -> IR -> Build | ✗ PARTIAL | `ir.Build` copies semantic fields, but `routeManaged` admits unsupported lists/attribute declarations and Build loses those semantics. |
-| Build -> Diff -> zsh Provider.Emit -> live zsh | ✓ WIRED | `pipeline_test.go` and `residue_test.go` call the production types and passed under `zsh -f`. |
-| Introspection script -> `Provider.Introspect` | ✓ WIRED | `source_status` gate exits before output; `cmd.Run` returns the error. |
-| Secret preparation -> Commit -> backend/Git compensation | ✓ WIRED | Focused transaction tests passed. |
-| Composition root -> `shell.Emitter` | ⚠️ PARTIAL (expected Phase 5) | `main.go:21-23` assigns `zsh.Provider{}` to `shell.Emitter` but intentionally does not drive it; Phase 5 owns the sourced loader/CLI. |
+| Parser -> IR router -> Builder | Declarative entry admission | ✗ PARTIAL | Router rejects declarations automatically, but `EffectiveManaged()` re-admits a persisted override before Build's unguarded scalar branch. |
+| Legacy/semantic list entry -> Builder composition -> Emit | One source-ordered PATH/FPATH delta | ✗ NOT WIRED faithfully | Semantic entries flow through `lists`; legacy `pathDelta` entries bypass it into `m.Lists`, then emitter resets from the same captured base for every op. |
+| Build -> Diff -> zsh Provider.Emit -> `zsh -f` | Supported manifest operations | ✓ WIRED | Current focused pipeline tests passed. |
+| Introspection -> emitter restore slots | Shadow body capture/restore | ✓ WIRED | NUL-framed body data feeds the supported function restore path. |
 
-## Data-Flow Trace
+## Data-Flow Trace (Level 4)
 
-| Artifact | Data source | Status | Evidence |
-| --- | --- | --- | --- |
-| Scalar/alias runtime data | AST `RuntimeValue`/`ValueMode` -> IR -> Build -> Diff -> Emit | ✓ FLOWING for supported forms | Live pipeline value test passed. |
-| PATH/FPATH data | AST `ListValue` -> IR -> Build -> emitted tied-scalar assignment | ⚠️ HOLLOW on rejected forms | Valid semantic lists compose correctly; nil `ListValue` falls into raw `pathDelta`, reopening rejected/cross-list forms. |
-| Function body data | AST `FunctionBody` -> IR -> `FuncSet.Bodies` -> `AddFunc` -> emitter | ⚠️ PARTIAL | Unary definitions are live-tested; a multi-name declaration has a body but is dropped by Builder. |
-| Secret data | `RuntimeValue` -> prepare -> backend mutation -> CAS Git ref | ✓ FLOWING | Exact-value and rollback/ambiguous-ref tests passed. |
+| Artifact | Data variable | Source | Produces real data | Status |
+| --- | --- | --- | --- | --- |
+| List manifest | `m.Lists` | `ListValue` -> `lists` map, versus legacy `pathDelta` -> direct append | No for repeated/mixed legacy paths | ✗ HOLLOW/LOSSY |
+| Declaration scalar | `m.Env` | persisted `Entry{CmdName, Override, RuntimeValue}` -> `EffectiveManaged()` -> scalar branch | Yes, but with semantics discarded | ✗ HOLLOW/LOSSY |
+| Functions | `Functions.Bodies` | parsed function body -> IR -> Build -> Emit | Yes | ✓ FLOWING |
+| Secrets | semantic entry -> DTO/store transaction | DTO + transactional store code | Yes | ✓ FLOWING |
 
 ## Behavioral Spot-Checks
 
 | Behavior | Command | Result | Status |
 | --- | --- | --- | --- |
-| Whole current workspace | `GOTOOLCHAIN=auto go test -count=1 ./...` | all packages passed | ✓ PASS |
-| Real emitter pipeline | `go test -count=1 ./core/shell/zsh -run 'TestPipeline(PreservesValuesAndFunctionsInLiveZsh|RepeatedCollisionSentinelAndExportRestoration|ComposedPathAndFPathDynamicExpansion)$' -v` | three `zsh -f` integrations passed | ✓ PASS |
-| Full-shell residue and reverse-syntax invariant | `go test -count=1 ./core/shell/zsh -run 'TestZeroResidueFullStateProperty|TestReverseSyntaxHasSingleEmitHome|TestParseListValueRejectsAmbiguousBase' -v` | all passed | ✓ PASS, but exposes a coverage disconnect: parser rejects cross-list inputs while Builder re-admits them |
-| Transaction rollback/compensation | `go test -count=1 ./core/store -run 'Test.*(Rollback|Commit|Secret|Transaction)' -v` | all listed transaction/secret tests passed | ✓ PASS |
-| Invalid emitter operation disposition | `go test -count=1 ./core/shell/zsh -run '^TestEmitRejectsHostileNamesWithoutOutput$' -v` | passes by asserting no error and empty output | ⚠️ WARNING — final validation silently omits invalid operations |
+| Semantic list composition, legacy same-list admission, multi-name reduction | `go test -count=1 ./core/activate -run 'TestBuild(RequiresSemanticListOrLegacySameList|ComposesSemanticListsInSourceOrder|ReducesFunctionNamesAtomically)$' -v` | PASS | ✓ PASS — also demonstrates the missing mixed/repeated-legacy cases. |
+| Auto-routed declarations remain imperative | `go test -count=1 ./core/ir -run 'TestBuildDeclarationFormsStayImperative$' -v` | PASS | ✓ PASS — no `OverrideManaged` persistence case is exercised. |
+| Production zsh pipelines | `go test -count=1 ./core/shell/zsh -run 'TestPipeline(ComposedPathAndFPathDynamicExpansion|RejectsUnsupportedListForms|MultiNameFunctionRoundTrip)$' -v` | PASS under `zsh -f` | ✓ PASS — only semantic list composition is covered. |
+| DTO profile persistence | `go test -count=1 ./core/store -run 'Test(RoundTrip|Marshal|ListValueDTO)' -v` | PASS | ✓ PASS — confirms profile field persistence but not the forced-managed declaration boundary. |
+
+## Probe Execution
+
+No declared or conventional `scripts/*/tests/probe-*.sh` probes exist. Go and live-zsh focused tests are the runnable Phase 4 surface.
 
 ## Requirements Coverage
 
 | Requirement | Source Plans | Status | Evidence |
 | --- | --- | --- | --- |
-| SW-01 — apply declarative state through one emitted zsh path | 04-01, 02, 03, 04, 06, 07, 08, 09, 11, 12 | ✗ BLOCKED | The single emitter seam is real, but Build can create a semantically wrong list operation and lose declaration attributes/multi-name functions. The sourced loader itself is explicitly Phase 5 work, not counted as this Phase-4 gap. |
-| SW-02 — deactivate/reverse with zero residue | 04-01, 02, 04, 05, 06, 09, 10, 12 | ✗ BLOCKED | Property evidence proves supported fixtures only; the admitted source paths above are not reversible and have no regression tests. |
+| SW-01 — apply declarative state through one emitted zsh path | 04-01 through 04-13 | ✗ BLOCKED | One emitter seam exists, but it receives a scalar that no longer represents forced-managed declaration semantics and can receive an incomplete legacy list result. |
+| SW-02 — reverse prior profile with zero residue | 04-01 through 04-13 | ✗ BLOCKED | Reverse works for covered supported fixtures, not every admitted legacy/semantic profile; repeated/mixed legacy list input loses additions before reversal. |
 
-All declared Phase 4 requirement IDs are accounted for in `.planning/REQUIREMENTS.md`; no orphaned requirement IDs were found.
+All Phase 4 plan requirement IDs are SW-01/SW-02 and both appear in `.planning/REQUIREMENTS.md`; no orphaned Phase 4 requirements were found.
 
 ## Anti-Patterns Found
 
 | File | Line | Pattern | Severity | Impact |
 | --- | --- | --- | --- | --- |
-| `core/activate/builder.go` | 77-80, 209-248 | Raw list fallback after semantic rejection | 🛑 BLOCKER | Re-admits unsupported/cross-list list expressions. |
-| `core/shell/zsh/parse.go` | 133-205 | Attribute-bearing declarations collapsed to scalar entries | 🛑 BLOCKER | Integer/readonly/tied/local meaning is not preserved. |
-| `core/activate/builder.go` | 92-106 | Managed multi-name function silently omitted | 🛑 BLOCKER | Accepted profile declaration does not activate. |
-| `core/shell/zsh/emit.go` | 166-210, 226-277 | Invalid operation returns nil after omission | ⚠️ WARNING | Corrupt/manual manifests can appear to activate successfully with missing operations. |
-| `core/activate/builder.go` | 15-28 | `Build(model.Profile)` cannot set `Manifest.Profile` | ⚠️ WARNING | Call sites must remember to assign identity; pipeline/residue tests do it manually. |
+| `core/activate/builder.go` | 77-80 | Legacy delta bypasses composition | 🛑 BLOCKER | Earlier PATH/FPATH additions can disappear. |
+| `core/activate/builder.go` | 34-48 | Effective override crosses unmodeled declaration boundary | 🛑 BLOCKER | `typeset`/`declare`/`local`/`readonly` meaning can be silently changed. |
+| `core/shell/zsh/{pipeline,residue}_test.go` | — | Coverage gap | ⚠️ WARNING | Green property/pipeline tests do not exercise either blocker path. |
 | Phase-modified production files | — | `TBD`/`FIXME`/`XXX` scan | ✓ CLEAN | No unresolved debt-marker blocker found. |
 
-## Probe Execution
+## Deferred Items
 
-No declared or conventional `scripts/*/tests/probe-*.sh` probes exist for this Go phase. The focused Go/zsh tests above are the runnable verification surface.
-
-## Human Verification Required
-
-None. The blocking failures are deterministically observable from parser, router, builder, and existing test-domain evidence; human UAT cannot resolve them.
+The parent-shell sourced loader is specifically Phase 5 work. Phase 4 has a wired emitter/provider seam but does not itself install the loader; this is explicitly scheduled by the Phase 5 roadmap goal and is not counted as a Phase 4 gap.
 
 ## Gaps Summary
 
-Phase 4 is **not achieved**. The implementation is strong for the supported fixture domain: the fresh full suite, real-zsh pipeline, full-state residue oracle, reverse-syntax invariant, and secret transaction checks all pass. However, three accepted source forms are not faithfully represented before emission. That invalidates both SW-01 and SW-02 for the declared profile IR, regardless of the green fixture suite.
+Phase 4 is **not achieved**. Plan 04-13 correctly closed the prior parser-list, auto-routed declaration, and multi-name-function failures, but its new legacy compatibility path is not composed with semantic list state, and its router-only declaration guard is bypassable through persisted `OverrideManaged` entries. These are deterministic source-level defects despite the green uncached suite.
 
 Next command: `gsd-plan-phase 4 --gaps`
 
 ---
 
-_Verified: 2026-07-27T08:38:33Z_
+_Verified: 2026-07-27T09:49:10Z_  
 _Verifier: the agent (gsd-verifier)_
