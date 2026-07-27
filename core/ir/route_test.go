@@ -62,3 +62,14 @@ func TestRouteManagedArrayImperative(t *testing.T) {
 		})
 	}
 }
+
+func TestRouteManagedRejectsUnmodeledDeclarationCommands(t *testing.T) {
+	for _, cmd := range []string{"typeset", "declare", "local", "readonly"} {
+		t.Run(cmd, func(t *testing.T) {
+			block := model.Block{Kind: model.KindAssignment, CmdName: cmd, Names: []string{"COUNT"}, Value: "2"}
+			if routeManaged(block, model.CatEnvironment) {
+				t.Fatalf("%s declaration was admitted as a managed scalar", cmd)
+			}
+		})
+	}
+}

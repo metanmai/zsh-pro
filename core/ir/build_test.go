@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"zsh-pro/core/model"
+	"zsh-pro/core/shell/zsh"
 )
 
 // stubClassifier is a minimal in-test shell.Classifier so core/ir stays free of
@@ -310,5 +311,40 @@ func TestBuildRejectsMalformedListValue(t *testing.T) {
 		if p.Entries[0].ListValue != nil {
 			t.Fatalf("malformed ListValue survived: %#v", p.Entries[0].ListValue)
 		}
+	}
+}
+
+func TestBuildDeclarationFormsStayImperative(t *testing.T) {
+	provider := zsh.Provider{}
+	cases := []struct {
+		name string
+		src  string
+	}{
+		{name: "integer typeset", src: "typeset -i COUNT=2\n"},
+		{name: "readonly", src: "readonly LOCKED=value\n"},
+		{name: "tied", src: "typeset -T PATH path\n"},
+		{name: "local", src: "local scoped=value\n"},
+		{name: "plain assignment remains managed", src: "EDITOR=nvim\n"},
+		{name: "export remains managed", src: "export EDITOR=nvim\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			blocks, err := provider.Parse([]byte(tc.src))
+			if err != nil || len(blocks) != 1 {
+				t.Fatalf("Parse() blocks=%#v err=%v", blocks, err)
+			}
+			profile := Build(blocks, stubClassifier{cat: model.CatEnvironment})
+			entry := profile.Entries[0]
+			if entry.Text != "" && entry.Text != tc.src[:len(tc.src)-1] {
+				t.Fatalf("Text=%q, want source preserved %q", entry.Text, tc.src)
+			}
+			wantManaged := tc.name == "plain assignment remains managed" || tc.name == "export remains managed"
+			if entry.Managed != wantManaged {
+				t.Fatalf("Managed=%v, want %v for %#v", entry.Managed, wantManaged, entry)
+			}
+			if !wantManaged && entry.EffectiveManaged() {
+				t.Fatalf("declaration unexpectedly effective-managed: %#v", entry)
+			}
+		})
 	}
 }

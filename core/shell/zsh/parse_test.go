@@ -119,6 +119,38 @@ func TestParseCapturesAppendAndFlags(t *testing.T) {
 	}
 }
 
+func TestParseRetainsDeclarationCommandMarkers(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		cmd  string
+		want string
+	}{
+		{name: "integer typeset", src: "typeset -i COUNT=2\n", cmd: "typeset", want: "COUNT"},
+		{name: "readonly", src: "readonly LOCKED=value\n", cmd: "readonly", want: "LOCKED"},
+		{name: "tied", src: "typeset -T PATH path\n", cmd: "typeset", want: "PATH"},
+		{name: "local", src: "local scoped=value\n", cmd: "local", want: "scoped"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			blocks, err := (Provider{}).Parse([]byte(tc.src))
+			if err != nil || len(blocks) != 1 {
+				t.Fatalf("Parse() blocks=%#v err=%v", blocks, err)
+			}
+			got := blocks[0]
+			if got.Kind != model.KindAssignment || got.CmdName != tc.cmd {
+				t.Fatalf("block=%#v, want assignment CmdName=%q", got, tc.cmd)
+			}
+			if len(got.Names) == 0 || got.Names[0] != tc.want {
+				t.Fatalf("Names=%v, want first %q", got.Names, tc.want)
+			}
+			if got.Text != tc.src[:len(tc.src)-1] {
+				t.Fatalf("Text=%q, want verbatim %q", got.Text, tc.src)
+			}
+		})
+	}
+}
+
 // TestParseCapturesArrayAssignment pins the UAT array gap: an array assignment
 // (`name=(...)`) must be DETECTED at parse time via Block.Array. mvdan/sh models
 // it as a.Array (*ArrayExpr) with a.Value == nil, so the scalar Value capture is
