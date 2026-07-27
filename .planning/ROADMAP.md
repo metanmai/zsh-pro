@@ -138,7 +138,7 @@ Plans:
 
 Plans:
 
-- [ ] 04-UAT-PLAN.md
+- [x] 04-ACCEPTANCE-TESTS.md — acceptance-test design executed by 04-UAT.md
 
 **Wave 1**
 

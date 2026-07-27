@@ -39,6 +39,7 @@ coverage:
       - kind: unit
         ref: "go test ./core/shell/zsh -run TestEmit"
         status: pass
+    human_judgment: false
   - id: E2
     description: "Static/dynamic injection corpus, shadow restoration, live option capture, drift guards, and slot cleanup"
     requirement: SW-01
@@ -46,13 +47,15 @@ coverage:
       - kind: integration
         ref: "go test ./core/shell/zsh"
         status: pass
+    human_judgment: false
   - id: E3
     description: "Balanced 20-cycle apply/deactivate residue property under zsh -f"
     requirement: SW-02
     verification:
       - kind: integration
-        ref: "go test ./core/shell/zsh -run TestEmitBalancedSequencesLeaveNoResidue"
+        ref: "go test ./core/shell/zsh -run TestZeroResidueFullStateProperty -count=1"
         status: pass
+    human_judgment: false
 duration: 30min
 completed: 2026-07-18
 status: complete

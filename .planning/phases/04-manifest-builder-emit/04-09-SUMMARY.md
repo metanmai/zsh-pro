@@ -11,6 +11,18 @@ key-files:
 key-decisions:
   - "Semantic list statements compose around one symbolic base and retain explicit segment provenance."
 requirements-completed: [SW-01, SW-02]
+coverage:
+  - id: D1
+    description: "Repeated semantic PATH and FPATH assignments compose in source order around one symbolic base, switch between distinct profile values, and restore prior list presence and contents."
+    requirement: SW-01
+    verification:
+      - kind: integration
+        ref: "core/shell/zsh/pipeline_test.go#TestPipelineComposedPathAndFPathDynamicExpansion"
+        status: pass
+      - kind: other
+        ref: "live zsh -f PTY through Parse -> IR -> Build -> Diff -> Emit, baseline -> alpha -> beta -> baseline (2026-07-27)"
+        status: pass
+    human_judgment: false
 duration: 18min
 completed: 2026-07-19
 status: complete
