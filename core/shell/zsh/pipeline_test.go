@@ -501,8 +501,10 @@ func TestPipelineExportDelimiterControls(t *testing.T) {
 		t.Fatal(err)
 	}
 	persisted := roundTripPipelineProfile(t, ir.Build(blocks, provider))
-	if got := string(ir.Regenerate(persisted, provider)); got != source {
-		t.Fatalf("regenerated=%q, want %q", got, source)
+	// `--` ends export option parsing; it carries no variable attribute, so
+	// regeneration may normalize it to the equivalent ordinary export.
+	if got, want := string(ir.Regenerate(persisted, provider)), "export PLAIN=1\nexport DELIMITED=2\n"; got != want {
+		t.Fatalf("regenerated=%q, want supported export form %q", got, want)
 	}
 	manifest := activate.Build(persisted)
 	if len(manifest.Env) != 2 {
