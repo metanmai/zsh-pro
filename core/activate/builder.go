@@ -32,7 +32,7 @@ func Build(p model.Profile) model.Manifest {
 	lists := map[string][]listToken{}
 	listOrder := []string{}
 	for _, e := range p.Entries {
-		if !e.EffectiveManaged() || !e.DeclarationRepresentable() {
+		if !e.EffectiveManaged() || !e.Representable() {
 			continue
 		}
 		switch e.Kind {

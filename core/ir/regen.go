@@ -24,7 +24,7 @@ func Regenerate(p model.Profile, r shell.Regenerator) []byte {
 	for i := range p.Entries {
 		e := p.Entries[i]
 		var line string
-		if e.EffectiveManaged() && e.DeclarationRepresentable() {
+		if e.EffectiveManaged() && e.Representable() {
 			line = r.Regenerate(e)
 		} else {
 			line = e.Text

@@ -1,6 +1,7 @@
 package zsh
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -326,6 +327,10 @@ func TestPipelinePersistedOverrideManaged(t *testing.T) {
 		"readonly LOCKED=value",
 		"typeset -T PATH path",
 		"local scoped=value",
+		"FOO+=bar",
+		"export PATH+=:/x",
+		"plugins=(git zsh-autosuggestions)",
+		"alias -g G='| grep'",
 	}
 	blocks, err := provider.Parse([]byte(strings.Join(sources, "\n") + "\n"))
 	if err != nil {
@@ -346,20 +351,75 @@ func TestPipelinePersistedOverrideManaged(t *testing.T) {
 		}
 	}
 	manifest := activate.Build(persisted)
-	if len(manifest.Env) != 0 || len(manifest.Lists) != 0 {
+	if len(manifest.Env) != 0 || len(manifest.Lists) != 0 || len(manifest.Aliases.Added) != 0 {
 		t.Fatalf("persisted declarations produced activation operations: %#v", manifest)
 	}
 	apply, deactivate := emitPipelineListPlan(t, provider, manifest)
 	script := strings.Join([]string{
-		"PATH=/baseline", "FPATH=/fbaseline", "ZP_DECL_SENTINEL=before",
-		"before_path=$PATH", "before_fpath=$FPATH", "before_sentinel=$ZP_DECL_SENTINEL",
+		"PATH=/baseline", "FPATH=/fbaseline", "ZP_DECL_SENTINEL=before", "FOO=before", "plugins=(before)", "alias G='before'",
+		"before_path=$PATH", "before_fpath=$FPATH", "before_sentinel=$ZP_DECL_SENTINEL", "before_foo=$FOO", "before_plugins=${plugins[*]}", "before_g=${aliases[G]}",
 		apply, "zp_apply",
-		"[[ $PATH == $before_path && $FPATH == $before_fpath && $ZP_DECL_SENTINEL == $before_sentinel ]] || exit 121",
+		"[[ $PATH == $before_path && $FPATH == $before_fpath && $ZP_DECL_SENTINEL == $before_sentinel && $FOO == $before_foo && ${plugins[*]} == $before_plugins && ${aliases[G]} == $before_g ]] || exit 121",
 		deactivate, "zp_deactivate",
-		"[[ $PATH == $before_path && $FPATH == $before_fpath && $ZP_DECL_SENTINEL == $before_sentinel ]] || exit 122",
+		"[[ $PATH == $before_path && $FPATH == $before_fpath && $ZP_DECL_SENTINEL == $before_sentinel && $FOO == $before_foo && ${plugins[*]} == $before_plugins && ${aliases[G]} == $before_g ]] || exit 122",
 	}, "\n")
 	if out, err := exec.Command("zsh", "-f", "-c", script).CombinedOutput(); err != nil {
 		t.Fatalf("persisted declaration pipeline changed live state: %v\n%s\nscript:\n%s", err, out, script)
+	}
+}
+
+func TestPipelineLegacyStructuralFidelityMatrix(t *testing.T) {
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("zsh not available")
+	}
+	provider := Provider{}
+	rows := []struct {
+		name string
+		raw  string
+		text string
+	}{
+		{name: "absent append", text: "FOO+=bar", raw: `{"entries":[{"text":"FOO+=bar","startLine":1,"category":"environment","kind":"assignment","cmdName":"","names":["FOO"],"value":"bar","exported":false,"managed":false,"override":"forced-managed","dynamic":false}]}`},
+		{name: "partial array", text: "plugins=(git zsh-autosuggestions)", raw: `{"entries":[{"text":"plugins=(git zsh-autosuggestions)","startLine":1,"category":"environment","kind":"assignment","cmdName":"","names":["plugins"],"value":"","exported":false,"managed":false,"override":"forced-managed","dynamic":false,"structuralFidelity":{"version":1,"append":false,"flagged":false}}]}`},
+		{name: "partial flagged alias", text: "alias -g G='| grep'", raw: `{"entries":[{"text":"alias -g G='| grep'","startLine":1,"category":"aliases","kind":"alias","cmdName":"alias","names":["G"],"value":"| grep","exported":false,"managed":false,"override":"forced-managed","dynamic":false,"structuralFidelity":{"version":1,"append":false,"array":false}}]}`},
+		{name: "unsupported version", text: "FOO+=bar", raw: `{"entries":[{"text":"FOO+=bar","startLine":1,"category":"environment","kind":"assignment","cmdName":"","names":["FOO"],"value":"bar","exported":false,"managed":false,"override":"forced-managed","dynamic":false,"structuralFidelity":{"version":99,"append":true,"array":false,"flagged":false}}]}`},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			first, err := store.UnmarshalProfile([]byte(row.raw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			saved, err := store.MarshalProfile(first)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if bytes.Contains(saved, []byte(`"structuralFidelity"`)) {
+				t.Fatalf("historical shape became current on re-save:\n%s", saved)
+			}
+			persisted, err := store.UnmarshalProfile(saved)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := string(ir.Regenerate(persisted, provider)); got != row.text+"\n" {
+				t.Fatalf("regenerated=%q, want verbatim %q", got, row.text+"\n")
+			}
+			manifest := activate.Build(persisted)
+			if len(manifest.Env) != 0 || len(manifest.Lists) != 0 || len(manifest.Aliases.Added) != 0 || len(manifest.Functions.Added) != 0 || len(manifest.Options) != 0 {
+				t.Fatalf("historical shape created manifest intent: %#v", manifest)
+			}
+			apply, deactivate := emitPipelineListPlan(t, provider, manifest)
+			script := strings.Join([]string{
+				"PATH=/baseline", "FPATH=/fbaseline", "FOO=before", "plugins=(before)", "alias G='before'",
+				"before_path=$PATH", "before_fpath=$FPATH", "before_foo=$FOO", "before_plugins=${plugins[*]}", "before_g=${aliases[G]}",
+				apply, "zp_apply",
+				"[[ $PATH == $before_path && $FPATH == $before_fpath && $FOO == $before_foo && ${plugins[*]} == $before_plugins && ${aliases[G]} == $before_g ]] || exit 131",
+				deactivate, "zp_deactivate",
+				"[[ $PATH == $before_path && $FPATH == $before_fpath && $FOO == $before_foo && ${plugins[*]} == $before_plugins && ${aliases[G]} == $before_g ]] || exit 132",
+			}, "\n")
+			if out, err := exec.Command("zsh", "-f", "-c", script).CombinedOutput(); err != nil {
+				t.Fatalf("historical fidelity pipeline changed sentinels: %v\n%s\nscript:\n%s", err, out, script)
+			}
+		})
 	}
 }
 

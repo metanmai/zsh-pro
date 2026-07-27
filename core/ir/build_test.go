@@ -103,6 +103,21 @@ func TestBuildPreservesSourceOrderAndFields(t *testing.T) {
 	}
 }
 
+func TestBuildCopiesStructuralFidelity(t *testing.T) {
+	blocks := []model.Block{
+		{Kind: model.KindAssignment, Names: []string{"FOO"}, Append: true},
+		{Kind: model.KindAssignment, Names: []string{"plugins"}, Array: true},
+		{Kind: model.KindAlias, Names: []string{"G"}, Flagged: true},
+	}
+	profile := Build(blocks, stubClassifier{cat: model.CatEnvironment})
+	for i, want := range blocks {
+		got := profile.Entries[i]
+		if !got.StructuralFidelityKnown || got.Append != want.Append || got.Array != want.Array || got.Flagged != want.Flagged {
+			t.Fatalf("entry %d lost structural fidelity: got=%#v want=%#v", i, got, want)
+		}
+	}
+}
+
 // TestBuildSetsManagedFromRouter pins that Build's Managed verdict is driven by
 // routeManaged + the injected classifier's category.
 func TestBuildSetsManagedFromRouter(t *testing.T) {

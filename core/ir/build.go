@@ -33,13 +33,20 @@ func Build(blocks []model.Block, c shell.Classifier) model.Profile {
 			// straight through would make the Entry and the source Block share a
 			// backing array, so a later mutation of either silently corrupts the
 			// other. A fresh slice severs that aliasing at the IR boundary.
-			Names:     append([]string(nil), b.Names...),
-			Value:     b.Value,
-			Exported:  b.Exported,
-			Managed:   routeManaged(b, cat),
-			Override:  model.OverrideAuto,
-			Dynamic:   b.Dynamic,
-			ValueMode: b.ValueMode,
+			Names:    append([]string(nil), b.Names...),
+			Value:    b.Value,
+			Exported: b.Exported,
+			Managed:  routeManaged(b, cat),
+			Override: model.OverrideAuto,
+			Dynamic:  b.Dynamic,
+			// Parser Blocks always carry all source-shape markers, including false
+			// values. Persist that complete contract so a later override cannot
+			// mistake append, array, or flagged-alias syntax for a scalar form.
+			StructuralFidelityKnown: true,
+			Append:                  b.Append,
+			Array:                   b.Array,
+			Flagged:                 b.Flagged,
+			ValueMode:               b.ValueMode,
 			// The Block remains independently reusable after Build. Copy pointed-to
 			// values instead of sharing mutable storage across the IR boundary.
 			RuntimeValue: cloneString(b.RuntimeValue),
