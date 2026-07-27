@@ -127,3 +127,23 @@ func TestRegenerateDynamicValueNeverResolved(t *testing.T) {
 		t.Fatalf("dynamic value resolved or lost: %q does not contain $HOME/go", out)
 	}
 }
+
+// TestRegenerateRejectsIncompleteSourceShapes is the provider-side half of the
+// persisted fidelity contract. ir.Regenerate already checks Representable, but
+// Provider.Regenerate is a public lowering seam and must not reinterpret an
+// incomplete forced-managed entry when called directly.
+func TestRegenerateRejectsIncompleteSourceShapes(t *testing.T) {
+	p := Provider{}
+	cases := []model.Entry{
+		{Kind: model.KindAssignment, Text: "A=one B=two", Names: []string{"A", "B"}, Value: "two", StructuralFidelityKnown: true},
+		{Kind: model.KindAlias, Text: "alias ll", Names: []string{"ll"}, StructuralFidelityKnown: true},
+		{Kind: model.KindAlias, Text: "alias a=one b=two", Names: []string{"a", "b"}, Value: "two", AliasAssignment: true, StructuralFidelityKnown: true},
+		{Kind: model.KindCommand, Text: "setopt +o extendedglob", CmdName: "setopt", Names: []string{"extendedglob"}, OptionFlags: []string{"+o"}, StructuralFidelityKnown: true},
+		{Kind: model.KindCommand, Text: "unsetopt -m extendedglob", CmdName: "unsetopt", Names: []string{"extendedglob"}, OptionFlags: []string{"-m"}, StructuralFidelityKnown: true},
+	}
+	for _, entry := range cases {
+		if got := p.Regenerate(entry); got != entry.Text {
+			t.Fatalf("Regenerate(%q) = %q, want verbatim Text", entry.Text, got)
+		}
+	}
+}
