@@ -5,15 +5,15 @@ milestone_name: Branchable Shell Environments
 current_phase: 04
 current_phase_name: manifest-builder-emit
 status: executing
-stopped_at: Validated 04-15-PLAN.md; executing final Phase 4 persisted-fidelity closure
-last_updated: "2026-07-27T11:55:00Z"
+stopped_at: Completed 04-15-PLAN.md; Phase 4 awaits independent verification
+last_updated: "2026-07-27T11:55:45.063Z"
 last_activity: 2026-07-27
 last_activity_desc: Validated 04-15 legacy dynamic-list and persisted structural-fidelity gap closure
 progress:
   total_phases: 6
   completed_phases: 4
-  total_plans: 24
-  completed_plans: 22
+  total_plans: 25
+  completed_plans: 23
   percent: 67
 ---
 
@@ -79,6 +79,7 @@ Progress: [█████████░] 91%
 | Phase 04 P12 | 31 min | 3 tasks | 2 files |
 | Phase 04 P13 | 3 min | 3 tasks | 7 files |
 | Phase 04 P14 | 8 min | 3 tasks | 9 files |
+| Phase 04 P15 | 29 | 3 tasks | 12 files |
 
 ## Accumulated Context
 
@@ -125,6 +126,8 @@ Recent decisions affecting current work:
 - [Phase ?]: 04-14: Legacy PATH/FPATH entries now flow through the semantic token reducer, preserving source order and provenance.
 - [Phase ?]: 04-14: Persisted forced declarations require representability and otherwise regenerate verbatim with no manifest intent.
 - [Phase ?]: 04-15: Structural syntax markers must remain presence-aware across DTO persistence; unknown historical state fails closed.
+- [Phase ?]: 04-15: Structural syntax markers are presence-aware; absent, partial, and unsupported DTO fidelity remains unknown and verbatim/no-operation.
+- [Phase ?]: 04-15: Legacy PATH/FPATH additions retain late binding only for strict simple parameter plus path-safe suffix source.
 
 ### Pending Todos
 
@@ -153,6 +156,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-27T11:55:00Z
-Stopped at: Validated 04-15-PLAN.md; executing final Phase 4 persisted-fidelity closure
+Last session: 2026-07-27T11:55:45.057Z
+Stopped at: Completed 04-15-PLAN.md; Phase 4 awaits independent verification
 Resume file: None
