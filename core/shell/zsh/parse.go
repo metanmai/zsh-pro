@@ -68,6 +68,7 @@ func (p Provider) describe(stmt *syntax.Stmt, b *model.Block, src []byte) {
 		if len(c.Args) == 0 {
 			b.Kind = model.KindAssignment
 			for _, a := range c.Assigns {
+				captureAssignmentShape(b, a)
 				if a.Name != nil {
 					b.Names = append(b.Names, a.Name.Value)
 				}
@@ -133,7 +134,9 @@ func (p Provider) describe(stmt *syntax.Stmt, b *model.Block, src []byte) {
 		case "export", "typeset", "declare", "local", "readonly":
 			b.Kind = model.KindAssignment
 			b.Exported = name == "export"
+			p.captureDeclarationFlags(b, c.Args[1:])
 			for _, a := range c.Assigns {
+				captureAssignmentShape(b, a)
 				if a.Name != nil {
 					b.Names = append(b.Names, a.Name.Value)
 				}
@@ -187,6 +190,7 @@ func (p Provider) describe(stmt *syntax.Stmt, b *model.Block, src []byte) {
 			b.Exported = c.Variant.Value == "export"
 		}
 		for _, a := range c.Args {
+			captureAssignmentShape(b, a)
 			if a.Name != nil {
 				b.Names = append(b.Names, a.Name.Value)
 			}
@@ -199,6 +203,9 @@ func (p Provider) describe(stmt *syntax.Stmt, b *model.Block, src []byte) {
 			}
 			if a.Array != nil {
 				b.Array = true // `typeset -a arr=(p q)` parses as a DeclClause (UAT array gap)
+			}
+			if a.Naked && a.Name == nil && a.Value != nil {
+				p.captureDeclarationFlags(b, []*syntax.Word{a.Value})
 			}
 		}
 		ensureExplicitValueMode(b)
@@ -226,6 +233,33 @@ func (p Provider) describe(stmt *syntax.Stmt, b *model.Block, src []byte) {
 		b.Dynamic = true
 	default:
 		b.Kind = model.KindOther
+	}
+}
+
+// captureAssignmentShape records every parser-visible assignment source shape
+// that would otherwise be silently lowered to a plain scalar. A nil Index is
+// an explicit parser-known unindexed shape; a non-nil Index covers numeric and
+// associative subscripts without evaluating either form.
+func captureAssignmentShape(b *model.Block, a *syntax.Assign) {
+	if a != nil && a.Index != nil {
+		b.Indexed = true
+	}
+}
+
+// captureDeclarationFlags records only real literal option words. `--` ends
+// option parsing and is not itself an attribute; words after it are ordinary
+// declaration arguments. This deliberately leaves alias Flagged independent.
+func (p Provider) captureDeclarationFlags(b *model.Block, words []*syntax.Word) {
+	options := true
+	for _, w := range words {
+		lit := p.wordLitPrefix(w)
+		if options && lit == "--" {
+			options = false
+			continue
+		}
+		if options && strings.HasPrefix(lit, "-") && lit != "-" {
+			b.DeclarationFlags = append(b.DeclarationFlags, lit)
+		}
 	}
 }
 

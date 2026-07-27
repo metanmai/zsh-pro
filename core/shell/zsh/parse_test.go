@@ -119,6 +119,59 @@ func TestParseCapturesAppendAndFlags(t *testing.T) {
 	}
 }
 
+// TestParseCapturesIndexedAndDeclarationFlags keeps parser-owned source shape
+// separate from the ordinary scalar/export data carried by a Block. Indexed
+// assignments and declaration attributes cannot safely lower to the manifest
+// model, but plain assignments and unflagged exports remain supported shapes.
+func TestParseCapturesIndexedAndDeclarationFlags(t *testing.T) {
+	cases := []struct {
+		name            string
+		src             string
+		wantName        string
+		wantValue       string
+		wantIndexed     bool
+		wantExported    bool
+		wantDeclFlags   []string
+		wantDeclaration bool
+	}{
+		{name: "numeric indexed assignment", src: "FOO[2]=bar\n", wantName: "FOO", wantValue: "bar", wantIndexed: true},
+		{name: "associative indexed assignment", src: "MAP[key]=bar\n", wantName: "MAP", wantValue: "bar", wantIndexed: true},
+		{name: "plain assignment is explicitly unindexed", src: "FOO=bar\n", wantName: "FOO", wantValue: "bar"},
+		{name: "semantic export attribute", src: "export -i FOO=1\n", wantName: "FOO", wantValue: "1", wantExported: true, wantDeclFlags: []string{"-i"}, wantDeclaration: true},
+		{name: "ordinary export", src: "export FOO=1\n", wantName: "FOO", wantValue: "1", wantExported: true, wantDeclaration: true},
+		{name: "export delimiter is not an attribute", src: "export -- FOO=1\n", wantName: "FOO", wantValue: "1", wantExported: true, wantDeclaration: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			blocks, err := (Provider{}).Parse([]byte(tc.src))
+			if err != nil || len(blocks) != 1 {
+				t.Fatalf("Parse() blocks=%#v err=%v", blocks, err)
+			}
+			got := blocks[0]
+			if got.Kind != model.KindAssignment || len(got.Names) != 1 || got.Names[0] != tc.wantName || got.Value != tc.wantValue || got.Text != strings.TrimSuffix(tc.src, "\n") {
+				t.Fatalf("assignment data lost: %#v", got)
+			}
+			if got.Indexed != tc.wantIndexed {
+				t.Errorf("Indexed = %v, want %v", got.Indexed, tc.wantIndexed)
+			}
+			if got.Exported != tc.wantExported {
+				t.Errorf("Exported = %v, want %v", got.Exported, tc.wantExported)
+			}
+			if len(got.DeclarationFlags) != len(tc.wantDeclFlags) {
+				t.Fatalf("DeclarationFlags = %q, want %q", got.DeclarationFlags, tc.wantDeclFlags)
+			}
+			for i := range tc.wantDeclFlags {
+				if got.DeclarationFlags[i] != tc.wantDeclFlags[i] {
+					t.Errorf("DeclarationFlags[%d] = %q, want %q", i, got.DeclarationFlags[i], tc.wantDeclFlags[i])
+				}
+			}
+			if tc.wantDeclaration && got.CmdName != "export" {
+				t.Errorf("CmdName = %q, want export declaration path", got.CmdName)
+			}
+		})
+	}
+}
+
 func TestParseRetainsDeclarationCommandMarkers(t *testing.T) {
 	cases := []struct {
 		name string
