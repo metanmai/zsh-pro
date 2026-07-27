@@ -37,7 +37,7 @@ Previous-milestone phases are archived. Full detail in [milestones/](milestones/
 - [x] **Phase 1: SPIKE — Zero-Residue Live Hot-Switch** - Prove (or disprove) that a live terminal can `activate → switch → switch-back` with a byte-identical environment, reversing aliases/functions/options, not just env — before building any IR, store, or CLI (completed 2026-06-25)
 - [x] **Phase 2: IR + Partial Evaluation** - Build the regenerable `model.Profile` from parsed blocks, tag each entry declarative/imperative and static/dynamic, and regenerate behavior-equivalent per-category `.zsh` (completed 2026-06-26)
 - [x] **Phase 3: Git-Backed Store** - Store the IR as a git repo (via the `git` binary) where each branch is a profile; create/list/switch profiles tracked per-terminal, with detected secrets excluded by default (completed 2026-06-27)
-- [ ] **Phase 4: Manifest Builder + Emit** - Turn a profile into a reversible `Manifest` (record-and-reverse with a drift guard; PATH as a delta vs captured base) and emit the apply/deactivate zsh code from the one place zsh syntax lives
+- [x] **Phase 4: Manifest Builder + Emit** - Turn a profile into a reversible `Manifest` (record-and-reverse with a drift guard; PATH as a delta vs captured base) and emit the apply/deactivate zsh code from the one place zsh syntax lives (completed 2026-07-27)
 - [ ] **Phase 5: Runtime Loader + CLI + Bootstrap** - Wire the live terminal via a sourced emit-and-source loader and the `checkout`/`activate`/`deactivate`/`list`/`status` verbs, bootstrapped by an idempotent `.zshrc` block that is fail-open and fast
 - [ ] **Phase 6: Ingest End-to-End** - Polish the on-ramp: parse a real `~/.zshrc` → classify → partial-eval → regenerate → commit to the baseline branch, against the final IR shape
 
@@ -205,7 +205,7 @@ Plans:
 
 **Wave 16** *(gap closure; blocked on Wave 15)*
 
-- [ ] 04-19-PLAN.md — prove remaining source-shape forms stay inert and residue-free through live zsh
+- [x] 04-19-PLAN.md — prove remaining source-shape forms stay inert and residue-free through live zsh
 
 ### Phase 5: Runtime Loader + CLI + Bootstrap
 
@@ -255,7 +255,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 | 1. SPIKE — Zero-Residue Live Hot-Switch | 2/2 | Complete   | 2026-06-25 |
 | 2. IR + Partial Evaluation | 3/3 | Complete   | 2026-06-26 |
 | 3. Git-Backed Store | 3/3 | Complete   | 2026-06-27 |
-| 4. Manifest Builder + Emit | 18/19 | In Progress|  |
+| 4. Manifest Builder + Emit | 19/19 | Complete    | 2026-07-27 |
 | 5. Runtime Loader + CLI + Bootstrap | 0/2 | Not started | - |
 | 6. Ingest End-to-End | 0/2 | Not started | - |
 
