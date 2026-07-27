@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 
 	"zsh-pro/core/cli"
-	"zsh-pro/core/shell"
 	"zsh-pro/core/shell/zsh"
 	"zsh-pro/core/store"
 )
@@ -19,8 +18,6 @@ func main() {
 	// shell.Regenerator the store uses to derive profile.zsh (D-03).
 	// It also supplies the shell.Emitter seam for Phase 5's runtime loader.
 	provider := zsh.Provider{}
-	var emitter shell.Emitter = provider
-	_ = emitter // Phase 5 will drive this seam from the runtime loader.
 
 	// Construct + wire the git-backed store: zsh.Provider{} as the Regenerator and a
 	// runtime-selected keychain driver (security on macOS / secret-tool on Linux /
@@ -35,9 +32,13 @@ func main() {
 	// An init error (e.g. git absent) simply means profile storage is unavailable — it
 	// must NOT crash the existing read-only `analyze` path, so it is intentionally
 	// non-fatal here and surfaces when a store-backed verb is wired in Phase 5.
-	_, _ = s, err
+	var cliStore cli.Store
+	if err == nil {
+		cliStore = s
+	}
+	emitter := cli.NewRuntimeEmitter(cliStore, provider)
 
-	os.Exit(cli.New(provider).Run(os.Args[1:], os.Stdout, os.Stderr))
+	os.Exit(cli.New(provider, cliStore, emitter).Run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
 // storeDir resolves the bare-repo location per D-04: $ZSHPRO_HOME if set, else
