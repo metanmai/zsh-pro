@@ -49,6 +49,13 @@ func routeManaged(b model.Block, cat model.Category) bool {
 		if len(b.Names) != 1 || b.Append {
 			return false
 		}
+		// Declaration commands carry scope and attribute semantics (for example
+		// integer, readonly, tied, and local) that Entry cannot represent. Keep
+		// them verbatim-imperative instead of silently rendering a scalar.
+		switch b.CmdName {
+		case "typeset", "declare", "local", "readonly":
+			return false
+		}
 		// Array-valued (`name=(...)`) is not scalar-templatable (a.Array, no
 		// a.Value): the templater would emit a bare `name=` and drop the array.
 		// Route imperative -> verbatim Text (UAT array gap; same remedy as
