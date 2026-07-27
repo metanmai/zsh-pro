@@ -50,6 +50,8 @@ func (c *CLI) Run(args []string, stdout, stderr io.Writer) int {
 	case "hook":
 		_, _ = fmt.Fprint(stdout, c.provider.HookScript())
 		return int(model.ExitClean)
+	case "install":
+		return c.runInstall(stdout, stderr)
 	case "list":
 		return c.runList(stdout, stderr)
 	case "status":
