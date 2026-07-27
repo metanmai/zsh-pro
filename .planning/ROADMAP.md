@@ -134,7 +134,7 @@ Plans:
   3. Restore is ownership-aware: deactivate removes only what this profile added (drift guard — restore a value only if the live value still equals what was applied) and never strips base/unmanaged state a profile merely also added (e.g. `/usr/local/bin`).
   4. A shadowed prior alias/function is captured before override and re-established on deactivate; PATH is stored as a delta against the captured base, never a wholesale overwrite.
 
-**Plans**: 16/17 plans executed
+**Plans**: 17/19 plans executed; 2 gap-closure plans ready
 
 Plans:
 
@@ -197,7 +197,15 @@ Plans:
 
 **Wave 14** *(gap closure; blocked on Wave 13)*
 
-- [ ] 04-17-PLAN.md — prove indexed and semantic export state is inert and residue-free through the live zsh pipeline
+- [x] 04-17-PLAN.md — prove indexed and semantic export state is inert and residue-free through the live zsh pipeline
+
+**Wave 15** *(gap closure; blocked on Wave 14)*
+
+- [ ] 04-18-PLAN.md — preserve multi-assignment, alias, option, and delimiter export source shape through persistence
+
+**Wave 16** *(gap closure; blocked on Wave 15)*
+
+- [ ] 04-19-PLAN.md — prove remaining source-shape forms stay inert and residue-free through live zsh
 
 ### Phase 5: Runtime Loader + CLI + Bootstrap
 
