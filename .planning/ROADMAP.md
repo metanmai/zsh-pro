@@ -219,11 +219,14 @@ Plans:
   3. A broken, missing, or slow `zsh-pro` never locks the user out: the stub guards sourcing (`command -v`, `[[ -r ]]`), generated manifests are `zsh -n`-validated with a last-good fallback, and `ZSHPRO_DISABLE=1` fully no-ops the loader.
   4. The hot path adds only a small, file-sourced startup cost — zero subprocesses (no `git`, no binary, no `$(...)`) on shell start — verified within budget via `hyperfine 'zsh -i -c exit'`.
 
-**Plans**: TBD
+**Plans**: 1/2 plans executed
 
 Plans:
 
-- [ ] 05-01: TBD (embedded `loader.zsh` via `hook`; per-terminal `__ZSHPRO_STATE`; `checkout`/`activate`/`deactivate`/`list`/`status` CLI verbs)
+- [x] 05-01-PLAN.md
+- [ ] 05-02-PLAN.md
+
+- [x] 05-01: TBD (embedded `loader.zsh` via `hook`; per-terminal `__ZSHPRO_STATE`; `checkout`/`activate`/`deactivate`/`list`/`status` CLI verbs)
 - [ ] 05-02: TBD (idempotent BEGIN/END `.zshrc` block writer; fail-open stub + `ZSHPRO_DISABLE`; `zsh -n` validation + last-good; hot-path perf budget)
 
 ### Phase 6: Ingest End-to-End
@@ -256,7 +259,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 | 2. IR + Partial Evaluation | 3/3 | Complete   | 2026-06-26 |
 | 3. Git-Backed Store | 3/3 | Complete   | 2026-06-27 |
 | 4. Manifest Builder + Emit | 19/19 | Complete    | 2026-07-27 |
-| 5. Runtime Loader + CLI + Bootstrap | 0/2 | Not started | - |
+| 5. Runtime Loader + CLI + Bootstrap | 1/2 | In Progress|  |
 | 6. Ingest End-to-End | 0/2 | Not started | - |
 
 ## Requirement Coverage

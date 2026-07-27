@@ -4,16 +4,16 @@ milestone: v2.0
 milestone_name: Branchable Shell Environments
 current_phase: 05
 current_phase_name: Runtime Loader + CLI + Bootstrap
-status: planning
-stopped_at: Completed 04-18-PLAN.md
-last_updated: "2026-07-27T13:35:34.952Z"
+status: executing
+stopped_at: Completed 05-01-PLAN.md
+last_updated: "2026-07-27T14:34:28.506Z"
 last_activity: 2026-07-27
 last_activity_desc: Phase 04 complete, transitioned to Phase 05
 progress:
   total_phases: 6
   completed_phases: 4
   total_plans: 29
-  completed_plans: 27
+  completed_plans: 28
   percent: 67
 ---
 
@@ -24,16 +24,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-25)
 
 **Core value:** `checkout <branch>` gives you a different, trustworthy shell environment — declarative state (aliases/env/PATH/functions/options) applies and reverses cleanly with zero residue, while portability is preserved (dynamic values like `$HOME`/`$(...)` stay late-bound, never frozen to one machine).
-**Current focus:** Phase 04 — manifest-builder-emit
+**Current focus:** Phase 05 — Runtime Loader + CLI + Bootstrap
 
 ## Current Position
 
 Phase: 05 — Runtime Loader + CLI + Bootstrap
-Plan: Not started
-Status: Ready to plan
-Last activity: 2026-07-27 — Phase 04 complete, transitioned to Phase 05
+Plan: 02
+Status: Ready to execute
+Last activity: 2026-07-27 — Completed 05-01 runtime loader and CLI seams
 
-Progress: [█████████░] 90%
+Progress: [██████████] 97%
 
 ## Performance Metrics
 
@@ -84,6 +84,7 @@ Progress: [█████████░] 90%
 | Phase 04-manifest-builder-emit P16 | 6 | 2 tasks | 12 files |
 | Phase 04 P17 | 8 | 2 tasks | 3 files |
 | Phase 04-manifest-builder-emit P18 | 7 | 2 tasks | 11 files |
+| Phase 05 P01 | 8 min | 4 tasks | 11 files |
 
 ## Accumulated Context
 
@@ -138,6 +139,9 @@ Recent decisions affecting current work:
 - [Phase ?]: 04-17: persisted rejected indexed and flagged declarations are proven by type-aware live-zsh and full-state residue tests.
 - [Phase ?]: V3 structural fidelity preserves alias and option source shape; v1/v2 and partial records fail closed.
 - [Phase ?]: Forced management requires exact assignment, assigned alias, and modeled option syntax before lowering.
+- [Phase ?]: Phase 4 emit blocks keep their scalar helpers self-contained; the Phase 5 loader only owns named env helpers and terminal base state.
+- [Phase ?]: The Phase 5 composition root injects the real Phase 4 runtime emitter, retaining NotReadyEmitter only as a fail-closed fallback.
+- [Phase ?]: Store initialization failure becomes an explicit nil cli.Store interface so only store-backed verbs fail rather than panic.
 
 ### Pending Todos
 
@@ -166,6 +170,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-27T13:20:54.505Z
-Stopped at: Completed 04-18-PLAN.md
-Resume file: 04-19-PLAN.md
+Last session: 2026-07-27T14:34:28.499Z
+Stopped at: Completed 05-01-PLAN.md
+Resume file: 05-02-PLAN.md

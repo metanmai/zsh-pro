@@ -31,8 +31,8 @@ Requirements for this milestone. Each maps to a roadmap phase.
 
 ### Bootstrap / Reliability
 
-- [ ] **BOOT-01**: A single **idempotent, BEGIN/END-marked `.zshrc` block** bootstraps the loader and preserves an unmanaged "master block" for imperative run-once code. Re-running the installer never duplicates the block.
-- [ ] **BOOT-02**: The loader is **fail-open and fast** — a broken, missing, or slow `zsh-pro` never locks the user out of a working shell (guarded sourcing, `zsh -n`-validated manifests, last-good fallback, a `ZSHPRO_DISABLE=1` escape hatch) and adds only a small, file-sourced startup cost (no git/subprocess on the hot path).
+- [x] **BOOT-01**: A single **idempotent, BEGIN/END-marked `.zshrc` block** bootstraps the loader and preserves an unmanaged "master block" for imperative run-once code. Re-running the installer never duplicates the block.
+- [x] **BOOT-02**: The loader is **fail-open and fast** — a broken, missing, or slow `zsh-pro` never locks the user out of a working shell (guarded sourcing, `zsh -n`-validated manifests, last-good fallback, a `ZSHPRO_DISABLE=1` escape hatch) and adds only a small, file-sourced startup cost (no git/subprocess on the hot path).
 
 ## Future Requirements
 
@@ -79,8 +79,8 @@ Which phases cover which requirements. Populated during roadmap creation.
 | PROF-02 | Phase 3 — Git-Backed Store | Complete |
 | SW-01 | Phase 4 — Manifest Builder + Emit | Complete |
 | SW-02 | Phase 4 — Manifest Builder + Emit | Complete |
-| BOOT-01 | Phase 5 — Runtime Loader + CLI + Bootstrap | Pending |
-| BOOT-02 | Phase 5 — Runtime Loader + CLI + Bootstrap | Pending |
+| BOOT-01 | Phase 5 — Runtime Loader + CLI + Bootstrap | Complete |
+| BOOT-02 | Phase 5 — Runtime Loader + CLI + Bootstrap | Complete |
 | PROF-03 | Phase 3 (store-side exclusion + reference) → Phase 4/5 (runtime deref) → Phase 6 (end-to-end ingest) | In progress (started Phase 3) |
 
 **Coverage:**
