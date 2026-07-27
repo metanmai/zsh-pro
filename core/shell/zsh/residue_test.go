@@ -632,6 +632,35 @@ func TestResiduePersistedSourceShapeNoop(t *testing.T) {
 	}
 }
 
+func buildPersistedRejectedSourceShapeManifest(t *testing.T) model.Manifest {
+	t.Helper()
+	provider := Provider{}
+	source := strings.Join([]string{
+		"A=one B=two",
+		"export C=one D=two",
+		"export -- E=one F=two",
+		"export -- PATH=$PATH:$EXTRA FPATH=$FPATH:$EXTRA",
+		"alias ll",
+		"alias one=profile-one two=profile-two",
+		"setopt +o extendedglob",
+		"unsetopt +o extendedglob",
+		"setopt -m extendedglob",
+		"unsetopt -m extendedglob",
+	}, "\n") + "\n"
+	blocks, err := provider.Parse([]byte(source))
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted := roundTripPipelineProfile(t, ir.Build(blocks, provider))
+	for i := range persisted.Entries {
+		persisted.Entries[i].Override = model.OverrideManaged
+	}
+	if got := string(ir.Regenerate(persisted, provider)); got != source {
+		t.Fatalf("rejected persisted profile regenerated as %q, want %q", got, source)
+	}
+	return activate.Build(persisted)
+}
+
 func TestEffectiveIdentitySourcePipeline(t *testing.T) {
 	if _, err := exec.LookPath("zsh"); err != nil {
 		t.Skip("zsh not installed")
