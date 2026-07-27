@@ -463,6 +463,46 @@ func TestZeroResidueFullStateProperty(t *testing.T) {
 	}
 }
 
+func TestResidueStoreRoundTripLegacy(t *testing.T) {
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("zsh not installed")
+	}
+	provider := Provider{}
+	semantic := func(t *testing.T, source string) model.Entry {
+		t.Helper()
+		blocks, err := provider.Parse([]byte(source))
+		if err != nil {
+			t.Fatal(err)
+		}
+		profile := ir.Build(blocks, provider)
+		if len(profile.Entries) != 1 {
+			t.Fatalf("semantic source %q yielded %#v", source, profile)
+		}
+		return profile.Entries[0]
+	}
+	legacy := func(name, value string) model.Entry {
+		return model.Entry{Text: name + "=" + value, Category: model.CatPath, Kind: model.KindAssignment, Names: []string{name}, Value: value, Managed: true, ValueMode: model.ValueModeLegacy}
+	}
+	persisted := roundTripPipelineProfile(t, model.Profile{Entries: []model.Entry{
+		legacy("PATH", "$PATH:/legacy-path"),
+		semantic(t, "PATH=$PATH:$EXTRA\n"),
+		semantic(t, "FPATH=$FPATH:$EXTRA\n"),
+		legacy("FPATH", "$FPATH:/legacy-fpath"),
+	}})
+	manifest := activate.Build(persisted)
+	if len(manifest.Lists) != 2 {
+		t.Fatalf("manifest lists=%#v", manifest.Lists)
+	}
+	apply, deactivate := emitPipelineListPlan(t, provider, manifest)
+	run := runSnapshotMutation(t,
+		"PATH=/base\nFPATH=/fbase\nEXTRA=/one:/two\n",
+		apply+"\nzp_apply\n"+deactivate+"\nzp_deactivate\nunset -f zp_apply zp_deactivate zp_capture_scalar zp_restore_scalar\n",
+	)
+	if diff := snapshotDifference(run.before, run.after); diff != "" {
+		t.Fatalf("persisted mixed list residue: %s", diff)
+	}
+}
+
 func TestEffectiveIdentitySourcePipeline(t *testing.T) {
 	if _, err := exec.LookPath("zsh"); err != nil {
 		t.Skip("zsh not installed")

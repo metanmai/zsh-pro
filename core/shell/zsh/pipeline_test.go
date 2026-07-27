@@ -10,6 +10,8 @@ import (
 
 	"zsh-pro/core/activate"
 	"zsh-pro/core/ir"
+	"zsh-pro/core/model"
+	"zsh-pro/core/store"
 )
 
 func TestPipelinePreservesValuesAndFunctionsInLiveZsh(t *testing.T) {
@@ -238,6 +240,168 @@ func TestPipelineComposedPathAndFPathDynamicExpansion(t *testing.T) {
 			t.Fatalf("extra case did not match direct scalar behavior: %v %s", err, out)
 		}
 	}
+}
+
+func TestPipelineStoreRoundTripLegacy(t *testing.T) {
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("zsh not available")
+	}
+	provider := Provider{}
+	legacy := func(name, value string) model.Entry {
+		return model.Entry{Text: name + "=" + value, Category: model.CatPath, Kind: model.KindAssignment, Names: []string{name}, Value: value, Managed: true, ValueMode: model.ValueModeLegacy}
+	}
+	semantic := func(t *testing.T, source string) model.Entry {
+		t.Helper()
+		blocks, err := provider.Parse([]byte(source))
+		if err != nil {
+			t.Fatal(err)
+		}
+		profile := ir.Build(blocks, provider)
+		if len(profile.Entries) != 1 {
+			t.Fatalf("semantic source %q yielded %#v", source, profile)
+		}
+		return profile.Entries[0]
+	}
+	cases := []struct {
+		name        string
+		list        string
+		legacy      []string
+		semantic    string
+		legacyFirst bool
+		base        string
+		want        string
+	}{
+		{name: "repeated legacy PATH", list: "PATH", legacy: []string{"$PATH:/one", "$PATH:/two"}, base: "/base", want: "/base:/one:/two"},
+		{name: "repeated legacy FPATH", list: "FPATH", legacy: []string{"$FPATH:/one", "$FPATH:/two"}, base: "/fbase", want: "/fbase:/one:/two"},
+		{name: "legacy then semantic PATH", list: "PATH", legacy: []string{"$PATH:/legacy"}, semantic: "PATH=$PATH:$EXTRA\n", legacyFirst: true, base: "/base", want: "/base:/legacy:/one:/two"},
+		{name: "semantic then legacy PATH", list: "PATH", legacy: []string{"$PATH:/legacy"}, semantic: "PATH=$PATH:$EXTRA\n", base: "/base", want: "/base:/one:/two:/legacy"},
+		{name: "legacy then semantic FPATH", list: "FPATH", legacy: []string{"$FPATH:/legacy"}, semantic: "FPATH=$FPATH:$EXTRA\n", legacyFirst: true, base: "/fbase", want: "/fbase:/legacy:/one:/two"},
+		{name: "semantic then legacy FPATH", list: "FPATH", legacy: []string{"$FPATH:/legacy"}, semantic: "FPATH=$FPATH:$EXTRA\n", base: "/fbase", want: "/fbase:/one:/two:/legacy"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			entries := make([]model.Entry, 0, len(tc.legacy)+1)
+			appendLegacy := func() {
+				for _, value := range tc.legacy {
+					entries = append(entries, legacy(tc.list, value))
+				}
+			}
+			if tc.legacyFirst {
+				appendLegacy()
+			}
+			if tc.semantic != "" {
+				entries = append(entries, semantic(t, tc.semantic))
+			}
+			if !tc.legacyFirst {
+				appendLegacy()
+			}
+			persisted := roundTripPipelineProfile(t, model.Profile{Entries: entries})
+			manifest := activate.Build(persisted)
+			if len(manifest.Lists) != 1 || manifest.Lists[0].Name != tc.list {
+				t.Fatalf("manifest lists=%#v", manifest.Lists)
+			}
+			if tc.semantic != "" && len(manifest.Lists[0].AdditionDynamic) == 0 {
+				t.Fatalf("mixed profile lost dynamic provenance: %#v", manifest.Lists[0])
+			}
+			apply, deactivate := emitPipelineListPlan(t, provider, manifest)
+			baseline := tc.list + "=" + zquote(tc.base)
+			before := "before=$" + tc.list
+			assertApply := "[[ $" + tc.list + " == " + zquote(tc.want) + " ]] || exit 111"
+			assertRestore := "[[ $" + tc.list + " == $before ]] || exit 112"
+			script := strings.Join([]string{baseline, "EXTRA=/one:/two", before, apply, "zp_apply", assertApply, deactivate, "zp_deactivate", assertRestore}, "\n")
+			if out, err := exec.Command("zsh", "-f", "-c", script).CombinedOutput(); err != nil {
+				t.Fatalf("live list pipeline: %v\n%s\nscript:\n%s", err, out, script)
+			}
+		})
+	}
+}
+
+func TestPipelinePersistedOverrideManaged(t *testing.T) {
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("zsh not available")
+	}
+	provider := Provider{}
+	sources := []string{
+		"typeset -i COUNT=2",
+		"readonly LOCKED=value",
+		"typeset -T PATH path",
+		"local scoped=value",
+	}
+	blocks, err := provider.Parse([]byte(strings.Join(sources, "\n") + "\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := ir.Build(blocks, provider)
+	if len(profile.Entries) != len(sources) {
+		t.Fatalf("profile=%#v", profile)
+	}
+	for i := range profile.Entries {
+		profile.Entries[i].Override = model.OverrideManaged
+	}
+	persisted := roundTripPipelineProfile(t, profile)
+	regenerated := string(ir.Regenerate(persisted, provider))
+	for _, source := range sources {
+		if !strings.Contains(regenerated, source+"\n") {
+			t.Fatalf("regeneration lost declaration %q: %q", source, regenerated)
+		}
+	}
+	manifest := activate.Build(persisted)
+	if len(manifest.Env) != 0 || len(manifest.Lists) != 0 {
+		t.Fatalf("persisted declarations produced activation operations: %#v", manifest)
+	}
+	apply, deactivate := emitPipelineListPlan(t, provider, manifest)
+	script := strings.Join([]string{
+		"PATH=/baseline", "FPATH=/fbaseline", "ZP_DECL_SENTINEL=before",
+		"before_path=$PATH", "before_fpath=$FPATH", "before_sentinel=$ZP_DECL_SENTINEL",
+		apply, "zp_apply",
+		"[[ $PATH == $before_path && $FPATH == $before_fpath && $ZP_DECL_SENTINEL == $before_sentinel ]] || exit 121",
+		deactivate, "zp_deactivate",
+		"[[ $PATH == $before_path && $FPATH == $before_fpath && $ZP_DECL_SENTINEL == $before_sentinel ]] || exit 122",
+	}, "\n")
+	if out, err := exec.Command("zsh", "-f", "-c", script).CombinedOutput(); err != nil {
+		t.Fatalf("persisted declaration pipeline changed live state: %v\n%s\nscript:\n%s", err, out, script)
+	}
+}
+
+func roundTripPipelineProfile(t *testing.T, profile model.Profile) model.Profile {
+	t.Helper()
+	payload, err := store.MarshalProfile(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := store.UnmarshalProfile(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return persisted
+}
+
+func emitPipelineListPlan(t *testing.T, provider Provider, manifest model.Manifest) (string, string) {
+	t.Helper()
+	applyPlan, err := activate.Diff(nil, &manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deactivatePlan, err := activate.Diff(&manifest, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	apply, _, err := provider.Emit(applyPlan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, deactivate, err := provider.Emit(deactivatePlan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, source := range map[string]string{"apply": apply, "deactivate": deactivate} {
+		cmd := exec.Command("zsh", "-n")
+		cmd.Stdin = strings.NewReader(source)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%s syntax: %v\n%s\n%s", name, err, out, source)
+		}
+	}
+	return apply, deactivate
 }
 
 func TestPipelineRejectsUnsupportedListForms(t *testing.T) {
