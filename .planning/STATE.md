@@ -5,16 +5,16 @@ milestone_name: Branchable Shell Environments
 current_phase: 04
 current_phase_name: manifest-builder-emit
 status: executing
-stopped_at: Planned 04-13-PLAN.md gap closure
-last_updated: "2026-07-27T08:45:00Z"
+stopped_at: Completed 04-13-PLAN.md
+last_updated: "2026-07-27T09:42:09.148Z"
 last_activity: 2026-07-27
-last_activity_desc: Planned 04-13 gap closure for semantic list, declaration routing, and multi-name function fidelity
+last_activity_desc: Planned 04-13 source-fidelity gap closure after independent verification
 progress:
   total_phases: 6
-  completed_phases: 3
+  completed_phases: 4
   total_plans: 23
-  completed_plans: 20
-  percent: 52
+  completed_plans: 21
+  percent: 67
 ---
 
 # Project State
@@ -29,11 +29,11 @@ See: .planning/PROJECT.md (updated 2026-06-25)
 ## Current Position
 
 Phase: 04 (manifest-builder-emit) — EXECUTING
-Plan: 12 of 13 numeric plans complete (04-13 next)
+Plan: 13 of 13 numeric plans complete (04-13 next)
 Status: Gap-closure plan ready to execute
 Last activity: 2026-07-27 — Planned 04-13 source-fidelity gap closure after independent verification
 
-Progress: [█████████░] 92%
+Progress: [█████████░] 91%
 
 ## Performance Metrics
 
@@ -77,6 +77,7 @@ Progress: [█████████░] 92%
 | Phase 04 P11 | 16 min | 3 tasks | 7 files |
 | Phase 04 P09 | 18 min | 3 tasks | 10 files |
 | Phase 04 P12 | 31 min | 3 tasks | 2 files |
+| Phase 04 P13 | 3 min | 3 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -119,6 +120,7 @@ Recent decisions affecting current work:
 - [Phase 04]: Dynamic list additions retain validated simple-parameter source as scalar expressions, with zsh deciding zero, one, or many elements at runtime. — Pre-splitting dynamic text would freeze runtime cardinality and violate tied-list semantics.
 - [Phase 04]: Secret preparation is side-effect free; Commit snapshots all keys, writes the backend before a CAS ref update, and compensates only its own visible ref result. — This preserves exact prior backend state and never overwrites concurrent ref movement.
 - [Phase 04]: The final residue oracle uses accepted source fixtures through Parse, IR, Build, Diff, and Emit; observable PATH/FPATH presence and qqqq-encoded multiplicity remain explicit while emitter bookkeeping stays internal.
+- [Phase ?]: Unmodeled declaration commands stay verbatim-imperative; only ValueModeLegacy may use same-list raw list fallback; multi-name functions reduce atomically.
 
 ### Pending Todos
 
@@ -147,6 +149,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-19T08:20:00Z
-Stopped at: Completed 04-12-PLAN.md
+Last session: 2026-07-27T09:42:09.142Z
+Stopped at: Completed 04-13-PLAN.md
 Resume file: None
