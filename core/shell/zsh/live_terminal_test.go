@@ -31,7 +31,6 @@ esac
 	if err := os.WriteFile(shim, []byte(shimSource), 0o700); err != nil {
 		t.Fatal(err)
 	}
-
 	const body = `
 source "$1"
 before_path_count=$#path
@@ -59,5 +58,43 @@ activate A || exit 22
 	cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("loader did not mutate the current shell correctly: %v\n%s", err, strings.TrimSpace(string(out)))
+	}
+}
+
+func TestLiveTerminalLoaderRejectsInvalidEmitWithoutChangingLastGood(t *testing.T) {
+	realZsh, err := exec.LookPath("zsh")
+	if err != nil {
+		t.Skip("zsh not installed")
+	}
+	dir := t.TempDir()
+	loader := filepath.Join(dir, "loader.zsh")
+	if err := os.WriteFile(loader, []byte((Provider{}).HookScript()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	shim := filepath.Join(dir, "zsh-pro")
+	if err := os.WriteFile(shim, []byte("#!/bin/sh\nprintf '%s\\n' 'this is ( invalid zsh'\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	validationMarker := filepath.Join(dir, "validated")
+	validator := filepath.Join(dir, "zsh")
+	validatorSource := "#!/bin/sh\ntouch \"$ZP_VALIDATION_MARKER\"\nexec \"$ZP_REAL_ZSH\" \"$@\"\n"
+	if err := os.WriteFile(validator, []byte(validatorSource), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	body := `
+source "$1"
+export ZSHPRO_PROFILE=good ZP_LAST_GOOD_PROFILE=good
+checkout bad && exit 10
+[[ "$ZSHPRO_PROFILE" == good ]] || exit 11
+[[ "$ZP_LAST_GOOD_PROFILE" == good ]] || exit 12
+[[ -z "${ZP_TEST_ENV+x}" ]] || exit 13
+`
+	cmd := exec.Command(realZsh, "-f", "-c", body, "zsh-pro-test", loader)
+	cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "ZP_VALIDATION_MARKER="+validationMarker, "ZP_REAL_ZSH="+realZsh)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("invalid emit changed live state or escaped the validation gate: %v\n%s", err, strings.TrimSpace(string(out)))
+	}
+	if _, err := os.Stat(validationMarker); err != nil {
+		t.Fatal("invalid emit never ran zsh -n validation")
 	}
 }
