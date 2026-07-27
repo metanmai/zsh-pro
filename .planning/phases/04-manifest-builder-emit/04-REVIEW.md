@@ -1,102 +1,61 @@
 ---
 phase: 04-manifest-builder-emit
-reviewed: 2026-07-27T08:33:12Z
+reviewed: 2026-07-27T09:45:47Z
 depth: standard
-files_reviewed: 31
+files_reviewed: 7
 files_reviewed_list:
+  - core/ir/route.go
+  - core/ir/route_test.go
+  - core/ir/build_test.go
+  - core/shell/zsh/parse_test.go
   - core/activate/builder.go
   - core/activate/builder_test.go
-  - core/activate/diff.go
-  - core/activate/diff_test.go
-  - core/activate/plan.go
-  - core/activate/schema_test.go
-  - core/activate/tokenfree_test.go
-  - core/cmd/zsh-pro/main.go
-  - core/ir/build.go
-  - core/ir/build_test.go
-  - core/model/block.go
-  - core/model/identityset.go
-  - core/model/manifest.go
-  - core/model/manifest_test.go
-  - core/model/profile.go
-  - core/shell/provider.go
-  - core/shell/zsh/dynamic_test.go
-  - core/shell/zsh/emit.go
-  - core/shell/zsh/emit_test.go
-  - core/shell/zsh/introspect.go
-  - core/shell/zsh/introspect_test.go
-  - core/shell/zsh/invariant_test.go
-  - core/shell/zsh/parse.go
-  - core/shell/zsh/parse_test.go
   - core/shell/zsh/pipeline_test.go
-  - core/shell/zsh/residue_test.go
-  - core/shell/zsh/zsh.go
-  - core/store/dto.go
-  - core/store/dto_test.go
-  - core/store/secret.go
-  - core/store/secret_test.go
 findings:
-  critical: 3
-  warning: 2
+  critical: 2
+  warning: 0
   info: 0
-  total: 5
+  total: 2
+critical: 2
+warning: 0
+info: 0
+total: 2
 status: issues_found
 ---
 
 # Phase 04: Code Review Report
 
-**Reviewed:** 2026-07-27T08:33:12Z
+**Reviewed:** 2026-07-27T09:45:47Z
 **Depth:** standard
-**Files Reviewed:** 31
+**Files Reviewed:** 7
 **Status:** issues_found
 
 ## Summary
 
-`GOTOOLCHAIN=auto go test -count=1 ./...` passes, but the implementation still admits source forms it cannot represent faithfully and then either changes their semantics or drops them. The three blockers below prevent the manifest/emit path from being reversible for accepted zsh input.
+The new parser-to-live-zsh tests correctly prove that newly parsed cross-list and unsupported list forms are inert, and that a valid two-name function applies and restores both names. The targeted tests, full Go suite, build, vet, and `make check` all pass. However, the builder still loses list additions for a supported legacy profile with repeated or mixed list entries, and persisted forced-managed declarations can still cross the manifest boundary despite the new router guard.
 
 ## Narrative Findings (AI reviewer)
 
 ## Critical Issues
 
-### CR-01 [BLOCKER]: PATH fallback re-admits rejected and cross-list expressions
+### CR-01: Repeated legacy PATH/FPATH assignments overwrite earlier profile state
 
-**File:** `core/activate/builder.go:77-80,209-248`
-**Issue:** When `parse.go` deliberately leaves `Entry.ListValue` nil, `Build` falls back to splitting raw source spelling. The fallback's `base` set accepts both PATH and FPATH references for either target list. Consequently `PATH=$FPATH:/a` is rejected by the semantic parser (`parse_test.go:360-374`) but is re-admitted here as a PATH delta based on `ZP_BASE_PATH`, changing the source's meaning. The same fallback runs for unsupported list syntax (the branch does not check `ValueMode`), so syntax which the semantic parser cannot model can be emitted as a malformed or altered list assignment rather than safely excluded.
+**File:** `core/activate/builder.go:77-80`
 
-**Fix:** Restrict `pathDelta` to explicitly legacy entries only, and require the sole base marker to be the canonical form of the list currently being built. For parsed entries, build only from a valid `ListValue`; otherwise leave the path entry unmanaged/no-part. Add end-to-end tests showing `PATH=$FPATH:/a` and unsupported parameter forms produce no manifest list operation, while valid PATH and FPATH self-references retain their direct zsh behavior.
+**Issue:** Each legacy fallback is appended directly to `m.Lists` instead of entering the source-ordered `lists` composition state. Two valid legacy entries such as `PATH=$PATH:/a` followed by `PATH=$PATH:/b` therefore produce two legacy `ListDelta`s. During emission, the first delta captures `ZP_BASE_PATH`; the second sees that slot already exists and rebuilds from the original base, yielding `BASE:/b` and silently dropping `/a`. A legacy entry mixed with a semantic `ListValue` has the same loss/order problem because the semantic result is appended only after the loop. This violates the promised legacy compatibility and makes activation apply a different PATH/FPATH than the stored profile.
 
-### CR-02 [BLOCKER]: Attribute-bearing declarations are managed after their attributes are discarded
+**Fix:** Fold a successfully parsed legacy fallback into the same per-canonical-list composition state used by semantic lists, preserving the self-marker position and dynamic/static provenance, then emit one final `ListDelta` per list. Add real-zsh regression coverage for two legacy PATH assignments and for legacy-plus-semantic PATH entries in both source orders.
 
-**File:** `core/shell/zsh/parse.go:133-163`
-**Issue:** `typeset`, `declare`, `local`, and `readonly` are parsed as ordinary assignments, but their declaration flags and attributes are not stored in `model.Block`/`model.Entry`. The routing gate nevertheless treats every single-name `KindAssignment` in an environment/path/secret category as managed, and `activate.Build` reduces it to a scalar that `emit.go` applies with plain `typeset -g` or `export`. For example, `typeset -i COUNT=2` loses its integer attribute and `readonly TOKEN=value` is either silently made mutable in a fresh activation shell or fails when an existing readonly value is assigned. That is not behavior-equivalent or reversible.
+### CR-02: A persisted forced-managed declaration bypasses the new fail-closed router
 
-**Fix:** Admit only plain assignments and `export NAME=value` until declaration attributes are modeled. Record a declaration/flag marker in `Block` and have `routeManaged` route `typeset`, `declare`, `local`, and `readonly` forms (including their flags) through the imperative/verbatim path. Add parser-to-manifest tests for integer, readonly, tied, and local declarations.
+**File:** `core/activate/builder.go:35-48`
 
-### CR-03 [BLOCKER]: Multi-name function declarations are accepted then silently disappear
+**Issue:** The router correctly marks `typeset`, `declare`, `local`, and `readonly` imperative, but `Entry.EffectiveManaged()` lets persisted `OverrideManaged` re-admit any rejected entry. `Build` then ignores `CmdName` and turns, for example, `typeset -i COUNT=2` into an ordinary scalar operation. `CmdName` and `Override` are both serialized in `profile.json`, so this is reachable from a stored profile rather than only an in-memory test shape. The integer, readonly, tied, or local semantics are again lost, contradicting the closure requirement that unmodeled declarations remain imperative.
 
-**File:** `core/shell/zsh/parse.go:211-215` and `core/activate/builder.go:92-106`
-**Issue:** The parser explicitly supports zsh's `function one two { ... }` form and records both names. `routeManaged` admits every `KindFuncDecl`, but the manifest builder requires exactly one name and emits no function operation when there are two. Thus an accepted, managed declaration yields an empty manifest contribution and is not applied at all.
-
-**Fix:** Either route multi-name function declarations as imperative until their exact semantics are modeled, or emit one `FuncSet` entry per declared name with the same captured body and verify apply/deactivate for both names. Add a source-to-live-zsh regression test; do not silently skip the entry.
-
-## Warnings
-
-### WR-01 [WARNING]: Invalid plan operations are silently omitted instead of rejected
-
-**File:** `core/shell/zsh/emit.go:166-169,181-184,191-194,199-202,207-210,226-239,251-258,263-277`
-**Issue:** The emitter returns `nil` after encountering an invalid environment, alias/function, or option name. Callers therefore receive a syntactically valid loader and no error even though one or more requested operations were not rendered. This hides corrupted/manually persisted manifests and makes a failed activation indistinguishable from success; `TestEmitRejectsHostileNamesWithoutOutput` currently codifies that silent success.
-
-**Fix:** Return a contextual error for every invalid operation/name and make the caller abort activation. Keep the builder's defensive filtering for parser input, but treat the emitter as the final validation boundary. Update the hostile-name test to require an error and verify no partial loader is returned.
-
-### WR-02 [WARNING]: The builder cannot populate the manifest's required profile identity
-
-**File:** `core/activate/builder.go:15-28` and `core/model/profile.go:124-131`
-**Issue:** `Manifest.Profile` is part of the persisted wire record, but `model.Profile` contains only entries and `activate.Build` has no profile-name argument. Every production call must manually assign `manifest.Profile` afterward (as the pipeline and residue tests do), so a normal call to `Build` returns a record with an empty profile identity. This is easy to omit when persistence/runtime wiring is added.
-
-**Fix:** Add an explicit validated profile-name parameter to `activate.Build`, or make the profile identity part of `model.Profile` and copy it into the manifest. Test that a normal builder call emits the expected non-empty `profile` JSON field.
+**Fix:** Treat unmodeled declaration commands as non-manifestable at the builder boundary regardless of `EffectiveManaged()` (and have the zsh regenerator fall back to `Text` for those commands as a second guard). Add a Parse → persisted-profile → Build regression with `OverrideManaged` for each declaration class, asserting no scalar/list manifest operation is created and verbatim source remains the regeneration path.
 
 ---
 
-_Reviewed: 2026-07-27T08:33:12Z_
+_Reviewed: 2026-07-27T09:45:47Z_
 _Reviewer: the agent (gsd-code-reviewer)_
 _Depth: standard_
