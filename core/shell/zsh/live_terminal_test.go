@@ -318,20 +318,33 @@ func TestLiveTerminalPublicVerbsFailOpenUnderErrExitAndErrReturn(t *testing.T) {
 		t.Skip("zsh not installed")
 	}
 
-	for _, verb := range []string{"activate bad", "checkout bad", "deactivate"} {
+	for _, tc := range []struct {
+		verb        string
+		wantFailure bool
+	}{
+		{verb: "activate bad", wantFailure: true},
+		{verb: "checkout bad", wantFailure: true},
+		{verb: "deactivate"},
+	} {
 		for _, option := range []string{"ERR_EXIT", "ERR_RETURN"} {
-			t.Run(verb+"/"+option, func(t *testing.T) {
+			t.Run(tc.verb+"/"+option, func(t *testing.T) {
 				dir := t.TempDir()
 				loader := writeLiveLoader(t, dir)
 				writeLiveExecutable(t, filepath.Join(dir, "zsh-pro"), "#!/bin/sh\nexit 9\n")
+				statusAssertion := `[[ "$ZP_LAST_RUNTIME_STATUS" -ne 0 ]] || exit 20`
+				if !tc.wantFailure {
+					// An exported name without the non-exported marker belongs to a
+					// nested/fresh shell, so deactivation must not invoke the binary.
+					statusAssertion = `[[ "$ZP_LAST_RUNTIME_STATUS" -eq 0 ]] || exit 20`
+				}
 
 				body := `
 source "$1"
 export ZSHPRO_PROFILE=good ZP_LAST_GOOD_PROFILE=good
 setopt ` + option + `
-` + verb + `
+` + tc.verb + `
 print -r -- SURVIVED
-[[ "$ZP_LAST_RUNTIME_STATUS" -ne 0 ]] || exit 20
+` + statusAssertion + `
 [[ "$ZSHPRO_PROFILE" == good ]] || exit 21
 [[ "$ZP_LAST_GOOD_PROFILE" == good ]] || exit 22
 `
@@ -339,10 +352,10 @@ print -r -- SURVIVED
 				cmd.Env = liveEnv(dir, "PATH="+dir+":"+os.Getenv("PATH"))
 				out, err := cmd.CombinedOutput()
 				if err != nil {
-					t.Fatalf("%s under %s escaped its fail-open boundary: %v\n%s", verb, option, err, out)
+					t.Fatalf("%s under %s escaped its fail-open boundary: %v\n%s", tc.verb, option, err, out)
 				}
 				if !strings.Contains(string(out), "SURVIVED") {
-					t.Fatalf("%s under %s did not reach the next command:\n%s", verb, option, out)
+					t.Fatalf("%s under %s did not reach the next command:\n%s", tc.verb, option, out)
 				}
 			})
 		}
