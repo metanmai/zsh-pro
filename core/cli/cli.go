@@ -31,6 +31,12 @@ type CLI struct {
 
 // New returns a CLI bound to a Provider.
 func New(p shell.Provider, s Store, e Emitter) *CLI {
+	if isNilLike(s) {
+		s = nil
+	}
+	if isNilLike(e) {
+		e = NotReadyEmitter()
+	}
 	return &CLI{provider: p, store: s, emitter: e}
 }
 

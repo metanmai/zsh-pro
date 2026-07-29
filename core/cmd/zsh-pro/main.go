@@ -36,7 +36,10 @@ func main() {
 	if err == nil {
 		cliStore = s
 	}
-	emitter := cli.NewRuntimeEmitter(cliStore, provider)
+	// Runtime secret dereference remains behind the narrow CLI resolver seam;
+	// the existing concrete driver is created once here and never exposes a
+	// resolved value to CLI logging or profile persistence.
+	emitter := cli.NewRuntimeEmitter(cliStore, provider, kc)
 
 	os.Exit(cli.New(provider, cliStore, emitter).Run(os.Args[1:], os.Stdout, os.Stderr))
 }

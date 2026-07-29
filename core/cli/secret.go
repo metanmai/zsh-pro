@@ -29,7 +29,7 @@ func resolveSecretRefs(p model.Profile, resolver SecretResolver) (model.Profile,
 		if ref == nil {
 			continue
 		}
-		if resolver == nil {
+		if isNilLike(resolver) {
 			return model.Profile{}, errSecretResolverUnavailable
 		}
 		if ref.Key == "" || ref.Kind != resolver.Kind() {

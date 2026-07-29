@@ -35,11 +35,11 @@ type runtimeEmitter struct {
 // pipeline to the CLI-local Emitter interface. It leaves all zsh generation in
 // the injected shell emitter.
 func NewRuntimeEmitter(s Store, e shell.Emitter, resolvers ...SecretResolver) Emitter {
-	if s == nil || e == nil {
+	if isNilLike(s) || isNilLike(e) {
 		return NotReadyEmitter()
 	}
 	var resolver SecretResolver
-	if len(resolvers) > 0 {
+	if len(resolvers) > 0 && !isNilLike(resolvers[0]) {
 		resolver = resolvers[0]
 	}
 	return runtimeEmitter{store: s, emit: e, resolver: resolver}
