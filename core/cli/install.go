@@ -28,14 +28,25 @@ type installPaths struct {
 	zshrcPath  string
 }
 
-// runInstall writes the cached loader before it changes .zshrc. The cache path
-// is deliberately resolved by the same environment expression rendered in the
-// stub, so sourcing never depends on a binary invocation during shell startup.
+// runInstall prepares the complete .zshrc replacement before it changes cache
+// state. The cache path is deliberately resolved by the same environment
+// expression rendered in the stub, so sourcing never depends on a binary
+// invocation during shell startup.
 func runInstall(provider shell.Hooker) error {
-	cacheDir, err := runtimeDir()
+	paths, err := resolveInstallPaths()
 	if err != nil {
 		return err
 	}
+	current, err := os.ReadFile(paths.zshrcPath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read %s: %w", paths.zshrcPath, err)
+	}
+	next, err := replaceManagedBlock(current, renderInstallBlock())
+	if err != nil {
+		return err
+	}
+
+	cacheDir := paths.runtimeDir
 	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
 		return fmt.Errorf("create runtime directory: %w", err)
 	}
@@ -47,21 +58,8 @@ func runInstall(provider shell.Hooker) error {
 	if err := writeValidatedLoader(loader, []byte(loaderScript)); err != nil {
 		return fmt.Errorf("install cached loader: %w", err)
 	}
-
-	rc, err := zshrcPath()
-	if err != nil {
-		return err
-	}
-	current, err := os.ReadFile(rc)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("read %s: %w", rc, err)
-	}
-	next, err := replaceManagedBlock(current, renderInstallBlock())
-	if err != nil {
-		return err
-	}
-	if err := atomicWrite(rc, next, 0o644); err != nil {
-		return fmt.Errorf("write %s: %w", rc, err)
+	if err := atomicWrite(paths.zshrcPath, next, 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", paths.zshrcPath, err)
 	}
 	return nil
 }
@@ -72,22 +70,6 @@ func (c *CLI) runInstall(stdout, stderr io.Writer) int {
 	}
 	_, _ = fmt.Fprintln(stdout, "zsh-pro: installed")
 	return 0
-}
-
-func runtimeDir() (string, error) {
-	paths, err := resolveInstallPaths()
-	if err != nil {
-		return "", err
-	}
-	return paths.runtimeDir, nil
-}
-
-func zshrcPath() (string, error) {
-	paths, err := resolveInstallPaths()
-	if err != nil {
-		return "", err
-	}
-	return paths.zshrcPath, nil
 }
 
 func resolveInstallPaths() (installPaths, error) {
@@ -121,8 +103,12 @@ func resolveInstallPaths() (installPaths, error) {
 func renderInstallBlock() []byte {
 	return []byte(installBegin + "\n" +
 		"if [[ -z \"${ZSHPRO_DISABLE-}\" ]]; then\n" +
-		"  if command -v zsh-pro >/dev/null 2>&1 && [[ -r \"${ZSHPRO_HOME:-$HOME/.zsh-pro}/loader.zsh\" ]]; then\n" +
-		"    source \"${ZSHPRO_HOME:-$HOME/.zsh-pro}/loader.zsh\"\n" +
+		"  if [[ -f \"${ZSHPRO_HOME:-$HOME/.zsh-pro}/loader.zsh\" && -r \"${ZSHPRO_HOME:-$HOME/.zsh-pro}/loader.zsh\" ]]; then\n" +
+		"    if source \"${ZSHPRO_HOME:-$HOME/.zsh-pro}/loader.zsh\"; then\n" +
+		"      :\n" +
+		"    else\n" +
+		"      :\n" +
+		"    fi\n" +
 		"  fi\n" +
 		"fi\n" +
 		"true\n" +
