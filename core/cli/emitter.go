@@ -26,18 +26,23 @@ func (notReadyEmitter) Emit(context.Context, string, string) (string, error) {
 }
 
 type runtimeEmitter struct {
-	store Store
-	emit  shell.Emitter
+	store    Store
+	emit     shell.Emitter
+	resolver SecretResolver
 }
 
 // NewRuntimeEmitter adapts the Phase 4 profile -> manifest -> plan -> source
 // pipeline to the CLI-local Emitter interface. It leaves all zsh generation in
 // the injected shell emitter.
-func NewRuntimeEmitter(s Store, e shell.Emitter) Emitter {
+func NewRuntimeEmitter(s Store, e shell.Emitter, resolvers ...SecretResolver) Emitter {
 	if s == nil || e == nil {
 		return NotReadyEmitter()
 	}
-	return runtimeEmitter{store: s, emit: e}
+	var resolver SecretResolver
+	if len(resolvers) > 0 {
+		resolver = resolvers[0]
+	}
+	return runtimeEmitter{store: s, emit: e, resolver: resolver}
 }
 
 func (r runtimeEmitter) Emit(ctx context.Context, mode, name string) (string, error) {
@@ -53,6 +58,10 @@ func (r runtimeEmitter) Emit(ctx context.Context, mode, name string) (string, er
 		}
 	}
 	target, err := r.store.Read(ctx, name)
+	if err != nil {
+		return "", err
+	}
+	target, err = resolveSecretRefs(target, r.resolver)
 	if err != nil {
 		return "", err
 	}
@@ -72,6 +81,10 @@ func (r runtimeEmitter) Emit(ctx context.Context, mode, name string) (string, er
 	var activeManifest *model.Manifest
 	if current := r.store.Current(); current != "" && current != "main" && current != name {
 		active, err := r.store.Read(ctx, current)
+		if err != nil {
+			return "", err
+		}
+		active, err = resolveSecretRefs(active, r.resolver)
 		if err != nil {
 			return "", err
 		}

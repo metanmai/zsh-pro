@@ -63,11 +63,8 @@ func (r deterministicSecretResolver) Retrieve(key string) (string, error) {
 	return value, nil
 }
 
-// newSecretRuntimeEmitter isolates the resolver constructor seam so this test
-// describes the desired runtime behavior before that seam is implemented.
-func newSecretRuntimeEmitter(s Store, resolver any) Emitter {
-	_ = resolver
-	return NewRuntimeEmitter(s, zsh.Provider{})
+func newSecretRuntimeEmitter(s Store, resolver SecretResolver) Emitter {
+	return NewRuntimeEmitter(s, zsh.Provider{}, resolver)
 }
 
 func redactedSecretProfile() model.Profile {
@@ -127,7 +124,7 @@ func TestRuntimeEmitterSecretResolverFailuresEmitNothing(t *testing.T) {
 	resolverFailure := errors.New("fixture resolver failed")
 	for _, tc := range []struct {
 		name     string
-		resolver any
+		resolver SecretResolver
 	}{
 		{name: "missing resolver"},
 		{name: "kind mismatch", resolver: deterministicSecretResolver{kind: model.SecretRefKeychain, values: map[string]string{"runtime-fixture": runtimeSecretFixture}}},
