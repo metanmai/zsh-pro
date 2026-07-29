@@ -92,13 +92,14 @@ activate A
 [[ "$ZP_ACTIVE_PROFILE" == A ]] || exit 12
 [[ "$ZSHPRO_PROFILE" == A ]] || exit 13
 [[ "$ZP_MARKER_TEST" == A ]] || exit 14
+[[ "${parameters[ZP_ACTIVE_PROFILE]}" != *export* ]] || exit 15
 
 activate A
-[[ "$ZP_MARKER_TEST" == A ]] || exit 15
+[[ "$ZP_MARKER_TEST" == A ]] || exit 16
 
 deactivate
-[[ -z "${ZP_ACTIVE_PROFILE+x}" && -z "${ZSHPRO_PROFILE+x}" ]] || exit 16
-[[ -z "${ZP_MARKER_TEST+x}" ]] || exit 17
+[[ -z "${ZP_ACTIVE_PROFILE+x}" && -z "${ZSHPRO_PROFILE+x}" ]] || exit 17
+[[ -z "${ZP_MARKER_TEST+x}" ]] || exit 18
 `
 	cmd := exec.Command(realZsh, "-f", "-c", body, "zsh-pro-marker-test", loader)
 	cmd.Env = liveEnv(dir, "PATH="+dir+":"+os.Getenv("PATH"), "ZP_EMIT_LOG="+emitLog)

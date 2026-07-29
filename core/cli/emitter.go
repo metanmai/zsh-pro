@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"zsh-pro/core/activate"
-	"zsh-pro/core/model"
 	"zsh-pro/core/shell"
 )
 
@@ -78,32 +77,23 @@ func (r runtimeEmitter) Emit(ctx context.Context, mode, name string) (string, er
 		return deactivate + "\nzp_deactivate\n", nil
 	}
 
-	var activeManifest *model.Manifest
-	if current := r.store.Current(); current != "" && current != "main" && current != name {
-		active, err := r.store.Read(ctx, current)
-		if err != nil {
-			return "", err
-		}
-		active, err = resolveSecretRefs(active, r.resolver)
-		if err != nil {
-			return "", err
-		}
-		m := activate.Build(active)
-		activeManifest = &m
-	}
-	plan, err := activate.Diff(activeManifest, &targetManifest)
+	applyPlan, err := activate.Diff(nil, &targetManifest)
 	if err != nil {
 		return "", err
 	}
-	apply, deactivate, err := r.emit.Emit(plan)
+	reversePlan, err := activate.Diff(&targetManifest, nil)
 	if err != nil {
 		return "", err
 	}
-	if activeManifest != nil {
-		// The loader validates and evaluates this exact one-source transaction.
-		// Define both halves first, then run the active-profile cleanup before the
-		// target apply so no A-only identity can escape into B.
-		return deactivate + "\n" + apply + "\nzp_deactivate\nzp_apply\n", nil
+	apply, _, err := r.emit.Emit(applyPlan)
+	if err != nil {
+		return "", err
 	}
-	return apply + "\nzp_apply\n", nil
+	_, reverse, err := r.emit.Emit(reversePlan)
+	if err != nil {
+		return "", err
+	}
+	// The caller retains this target-specific reverse in its current shell.
+	// A later target switch invokes it before the later payload replaces it.
+	return reverse + "\n" + apply + "\nzp_apply\n", nil
 }

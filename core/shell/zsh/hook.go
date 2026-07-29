@@ -297,12 +297,26 @@ _zp_eval_block() {
 
 _zp_switch() {
   local name="$1" block
+  if [[ "${ZP_ACTIVE_PROFILE+x}" == x && "$ZP_ACTIVE_PROFILE" == "$name" ]]; then
+    if export ZSHPRO_PROFILE="$name"; then return 0; fi
+    _zp_runtime_error 1 "unable to record active profile"
+    return 1
+  fi
   if ! _zp_prepare_eval_state; then return 1; fi
-  # The apply emitter validates the target branch and returns one complete,
-  # executable transaction: deactivate-prior (when needed), then apply-target.
+  # The apply emitter returns the requested target only: its retained reverse
+  # is defined before zp_apply runs so the caller can later unwind this target.
   if ! _zp_emit apply "$name"; then return 1; fi
   block="$REPLY"
+  if [[ "${ZP_ACTIVE_PROFILE+x}" == x ]]; then
+    # Execute the active target's retained reverse before this new payload can
+    # redefine zp_deactivate or apply a new target's state.
+    block=$'zp_deactivate\n'"$block"
+  fi
   if ! _zp_eval_block "$block" "$name"; then return 1; fi
+  if ! typeset -g +x ZP_ACTIVE_PROFILE="$name"; then
+    _zp_runtime_error 1 "unable to record active profile"
+    return 1
+  fi
   if export ZSHPRO_PROFILE="$name"; then return 0; fi
   _zp_runtime_error 1 "unable to record active profile"
   return 1
@@ -329,13 +343,12 @@ checkout() {
 }
 
 deactivate() {
-	local name="${ZSHPRO_PROFILE-}" block
-	if [[ -z "$name" ]]; then _zp_runtime_ok; return 0; fi
+	local block
+	if [[ "${ZP_ACTIVE_PROFILE+x}" != x ]]; then _zp_runtime_ok; return 0; fi
 	if ! _zp_prepare_eval_state; then return 0; fi
-	if ! _zp_emit deactivate "$name"; then return 0; fi
-	block="$REPLY"
+	block='zp_deactivate'
 	if ! _zp_eval_block "$block" ""; then return 0; fi
-	if unset ZSHPRO_PROFILE; then _zp_runtime_ok; else _zp_runtime_error 1 "unable to clear active profile"; fi
+	if unset ZP_ACTIVE_PROFILE && unset ZSHPRO_PROFILE; then _zp_runtime_ok; else _zp_runtime_error 1 "unable to clear active profile"; fi
 	return 0
 }
 
@@ -356,8 +369,8 @@ list() {
 }
 
 status() {
-  if [[ -n "${ZSHPRO_PROFILE-}" ]]; then
-    print -r -- "$ZSHPRO_PROFILE"
+  if [[ "${ZP_ACTIVE_PROFILE+x}" == x ]]; then
+    print -r -- "$ZP_ACTIVE_PROFILE"
   else
     print -r -- main
   fi
