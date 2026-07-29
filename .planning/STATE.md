@@ -5,16 +5,16 @@ milestone_name: Branchable Shell Environments
 current_phase: 05
 current_phase_name: Runtime Loader + CLI + Bootstrap
 status: executing
-stopped_at: "Completed 05-03-PLAN.md; next: execute 05-04"
-last_updated: "2026-07-29T17:55:22.087Z"
+stopped_at: "Completed 05-04-PLAN.md; next: execute 05-05"
+last_updated: "2026-07-29T18:32:02.592Z"
 last_activity: 2026-07-29
 last_activity_desc: Completed 05-03 installer marker, cache, and performance reliability work
 progress:
   total_phases: 6
   completed_phases: 4
   total_plans: 32
-  completed_plans: 30
-  percent: 94
+  completed_plans: 31
+  percent: 97
 ---
 
 # Project State
@@ -29,11 +29,11 @@ See: .planning/PROJECT.md (updated 2026-06-25)
 ## Current Position
 
 Phase: 05 — Runtime Loader + CLI + Bootstrap
-Plan: 4 of 5
+Plan: 5 of 5
 Status: Ready to execute
-Last activity: 2026-07-29 — Completed 05-03 installer marker, cache, and performance reliability work
+Last activity: 2026-07-29 — Completed 05-04 bounded runtime failure containment and complete profile transition work
 
-Progress: [█████████░] 94%
+Progress: [██████████] 97%
 
 ## Performance Metrics
 
@@ -87,6 +87,7 @@ Progress: [█████████░] 94%
 | Phase 05 P01 | 8 min | 4 tasks | 11 files |
 | Phase 05 P02 | 10 min | 3 tasks | 8 files |
 | Phase 05 P03 | 19min | 3 tasks | 5 files |
+| Phase 05 P04 | 36 min | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -150,6 +151,9 @@ Recent decisions affecting current work:
 - [Phase ?]: Install paths require an absolute HOME and absolute configured ZDOTDIR/ZSHPRO_HOME before filesystem mutation.
 - [Phase ?]: Cached loaders validate in a private same-directory candidate with a five-second deadline before rename.
 - [Phase ?]: Hyperfine means are decoded by dependency-free Go rather than Bash regexes.
+- [Phase ?]: Runtime subprocesses use a zsh-native child plus watchdog and bounded 1-99 second timeout input rather than GNU timeout.
+- [Phase ?]: Expected public verb failures report through ZP_LAST_RUNTIME_STATUS/ZP_LAST_RUNTIME_ERROR and return zero to preserve an interactive ERR_EXIT or ERR_RETURN caller.
+- [Phase ?]: The runtime emitter owns the complete executable transition, so the loader validates and evaluates one deactivate-then-apply source exactly once.
 
 ### Pending Todos
 
@@ -178,6 +182,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-29T17:55:22.079Z
-Stopped at: Completed 05-03-PLAN.md; next: execute 05-04
+Last session: 2026-07-29T18:32:02.586Z
+Stopped at: Completed 05-04-PLAN.md; next: execute 05-05
 Resume file: None
