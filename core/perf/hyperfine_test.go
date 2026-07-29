@@ -1,15 +1,10 @@
 package main
 
 import (
-	"io"
 	"math"
 	"strings"
 	"testing"
 )
-
-// addedStartupMilliseconds is deliberately wrong during the RED step. The green
-// implementation replaces this test-local placeholder with the real decoder.
-func addedStartupMilliseconds(_ io.Reader, _, _ string) (float64, error) { return 0, nil }
 
 func TestAddedStartupMillisecondsDecodesWhitespaceAndResultOrder(t *testing.T) {
 	results := `{
