@@ -222,16 +222,24 @@ Plans:
 **Plans**: 5/5 plans executed
 
 Plans:
+**Wave 1**
+
+- [x] 05-01-PLAN.md
+- [x] 05-01: TBD (embedded `loader.zsh` via `hook`; per-terminal `__ZSHPRO_STATE`; `checkout`/`activate`/`deactivate`/`list`/`status` CLI verbs)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [x] 05-02-PLAN.md
+- [x] 05-02: TBD (idempotent BEGIN/END `.zshrc` block writer; fail-open stub + `ZSHPRO_DISABLE`; `zsh -n` validation + last-good; hot-path perf budget)
+
+**Wave 3** *(blocked on Wave 2 completion)*
 
 - [x] 05-03-PLAN.md
 - [x] 05-04-PLAN.md
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
 - [x] 05-05-PLAN.md
-
-- [x] 05-01-PLAN.md
-- [x] 05-02-PLAN.md
-
-- [x] 05-01: TBD (embedded `loader.zsh` via `hook`; per-terminal `__ZSHPRO_STATE`; `checkout`/`activate`/`deactivate`/`list`/`status` CLI verbs)
-- [x] 05-02: TBD (idempotent BEGIN/END `.zshrc` block writer; fail-open stub + `ZSHPRO_DISABLE`; `zsh -n` validation + last-good; hot-path perf budget)
 
 ### Phase 6: Ingest End-to-End
 
