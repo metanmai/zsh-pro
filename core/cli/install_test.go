@@ -17,6 +17,18 @@ type staticHooker string
 
 func (h staticHooker) HookScript() string { return string(h) }
 
+type callbackHooker struct {
+	script string
+	before func()
+}
+
+func (h callbackHooker) HookScript() string {
+	if h.before != nil {
+		h.before()
+	}
+	return h.script
+}
+
 func setInstallHome(t *testing.T, home string) {
 	t.Helper()
 	t.Setenv("HOME", home)
@@ -492,6 +504,135 @@ func TestInstallCacheFailureDoesNotTouchZshrc(t *testing.T) {
 	}
 	if !bytes.Equal(before, after) {
 		t.Fatal("zshrc changed after cached-loader failure")
+	}
+}
+
+func TestInstallZshrcPreparationFailurePreservesKnownGoodCache(t *testing.T) {
+	seedCache := func(t *testing.T, home string) (string, []byte) {
+		t.Helper()
+		cacheDir := filepath.Join(home, ".zsh-pro")
+		if err := os.Mkdir(cacheDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		loader := filepath.Join(cacheDir, "loader.zsh")
+		knownGood := []byte("# known-good cached loader\n")
+		if err := os.WriteFile(loader, knownGood, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return loader, knownGood
+	}
+	assertUnchanged := func(t *testing.T, loader string, want []byte) {
+		t.Helper()
+		got, err := os.ReadFile(loader)
+		if err != nil || !bytes.Equal(got, want) {
+			t.Fatalf("known-good cache changed after .zshrc preparation failure: %q, err=%v", got, err)
+		}
+	}
+
+	t.Run("dangling symlink", func(t *testing.T) {
+		home := t.TempDir()
+		setInstallHome(t, home)
+		loader, knownGood := seedCache(t, home)
+		if err := os.Symlink(filepath.Join(home, "missing", ".zshrc"), filepath.Join(home, ".zshrc")); err != nil {
+			t.Fatal(err)
+		}
+		if err := runInstall(zsh.Provider{}); err == nil {
+			t.Fatal("install accepted a dangling .zshrc target")
+		}
+		assertUnchanged(t, loader, knownGood)
+	})
+
+	t.Run("valid marker in unwritable target directory", func(t *testing.T) {
+		home := t.TempDir()
+		setInstallHome(t, home)
+		loader, knownGood := seedCache(t, home)
+		zdotdir := filepath.Join(home, "locked-zdotdir")
+		if err := os.Mkdir(zdotdir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		rc := filepath.Join(zdotdir, ".zshrc")
+		before := append([]byte("export KEEP=1\n"), renderInstallBlock()...)
+		if err := os.WriteFile(rc, before, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(zdotdir, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(zdotdir, 0o700) })
+		t.Setenv("ZDOTDIR", zdotdir)
+		if err := runInstall(zsh.Provider{}); err == nil {
+			t.Fatal("install accepted an unwritable .zshrc target directory")
+		}
+		assertUnchanged(t, loader, knownGood)
+		got, err := os.ReadFile(rc)
+		if err != nil || !bytes.Equal(got, before) {
+			t.Fatalf("valid-marker .zshrc changed after preparation failure: %q, err=%v", got, err)
+		}
+	})
+}
+
+func TestInstallRollsBackLoaderWhenPreparedZshrcCannotBePromoted(t *testing.T) {
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("zsh not installed")
+	}
+	home := t.TempDir()
+	setInstallHome(t, home)
+	zdotdir := filepath.Join(home, "late-locked-zdotdir")
+	if err := os.Mkdir(zdotdir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rc := filepath.Join(zdotdir, ".zshrc")
+	beforeRC := append([]byte("export KEEP=1\n"), renderInstallBlock()...)
+	if err := os.WriteFile(rc, beforeRC, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cacheDir := filepath.Join(home, ".zsh-pro")
+	if err := os.Mkdir(cacheDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(cacheDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	loader := filepath.Join(cacheDir, "loader.zsh")
+	beforeLoader := []byte("# known-good cached loader\n")
+	if err := os.WriteFile(loader, beforeLoader, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ZDOTDIR", zdotdir)
+	locked := false
+	t.Cleanup(func() {
+		if locked {
+			_ = os.Chmod(zdotdir, 0o700)
+		}
+	})
+	hooker := callbackHooker{script: "typeset -g ZP_INSTALL_TRANSACTION_TEST=1\n", before: func() {
+		if err := os.Chmod(zdotdir, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		locked = true
+	}}
+	if err := runInstall(hooker); err == nil {
+		t.Fatal("install succeeded after the prepared .zshrc target became unwritable")
+	}
+	if err := os.Chmod(zdotdir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	locked = false
+	if got, err := os.ReadFile(loader); err != nil || !bytes.Equal(got, beforeLoader) {
+		t.Fatalf("loader was not rolled back after .zshrc promotion failure: %q, err=%v", got, err)
+	}
+	if got, err := os.ReadFile(rc); err != nil || !bytes.Equal(got, beforeRC) {
+		t.Fatalf("valid-marker .zshrc changed after failed promotion: %q, err=%v", got, err)
+	}
+	entries, err := os.ReadDir(cacheDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "loader.zsh" {
+		t.Fatalf("loader rollback left cache staging behind: %v", entries)
+	}
+	if info, err := os.Stat(cacheDir); err != nil || info.Mode().Perm() != 0o755 {
+		t.Fatalf("cache directory mode was not rolled back: %v, err=%v", info.Mode().Perm(), err)
 	}
 }
 

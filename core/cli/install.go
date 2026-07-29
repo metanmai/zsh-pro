@@ -28,10 +28,10 @@ type installPaths struct {
 	zshrcPath  string
 }
 
-// runInstall prepares the complete .zshrc replacement before it changes cache
-// state. The cache path is deliberately resolved by the same environment
-// expression rendered in the stub, so sourcing never depends on a binary
-// invocation during shell startup.
+// runInstall prepares and fsyncs both final-target replacements before either
+// one is promoted. Loader promotion precedes .zshrc promotion so the bootstrap
+// never points at an unavailable loader; if the second promotion fails, the
+// prepared original loader is atomically restored.
 func runInstall(provider shell.Hooker) error {
 	paths, err := resolveInstallPaths()
 	if err != nil {
@@ -45,22 +45,64 @@ func runInstall(provider shell.Hooker) error {
 	if err != nil {
 		return err
 	}
+	rcWrite, err := prepareAtomicWrite(paths.zshrcPath, next, 0o644)
+	if err != nil {
+		return fmt.Errorf("prepare %s: %w", paths.zshrcPath, err)
+	}
+	rcRollback, err := prepareWriteRollback(rcWrite.target)
+	if err != nil {
+		rcWrite.discard()
+		return fmt.Errorf("prepare rollback for %s: %w", paths.zshrcPath, err)
+	}
 
-	cacheDir := paths.runtimeDir
-	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
+	runtimeState, err := secureRuntimeDirectory(paths.runtimeDir)
+	if err != nil {
+		rcWrite.discard()
+		rcRollback.discard()
 		return fmt.Errorf("create runtime directory: %w", err)
 	}
-	if err := os.Chmod(cacheDir, 0o700); err != nil {
-		return fmt.Errorf("secure runtime directory: %w", err)
-	}
-	loader := filepath.Join(cacheDir, "loader.zsh")
+	loader := filepath.Join(paths.runtimeDir, "loader.zsh")
 	loaderScript := "# zsh-pro cached loader version " + buildinfo.Version + "\n" + provider.HookScript()
-	if err := writeValidatedLoader(loader, []byte(loaderScript)); err != nil {
-		return fmt.Errorf("install cached loader: %w", err)
+	loaderWrite, err := prepareValidatedLoader(loader, []byte(loaderScript))
+	if err != nil {
+		rcWrite.discard()
+		rcRollback.discard()
+		rollbackErr := runtimeState.rollback()
+		return installTransactionError("install cached loader", err, rollbackErr)
 	}
-	if err := atomicWrite(paths.zshrcPath, next, 0o644); err != nil {
-		return fmt.Errorf("write %s: %w", paths.zshrcPath, err)
+	loaderRollback, err := prepareWriteRollback(loaderWrite.target)
+	if err != nil {
+		loaderWrite.discard()
+		rcWrite.discard()
+		rcRollback.discard()
+		rollbackErr := runtimeState.rollback()
+		return installTransactionError("prepare loader rollback", err, rollbackErr)
 	}
+
+	if err := loaderWrite.promote(); err != nil {
+		rollbackErr := rollbackPromoted(&loaderWrite, &loaderRollback)
+		loaderWrite.discard()
+		loaderRollback.discard()
+		rcWrite.discard()
+		rcRollback.discard()
+		rollbackErr = errors.Join(rollbackErr, runtimeState.rollback())
+		return installTransactionError("install cached loader", err, rollbackErr)
+	}
+	if err := rcWrite.promote(); err != nil {
+		rollbackErr := errors.Join(
+			rollbackPromoted(&rcWrite, &rcRollback),
+			rollbackPromoted(&loaderWrite, &loaderRollback),
+		)
+		rcWrite.discard()
+		rcRollback.discard()
+		loaderWrite.discard()
+		loaderRollback.discard()
+		rollbackErr = errors.Join(rollbackErr, runtimeState.rollback())
+		return installTransactionError("write "+paths.zshrcPath, err, rollbackErr)
+	}
+
+	rcRollback.discard()
+	loaderRollback.discard()
 	return nil
 }
 
@@ -186,46 +228,185 @@ func replaceManagedBlock(current, block []byte) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
-func atomicWrite(path string, content []byte, defaultMode os.FileMode) (err error) {
+type preparedWrite struct {
+	target   string
+	temp     string
+	promoted bool
+}
+
+// prepareAtomicWrite resolves the real target and fsyncs its sibling temporary
+// file without changing the target. The caller decides when to promote it.
+func prepareAtomicWrite(path string, content []byte, defaultMode os.FileMode) (preparedWrite, error) {
 	target, err := resolveWriteTarget(path)
 	if err != nil {
-		return err
+		return preparedWrite{}, err
 	}
 	mode := defaultMode
 	info, statErr := os.Stat(target)
 	if statErr == nil {
 		mode = info.Mode().Perm()
 	} else if !errors.Is(statErr, os.ErrNotExist) {
-		return statErr
+		return preparedWrite{}, statErr
 	}
-	temp, err := writeTemp(target, content, mode)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = os.Remove(temp) }()
-	if err = os.Rename(temp, target); err != nil {
-		return err
-	}
-	return syncDirectory(filepath.Dir(target))
+	return prepareWriteTarget(target, content, mode)
 }
 
-func writeValidatedLoader(path string, content []byte) error {
+// prepareValidatedLoader prepares a mode-0600 loader replacement only after
+// validating the exact temporary bytes that would be promoted.
+func prepareValidatedLoader(path string, content []byte) (preparedWrite, error) {
 	target, err := resolveWriteTarget(path)
 	if err != nil {
-		return err
+		return preparedWrite{}, err
 	}
-	temp, err := writeTemp(target, content, 0o600)
+	prepared, err := prepareWriteTarget(target, content, 0o600)
 	if err != nil {
+		return preparedWrite{}, err
+	}
+	if err := validateZsh(prepared.temp); err != nil {
+		prepared.discard()
+		return preparedWrite{}, err
+	}
+	return prepared, nil
+}
+
+func prepareWriteTarget(target string, content []byte, mode os.FileMode) (preparedWrite, error) {
+	temp, err := writeTemp(target, content, mode)
+	if err != nil {
+		return preparedWrite{}, err
+	}
+	return preparedWrite{target: target, temp: temp}, nil
+}
+
+func (w *preparedWrite) promote() error {
+	if w.temp == "" {
+		return errors.New("write target is not prepared")
+	}
+	if err := os.Rename(w.temp, w.target); err != nil {
 		return err
 	}
-	defer func() { _ = os.Remove(temp) }()
-	if err := validateZsh(temp); err != nil {
+	w.temp = ""
+	w.promoted = true
+	return syncDirectory(filepath.Dir(w.target))
+}
+
+func (w *preparedWrite) discard() {
+	if w == nil || w.temp == "" {
+		return
+	}
+	_ = os.Remove(w.temp)
+	w.temp = ""
+}
+
+type writeRollback struct {
+	target string
+	temp   string
+	remove bool
+}
+
+// prepareWriteRollback captures the exact original target in a sibling temp
+// before a transaction can replace it. A missing original is restored by
+// removing the newly promoted target instead.
+func prepareWriteRollback(target string) (writeRollback, error) {
+	info, err := os.Stat(target)
+	if errors.Is(err, os.ErrNotExist) {
+		return writeRollback{target: target, remove: true}, nil
+	}
+	if err != nil {
+		return writeRollback{}, err
+	}
+	if !info.Mode().IsRegular() {
+		return writeRollback{}, fmt.Errorf("refusing to transactionally replace non-regular file %s", target)
+	}
+	content, err := os.ReadFile(target)
+	if err != nil {
+		return writeRollback{}, err
+	}
+	temp, err := writeTemp(target, content, info.Mode().Perm())
+	if err != nil {
+		return writeRollback{}, err
+	}
+	return writeRollback{target: target, temp: temp}, nil
+}
+
+func (r *writeRollback) restore() error {
+	if r.remove {
+		if err := os.Remove(r.target); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return syncDirectory(filepath.Dir(r.target))
+	}
+	if r.temp == "" {
+		return errors.New("rollback target is not prepared")
+	}
+	if err := os.Rename(r.temp, r.target); err != nil {
 		return err
 	}
-	if err := os.Rename(temp, target); err != nil {
+	r.temp = ""
+	return syncDirectory(filepath.Dir(r.target))
+}
+
+func (r *writeRollback) discard() {
+	if r == nil || r.temp == "" {
+		return
+	}
+	_ = os.Remove(r.temp)
+	r.temp = ""
+}
+
+func rollbackPromoted(write *preparedWrite, rollback *writeRollback) error {
+	if write == nil || !write.promoted {
+		return nil
+	}
+	return rollback.restore()
+}
+
+type runtimeDirectoryState struct {
+	path    string
+	existed bool
+	mode    os.FileMode
+}
+
+func secureRuntimeDirectory(path string) (runtimeDirectoryState, error) {
+	state := runtimeDirectoryState{path: path}
+	info, err := os.Stat(path)
+	if err == nil {
+		if !info.IsDir() {
+			return state, fmt.Errorf("%s is not a directory", path)
+		}
+		state.existed = true
+		state.mode = info.Mode().Perm()
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return state, err
+	}
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		return state, err
+	}
+	if err := os.Chmod(path, 0o700); err != nil {
+		if state.existed {
+			_ = os.Chmod(path, state.mode)
+		} else {
+			_ = os.Remove(path)
+		}
+		return state, err
+	}
+	return state, nil
+}
+
+func (s runtimeDirectoryState) rollback() error {
+	if s.existed {
+		return os.Chmod(s.path, s.mode)
+	}
+	if err := os.Remove(s.path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	return syncDirectory(filepath.Dir(target))
+	return nil
+}
+
+func installTransactionError(operation string, cause, rollbackErr error) error {
+	if rollbackErr == nil {
+		return fmt.Errorf("%s: %w", operation, cause)
+	}
+	return fmt.Errorf("%s: %w; rollback failed: %v", operation, cause, rollbackErr)
 }
 
 func resolveWriteTarget(path string) (string, error) {
