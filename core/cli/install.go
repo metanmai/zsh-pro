@@ -94,35 +94,41 @@ func renderInstallBlock() []byte {
 func replaceManagedBlock(current, block []byte) ([]byte, error) {
 	type region struct{ start, end int }
 	var regions []region
-	for offset, open := 0, -1; ; {
-		nextBegin := bytes.Index(current[offset:], []byte(installBegin))
-		nextEnd := bytes.Index(current[offset:], []byte(installEnd))
-		if nextBegin >= 0 {
-			nextBegin += offset
+	open := -1
+	for lineStart := 0; lineStart < len(current); {
+		lineEnd := len(current)
+		terminatorEnd := len(current)
+		if newline := bytes.IndexByte(current[lineStart:], '\n'); newline >= 0 {
+			lineEnd = lineStart + newline
+			terminatorEnd = lineEnd + 1
 		}
-		if nextEnd >= 0 {
-			nextEnd += offset
+
+		comparisonEnd := lineEnd
+		if terminatorEnd > lineEnd && comparisonEnd > lineStart && current[comparisonEnd-1] == '\r' {
+			comparisonEnd--
 		}
-		if nextBegin < 0 && nextEnd < 0 {
-			if open >= 0 {
-				return nil, errors.New("refusing to edit .zshrc: BEGIN marker has no END marker")
-			}
-			break
-		}
-		if nextBegin >= 0 && (nextEnd < 0 || nextBegin < nextEnd) {
+		line := current[lineStart:comparisonEnd]
+
+		switch {
+		case bytes.Equal(line, []byte(installBegin)):
 			if open >= 0 {
 				return nil, errors.New("refusing to edit .zshrc: nested or interleaved BEGIN markers")
 			}
-			open = nextBegin
-			offset = nextBegin + len(installBegin)
-			continue
+			open = lineStart
+		case bytes.Equal(line, []byte(installEnd)):
+			if open < 0 {
+				return nil, errors.New("refusing to edit .zshrc: END marker has no preceding BEGIN marker")
+			}
+			// Keep the END line's terminator outside the region so the rendered
+			// block remains a complete physical line without normalizing it.
+			regions = append(regions, region{start: open, end: comparisonEnd})
+			open = -1
 		}
-		if open < 0 {
-			return nil, errors.New("refusing to edit .zshrc: END marker has no preceding BEGIN marker")
-		}
-		regions = append(regions, region{open, nextEnd + len(installEnd)})
-		open = -1
-		offset = nextEnd + len(installEnd)
+
+		lineStart = terminatorEnd
+	}
+	if open >= 0 {
+		return nil, errors.New("refusing to edit .zshrc: BEGIN marker has no END marker")
 	}
 	if len(regions) == 0 {
 		if len(current) == 0 {
