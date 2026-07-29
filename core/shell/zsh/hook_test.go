@@ -46,6 +46,16 @@ func TestHookScriptStartPathIsZeroSubprocessAndNonSpeculative(t *testing.T) {
 	}
 }
 
+func TestHookScriptRuntimeStagingNeverUsesTMPDIR(t *testing.T) {
+	script := (Provider{}).HookScript()
+	if strings.Contains(script, "TMPDIR") {
+		t.Fatal("runtime staging must stay beneath the zsh-pro private cache root, not TMPDIR")
+	}
+	if !strings.Contains(script, "_zp_run_bounded") {
+		t.Fatal("loader must expose the shared bounded runtime boundary")
+	}
+}
+
 // loaderTopLevel extracts lines outside function bodies. The loader may shell
 // out only when a user explicitly invokes a verb, never while it is sourced.
 func loaderTopLevel(script string) string {

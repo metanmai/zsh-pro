@@ -15,10 +15,7 @@ func TestLiveTerminalLoaderSwitchesCurrentShellWithoutResidue(t *testing.T) {
 		t.Skip("zsh not installed")
 	}
 	dir := t.TempDir()
-	loader := filepath.Join(dir, "loader.zsh")
-	if err := os.WriteFile(loader, []byte((Provider{}).HookScript()), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	loader := writeLiveLoader(t, dir)
 	shim := filepath.Join(dir, "zsh-pro")
 	const shimSource = `#!/bin/sh
 case "$1:$2:$3" in
@@ -57,7 +54,7 @@ activate A || exit 22
 [[ -n "${ZP_BASE_PATH+x}" ]] || exit 23
 `
 	cmd := exec.Command("zsh", "-f", "-c", body, "zsh-pro-test", loader)
-	cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"))
+	cmd.Env = liveEnv(dir, "PATH="+dir+":"+os.Getenv("PATH"))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("loader did not mutate the current shell correctly: %v\n%s", err, strings.TrimSpace(string(out)))
 	}
@@ -93,7 +90,7 @@ checkout bad
 [[ -z "${ZP_TEST_ENV+x}" ]] || exit 13
 `
 	cmd := exec.Command(realZsh, "-f", "-c", body, "zsh-pro-test", loader)
-	cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "ZP_VALIDATION_MARKER="+validationMarker, "ZP_REAL_ZSH="+realZsh)
+	cmd.Env = liveEnv(dir, "PATH="+dir+":"+os.Getenv("PATH"), "ZP_VALIDATION_MARKER="+validationMarker, "ZP_REAL_ZSH="+realZsh)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("invalid emit changed live state or escaped the validation gate: %v\n%s", err, strings.TrimSpace(string(out)))
 	}
@@ -129,7 +126,7 @@ func TestLiveTerminalLoaderGatesEmptyEmitAndReportsRuntimeFailure(t *testing.T) 
 			}
 			body := "source \"$1\"; export ZSHPRO_PROFILE=good ZP_LAST_GOOD_PROFILE=good; activate bad; [[ \"$ZP_LAST_RUNTIME_STATUS\" -ne 0 ]] || exit 10; " + tc.assertion
 			cmd := exec.Command(realZsh, "-f", "-c", body, "zsh-pro-test", loader)
-			cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "ZP_VALIDATION_MARKER="+marker, "ZP_REAL_ZSH="+realZsh)
+			cmd.Env = liveEnv(dir, "PATH="+dir+":"+os.Getenv("PATH"), "ZP_VALIDATION_MARKER="+marker, "ZP_REAL_ZSH="+realZsh)
 			out, err := cmd.CombinedOutput()
 			if err != nil {
 				t.Fatalf("loader gate behavior failed: %v\n%s", err, out)
@@ -169,13 +166,103 @@ print -r -- SURVIVED
 [[ "$ZP_LAST_GOOD_PROFILE" == good ]] || exit 22
 `
 				cmd := exec.Command(realZsh, "-f", "-c", body, "zsh-pro-test", loader)
-				cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"))
+				cmd.Env = liveEnv(dir, "PATH="+dir+":"+os.Getenv("PATH"))
 				out, err := cmd.CombinedOutput()
 				if err != nil {
 					t.Fatalf("%s under %s escaped its fail-open boundary: %v\n%s", verb, option, err, out)
 				}
 				if !strings.Contains(string(out), "SURVIVED") {
 					t.Fatalf("%s under %s did not reach the next command:\n%s", verb, option, out)
+				}
+			})
+		}
+	}
+}
+
+func TestLiveTerminalListUsesBoundedFailOpenBoundary(t *testing.T) {
+	realZsh, err := exec.LookPath("zsh")
+	if err != nil {
+		t.Skip("zsh not installed")
+	}
+
+	for _, tc := range []struct {
+		name       string
+		binary     string
+		wantOutput string
+		timedOut   bool
+	}{
+		{
+			name:       "success",
+			binary:     "#!/bin/sh\nprintf '%s\\n' main A B\n",
+			wantOutput: "main\nA\nB\nSURVIVED\n",
+		},
+		{
+			name: "missing binary",
+		},
+		{
+			name:   "failing binary",
+			binary: "#!/bin/sh\nprintf '%s\\n' STALE-LIST-OUTPUT\nexit 9\n",
+		},
+		{
+			name:     "sleeping binary",
+			binary:   "#!/bin/sh\nprintf '%s\\n' STALE-LIST-OUTPUT\nexec /bin/sleep 5\n",
+			timedOut: true,
+		},
+	} {
+		for _, option := range []string{"ERR_EXIT", "ERR_RETURN"} {
+			t.Run(tc.name+"/"+option, func(t *testing.T) {
+				dir := t.TempDir()
+				loader := writeLiveLoader(t, dir)
+				if tc.binary != "" {
+					writeLiveExecutable(t, filepath.Join(dir, "zsh-pro"), tc.binary)
+				}
+
+				body := `
+source "$1"
+setopt ` + option + `
+list
+list_rc=$?
+print -r -- SURVIVED
+[[ "$list_rc" -eq 0 ]] || exit 10
+`
+				if tc.wantOutput == "" {
+					body += `
+[[ "$ZP_LAST_RUNTIME_STATUS" -ne 0 ]] || exit 11
+[[ -n "$ZP_LAST_RUNTIME_ERROR" ]] || exit 12
+`
+					if tc.timedOut {
+						body += `
+[[ "$ZP_RUNTIME_TIMED_OUT" -eq 1 ]] || exit 13
+`
+					}
+				}
+
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				defer cancel()
+				cmd := exec.CommandContext(ctx, realZsh, "-f", "-c", body, "zsh-pro-test", loader)
+				extra := []string{"PATH=" + dir + ":" + os.Getenv("PATH")}
+				if tc.timedOut {
+					extra = append(extra, "ZP_RUNTIME_TIMEOUT_SECONDS=1")
+				}
+				cmd.Env = liveEnv(dir, extra...)
+				out, err := cmd.CombinedOutput()
+				if ctx.Err() == context.DeadlineExceeded {
+					t.Fatalf("%s under %s needed the external Go watchdog:\n%s", tc.name, option, out)
+				}
+				if err != nil {
+					t.Fatalf("%s under %s escaped the public fail-open boundary: %v\n%s", tc.name, option, err, out)
+				}
+				if tc.wantOutput != "" {
+					if got := string(out); got != tc.wantOutput {
+						t.Fatalf("successful list output = %q, want %q", got, tc.wantOutput)
+					}
+					return
+				}
+				if !strings.Contains(string(out), "SURVIVED") {
+					t.Fatalf("%s under %s did not reach the next command:\n%s", tc.name, option, out)
+				}
+				if strings.Contains(string(out), "STALE-LIST-OUTPUT") {
+					t.Fatalf("%s under %s printed failed command output:\n%s", tc.name, option, out)
 				}
 			})
 		}
@@ -189,14 +276,14 @@ func TestLiveTerminalConsumesAllExpectedRuntimeFailures(t *testing.T) {
 	}
 
 	for _, tc := range []struct {
-		name       string
-		emitter    string
-		validator  string
-		badTempDir bool
+		name           string
+		emitter        string
+		validator      string
+		badRuntimeRoot bool
 	}{
 		{name: "emitter failure", emitter: "#!/bin/sh\nexit 9\n"},
 		{name: "empty emitter output", emitter: "#!/bin/sh\nexit 0\n"},
-		{name: "staging failure", emitter: "#!/bin/sh\nprintf '%s\\n' 'zp_apply() { :; }' 'zp_apply'\n", badTempDir: true},
+		{name: "staging failure", emitter: "#!/bin/sh\nprintf '%s\\n' 'zp_apply() { :; }' 'zp_apply'\n", badRuntimeRoot: true},
 		{name: "validation failure", emitter: "#!/bin/sh\nprintf '%s\\n' 'zp_apply() { :; }' 'zp_apply'\n", validator: "#!/bin/sh\nexit 9\n"},
 		{name: "evaluation failure", emitter: "#!/bin/sh\nprintf '%s\\n' 'zp_apply() { return 9; }' 'zp_apply'\n"},
 	} {
@@ -207,10 +294,10 @@ func TestLiveTerminalConsumesAllExpectedRuntimeFailures(t *testing.T) {
 			if tc.validator != "" {
 				writeLiveExecutable(t, filepath.Join(dir, "zsh"), tc.validator)
 			}
-			tempDir := dir
-			if tc.badTempDir {
-				tempDir = filepath.Join(dir, "not-a-directory")
-				if err := os.WriteFile(tempDir, []byte("not a directory"), 0o600); err != nil {
+			runtimeRoot := liveRuntimeDir(dir)
+			if tc.badRuntimeRoot {
+				runtimeRoot = filepath.Join(dir, "not-a-directory")
+				if err := os.WriteFile(runtimeRoot, []byte("not a directory"), 0o600); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -228,7 +315,7 @@ print -r -- SURVIVED
 [[ -o xtrace ]] || exit 33
 `
 			cmd := exec.Command(realZsh, "-f", "-c", body, "zsh-pro-test", loader)
-			cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "TMPDIR="+tempDir)
+			cmd.Env = liveEnvAt(runtimeRoot, "PATH="+dir+":"+os.Getenv("PATH"))
 			out, err := cmd.CombinedOutput()
 			if err != nil {
 				t.Fatalf("%s escaped its runtime failure boundary: %v\n%s", tc.name, err, out)
@@ -277,7 +364,7 @@ print -r -- SURVIVED
 			defer cancel()
 			started := time.Now()
 			cmd := exec.CommandContext(ctx, realZsh, "-f", "-c", body, "zsh-pro-test", loader)
-			cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "TMPDIR="+dir, "ZP_RUNTIME_TIMEOUT_SECONDS=1")
+			cmd.Env = liveEnv(dir, "PATH="+dir+":"+os.Getenv("PATH"), "TMPDIR="+dir, "ZP_RUNTIME_TIMEOUT_SECONDS=1")
 			out, err := cmd.CombinedOutput()
 			elapsed := time.Since(started)
 			if ctx.Err() == context.DeadlineExceeded {
@@ -314,20 +401,144 @@ _zp_eval_block $'zp_apply() { :; }\nzp_apply' good || exit 50
 rm -f -- "$collision"
 `
 	cmd := exec.Command(realZsh, "-f", "-c", body, "zsh-pro-test", loader)
-	cmd.Env = append(os.Environ(), "TMPDIR="+dir, "PATH="+os.Getenv("PATH"))
+	cmd.Env = liveEnv(dir, "TMPDIR="+dir, "PATH="+os.Getenv("PATH"))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("staging collision changed an existing file or left temp state: %v\n%s", err, out)
 	}
 	assertNoStagedSource(t, dir)
 }
 
+func TestLiveTerminalStagingRejectsSharedTMPDIRReplacement(t *testing.T) {
+	realZsh, err := exec.LookPath("zsh")
+	if err != nil {
+		t.Skip("zsh not installed")
+	}
+	dir := t.TempDir()
+	loader := writeLiveLoader(t, dir)
+	shared := filepath.Join(dir, "shared")
+	if err := os.Mkdir(shared, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(shared, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	leakTarget := filepath.Join(dir, "attacker-target")
+	if err := os.WriteFile(leakTarget, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	replacementTarget := filepath.Join(dir, "attacker-replacement")
+	const replacementSource = "zp_apply() { export ZP_ATTACKED=1; }\nzp_apply\n"
+	if err := os.WriteFile(replacementTarget, []byte(replacementSource), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	attackerSeen := filepath.Join(dir, "attacker-seen")
+	attackerStop := filepath.Join(dir, "attacker-stop")
+
+	const body = `
+source "$1"
+functions[_zp_private_temp_original]="${functions[_zp_private_temp]}"
+_zp_private_temp() {
+  _zp_private_temp_original "$@" || return $?
+  command sleep 0.2
+}
+functions[_zp_run_bounded_original]="${functions[_zp_run_bounded]}"
+_zp_run_bounded() {
+  if [[ "$2" == zsh && "$3" == -n ]]; then command sleep 0.2; fi
+  _zp_run_bounded_original "$@"
+}
+attacker() {
+  local phase=0 candidate
+  while [[ ! -e "$ZP_ATTACKER_STOP" ]]; do
+    for candidate in "$TMPDIR"/zsh-pro-eval-*(N); do
+      [[ -e "$candidate" || -L "$candidate" ]] || continue
+      if (( phase == 0 )); then
+        command rm -f -- "$candidate"
+        if command ln -s -- "$ZP_ATTACK_TARGET" "$candidate"; then
+          builtin print -r -- seen > "$ZP_ATTACKER_SEEN"
+          phase=1
+        fi
+      elif (( phase == 1 )) && [[ -s "$ZP_ATTACK_TARGET" ]]; then
+        command rm -f -- "$candidate"
+        if command ln -s -- "$ZP_REPLACEMENT_TARGET" "$candidate"; then
+          phase=2
+        fi
+      fi
+    done
+    command sleep 0.01
+  done
+}
+attacker &
+attacker_pid=$!
+_zp_eval_block $'zp_apply() { export ZP_SECRET_LIKE="emitted-secret-like-payload"; }\nzp_apply' good
+eval_rc=$?
+: > "$ZP_ATTACKER_STOP"
+if wait "$attacker_pid"; then :; else :; fi
+(( eval_rc == 0 )) || exit 50
+[[ -z "${ZP_ATTACKED+x}" ]] || exit 51
+[[ ! -s "$ZP_ATTACK_TARGET" ]] || exit 52
+[[ ! -e "$ZP_ATTACKER_SEEN" ]] || exit 53
+[[ "$ZP_SECRET_LIKE" == emitted-secret-like-payload ]] || exit 54
+`
+	cmd := exec.Command(realZsh, "-f", "-c", body, "zsh-pro-test", loader)
+	cmd.Env = liveEnv(dir,
+		"PATH="+os.Getenv("PATH"),
+		"TMPDIR="+shared,
+		"ZP_ATTACK_TARGET="+leakTarget,
+		"ZP_REPLACEMENT_TARGET="+replacementTarget,
+		"ZP_ATTACKER_SEEN="+attackerSeen,
+		"ZP_ATTACKER_STOP="+attackerStop,
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("shared TMPDIR replacement altered private staging: %v\n%s", err, out)
+	}
+	assertEmptyDir(t, shared)
+	assertPrivateRuntimeClean(t, liveRuntimeDir(dir))
+}
+
 func writeLiveLoader(t *testing.T, dir string) string {
 	t.Helper()
+	ensureLiveRuntimeDir(t, dir)
 	loader := filepath.Join(dir, "loader.zsh")
 	if err := os.WriteFile(loader, []byte((Provider{}).HookScript()), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return loader
+}
+
+func ensureLiveRuntimeDir(t *testing.T, dir string) {
+	t.Helper()
+	runtimeDir := liveRuntimeDir(dir)
+	if err := os.MkdirAll(runtimeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(runtimeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func liveRuntimeDir(dir string) string {
+	return filepath.Join(dir, "runtime")
+}
+
+func liveEnv(dir string, extras ...string) []string {
+	return liveEnvAt(liveRuntimeDir(dir), extras...)
+}
+
+func liveEnvAt(runtimeDir string, extras ...string) []string {
+	replaced := map[string]bool{"ZSHPRO_HOME": true}
+	for _, extra := range extras {
+		key, _, _ := strings.Cut(extra, "=")
+		replaced[key] = true
+	}
+	env := make([]string, 0, len(os.Environ())+len(extras)+1)
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		if !replaced[key] {
+			env = append(env, entry)
+		}
+	}
+	env = append(env, "ZSHPRO_HOME="+runtimeDir)
+	return append(env, extras...)
 }
 
 func writeLiveExecutable(t *testing.T, path, source string) {
@@ -347,8 +558,27 @@ func assertNoStagedSource(t *testing.T, dir string) {
 		switch entry.Name() {
 		case "loader.zsh", "zsh-pro", "zsh", "not-a-directory":
 			continue
+		case "runtime":
+			assertPrivateRuntimeClean(t, filepath.Join(dir, entry.Name()))
+			continue
 		default:
 			t.Fatalf("unexpected staged runtime file %q remains in %s", entry.Name(), dir)
 		}
+	}
+}
+
+func assertPrivateRuntimeClean(t *testing.T, runtimeDir string) {
+	t.Helper()
+	assertEmptyDir(t, runtimeDir)
+}
+
+func assertEmptyDir(t *testing.T, dir string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("private runtime directory %s still contains %q", dir, entries[0].Name())
 	}
 }
