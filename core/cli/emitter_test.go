@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -28,6 +29,125 @@ alias zp_b_only='print -r -- B'
 zp_b_only_fn() { print -r -- B }
 export PATH=/zp-b/bin:$PATH
 `
+
+const runtimeSecretFixture = "phase5-runtime-fixture"
+
+type secretProfileStore struct {
+	profile model.Profile
+	current string
+}
+
+func (s *secretProfileStore) Branches(context.Context) ([]string, error) { return nil, nil }
+func (s *secretProfileStore) Current() string                            { return s.current }
+func (s *secretProfileStore) Checkout(context.Context, string) error     { return nil }
+func (s *secretProfileStore) Read(context.Context, string) (model.Profile, error) {
+	return s.profile, nil
+}
+
+type deterministicSecretResolver struct {
+	kind   model.SecretRefKind
+	values map[string]string
+	err    error
+}
+
+func (r deterministicSecretResolver) Kind() model.SecretRefKind { return r.kind }
+
+func (r deterministicSecretResolver) Retrieve(key string) (string, error) {
+	if r.err != nil {
+		return "", r.err
+	}
+	value, ok := r.values[key]
+	if !ok {
+		return "", errors.New("fixture resolver key unavailable")
+	}
+	return value, nil
+}
+
+// newSecretRuntimeEmitter isolates the resolver constructor seam so this test
+// describes the desired runtime behavior before that seam is implemented.
+func newSecretRuntimeEmitter(s Store, resolver any) Emitter {
+	_ = resolver
+	return NewRuntimeEmitter(s, zsh.Provider{})
+}
+
+func redactedSecretProfile() model.Profile {
+	return model.Profile{Entries: []model.Entry{{
+		Text:                    "ZP_RUNTIME_SECRET='<zsh-pro secret file:runtime-fixture>'",
+		Value:                   "'<zsh-pro secret file:runtime-fixture>'",
+		Category:                model.CatSecrets,
+		Kind:                    model.KindAssignment,
+		Names:                   []string{"ZP_RUNTIME_SECRET"},
+		Exported:                true,
+		Managed:                 true,
+		StructuralFidelityKnown: true,
+		Secret:                  &model.SecretRef{Kind: model.SecretRefFile, Key: "runtime-fixture"},
+		ValueMode:               model.ValueModeUnsupported,
+	}}}
+}
+
+func TestRuntimeEmitterResolvesSecretRefBeforeBuild(t *testing.T) {
+	realZsh, err := exec.LookPath("zsh")
+	if err != nil {
+		t.Skip("zsh not installed")
+	}
+	ctx := context.Background()
+	profile := redactedSecretProfile()
+	backingStore := &secretProfileStore{profile: profile}
+	resolver := deterministicSecretResolver{
+		kind:   model.SecretRefFile,
+		values: map[string]string{"runtime-fixture": runtimeSecretFixture},
+	}
+
+	source, err := newSecretRuntimeEmitter(backingStore, resolver).Emit(ctx, "apply", "main")
+	if err != nil {
+		t.Fatal("secret-backed profile did not emit")
+	}
+	if !strings.Contains(source, "ZP_RUNTIME_SECRET") {
+		t.Fatal("resolved secret assignment was omitted from emitted source")
+	}
+
+	dir := t.TempDir()
+	sourcePath := filepath.Join(dir, "secret-apply.zsh")
+	if err := os.WriteFile(sourcePath, []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(realZsh, "-f", "-c", `source "$1"; [[ "${ZP_RUNTIME_SECRET-}" == "$2" ]]`, "zsh-pro-secret-test", sourcePath, runtimeSecretFixture)
+	if err := cmd.Run(); err != nil {
+		t.Fatal("resolved secret assignment did not reach the live shell")
+	}
+
+	persisted := backingStore.profile.Entries[0]
+	if persisted.RuntimeValue != nil || persisted.ValueMode != model.ValueModeUnsupported || persisted.Value == "" {
+		t.Fatal("runtime resolution mutated the redacted stored profile")
+	}
+}
+
+func TestRuntimeEmitterSecretResolverFailuresEmitNothing(t *testing.T) {
+	ctx := context.Background()
+	resolverFailure := errors.New("fixture resolver failed")
+	for _, tc := range []struct {
+		name     string
+		resolver any
+	}{
+		{name: "missing resolver"},
+		{name: "kind mismatch", resolver: deterministicSecretResolver{kind: model.SecretRefKeychain, values: map[string]string{"runtime-fixture": runtimeSecretFixture}}},
+		{name: "missing key", resolver: deterministicSecretResolver{kind: model.SecretRefFile, values: map[string]string{}}},
+		{name: "resolver error", resolver: deterministicSecretResolver{kind: model.SecretRefFile, err: resolverFailure}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			source, err := newSecretRuntimeEmitter(&secretProfileStore{profile: redactedSecretProfile()}, tc.resolver).Emit(ctx, "apply", "main")
+			if err == nil {
+				t.Fatal("resolver failure unexpectedly emitted source")
+			}
+			if source != "" {
+				t.Fatal("resolver failure returned partial source")
+			}
+			if strings.Contains(err.Error(), runtimeSecretFixture) || strings.Contains(err.Error(), resolverFailure.Error()) {
+				t.Fatal("resolver failure disclosed fixture data")
+			}
+		})
+	}
+}
 
 func TestRuntimeEmitterEmitsCompleteTransitionSource(t *testing.T) {
 	ctx := context.Background()
