@@ -137,23 +137,58 @@ zp_restore_scalar() {
 }
 `
 
-// Emit renders one plan into two source blocks. The blocks define zp_apply and
-// zp_deactivate and can be sourced by a future loader in the current shell.
+type emitNames struct {
+	apply, deactivate            string
+	captureScalar, restoreScalar string
+}
+
+// Emit renders one plan into two directly sourceable blocks. This public
+// emitter keeps the historical helper names for standalone plan tests; the
+// runtime transport below uses loader-owned helpers and unique function names.
 func (Provider) Emit(p activate.Plan) (apply, deactivate string, err error) {
+	return emitPlan(p, emitNames{
+		apply:         "zp_apply",
+		deactivate:    "zp_deactivate",
+		captureScalar: "zp_capture_scalar",
+		restoreScalar: "zp_restore_scalar",
+	}, true)
+}
+
+// EmitRuntime renders a loader-only payload. The caller supplies freshly
+// generated function names, while scalar helpers stay in the sourced loader
+// so the emitted source retains only the active reverse that can carry
+// runtime-resolved values.
+func (Provider) EmitRuntime(p activate.Plan, applyName, deactivateName string) (apply, deactivate string, err error) {
+	if !safeAliasFuncName(applyName) || !safeAliasFuncName(deactivateName) {
+		return "", "", fmt.Errorf("runtime emission requires safe function names")
+	}
+	return emitPlan(p, emitNames{
+		apply:         applyName,
+		deactivate:    deactivateName,
+		captureScalar: "_zp_capture_scalar",
+		restoreScalar: "_zp_restore_scalar",
+	}, false)
+}
+
+func emitPlan(p activate.Plan, names emitNames, includeHelpers bool) (apply, deactivate string, err error) {
 	var a, d strings.Builder
-	a.WriteString(runtimeHelpers)
-	a.WriteString("\nzp_apply() {\n")
+	if includeHelpers {
+		a.WriteString(runtimeHelpers)
+	}
+	a.WriteString("\n" + names.apply + "() {\n")
 	for _, op := range p.Activate {
-		if err := emitActivate(&a, op); err != nil {
+		if err := emitActivate(&a, op, names); err != nil {
 			return "", "", err
 		}
 	}
 	a.WriteString("}\n")
 
-	d.WriteString(runtimeHelpers)
-	d.WriteString("\nzp_deactivate() {\n")
+	if includeHelpers {
+		d.WriteString(runtimeHelpers)
+	}
+	d.WriteString("\n" + names.deactivate + "() {\n")
 	for _, op := range p.Deactivate {
-		if err := emitDeactivate(&d, op); err != nil {
+		if err := emitDeactivate(&d, op, names); err != nil {
 			return "", "", err
 		}
 	}
@@ -161,7 +196,7 @@ func (Provider) Emit(p activate.Plan) (apply, deactivate string, err error) {
 	return a.String(), d.String(), nil
 }
 
-func emitActivate(b *strings.Builder, op activate.Op) error {
+func emitActivate(b *strings.Builder, op activate.Op, names emitNames) error {
 	switch x := op.(type) {
 	case activate.SetScalar:
 		if !safeEnvName(x.Name) {
@@ -171,7 +206,7 @@ func emitActivate(b *strings.Builder, op activate.Op) error {
 		presence := encodeSlot("PRESENT_SCALAR", x.Name)
 		exported := encodeSlot("EXPORTED_SCALAR", x.Name)
 		applied := encodeSlot("APPLIED_SCALAR", x.Name)
-		fmt.Fprintf(b, "  zp_capture_scalar %s %s %s %s\n", x.Name, original, presence, exported)
+		fmt.Fprintf(b, "  %s %s %s %s %s\n", names.captureScalar, x.Name, original, presence, exported)
 		if x.Exported {
 			fmt.Fprintf(b, "  export %s=%s\n", x.Name, renderValue(x.Applied, x.Dynamic))
 		} else {
@@ -221,18 +256,18 @@ func emitActivate(b *strings.Builder, op activate.Op) error {
 	return nil
 }
 
-func emitDeactivate(b *strings.Builder, op activate.Op) error {
+func emitDeactivate(b *strings.Builder, op activate.Op, names emitNames) error {
 	switch x := op.(type) {
 	case activate.RestoreScalar:
 		if !safeEnvName(x.Name) {
 			return nil
 		}
-		emitRestoreScalar(b, x.Name, x.Applied)
+		emitRestoreScalar(b, x.Name, x.Applied, names)
 	case activate.UnsetScalar:
 		if !safeEnvName(x.Name) {
 			return nil
 		}
-		emitRestoreScalar(b, x.Name, x.Applied)
+		emitRestoreScalar(b, x.Name, x.Applied, names)
 	case activate.RebuildListFromBase:
 		if !safeEnvName(x.Name) {
 			return nil
@@ -284,8 +319,8 @@ func emitDeactivate(b *strings.Builder, op activate.Op) error {
 	return nil
 }
 
-func emitRestoreScalar(b *strings.Builder, name, applied string) {
-	fmt.Fprintf(b, "  zp_restore_scalar %s %s %s %s %s %s\n", name, renderValue(applied, false), encodeSlot("ORIGINAL_SCALAR", name), encodeSlot("PRESENT_SCALAR", name), encodeSlot("EXPORTED_SCALAR", name), encodeSlot("APPLIED_SCALAR", name))
+func emitRestoreScalar(b *strings.Builder, name, applied string, names emitNames) {
+	fmt.Fprintf(b, "  %s %s %s %s %s %s %s\n", names.restoreScalar, name, renderValue(applied, false), encodeSlot("ORIGINAL_SCALAR", name), encodeSlot("PRESENT_SCALAR", name), encodeSlot("EXPORTED_SCALAR", name), encodeSlot("APPLIED_SCALAR", name))
 }
 
 // Reserved future element-removal form: when ListDelta.Deletions is activated,

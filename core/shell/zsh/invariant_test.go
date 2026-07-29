@@ -18,6 +18,7 @@ func TestReverseSyntaxHasSingleEmitHome(t *testing.T) {
 		"zp_capture_scalar", "zp_restore_scalar",
 		"ZP_ORIGINAL_SCALAR_", "ZP_PRESENT_SCALAR_", "ZP_EXPORTED_SCALAR_", "ZP_APPLIED_SCALAR_",
 	}
+	loaderPath := filepath.Join(root, "core", "shell", "zsh", "hook.go")
 	for _, rel := range []string{"core/activate", "core/model", "core/store", "core/shell"} {
 		err := filepath.WalkDir(filepath.Join(root, rel), func(path string, d os.DirEntry, err error) error {
 			if err != nil {
@@ -42,6 +43,12 @@ func TestReverseSyntaxHasSingleEmitHome(t *testing.T) {
 					return true
 				}
 				for _, fragment := range forbidden {
+					// The loader owns private scalar support and transient generated
+					// function cleanup. Declarative profile reversal remains emitted
+					// only by emit.go, so the loader must not gain the other tokens.
+					if filepath.Clean(path) == loaderPath && (fragment == "unset -f " || fragment == "zp_capture_scalar" || fragment == "zp_restore_scalar") {
+						continue
+					}
 					if strings.Contains(value, fragment) {
 						relPath, _ := filepath.Rel(root, path)
 						t.Errorf("reverse token %q found outside emit.go in %s", fragment, relPath)

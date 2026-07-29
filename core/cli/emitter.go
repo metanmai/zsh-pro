@@ -2,6 +2,8 @@ package cli
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 
@@ -28,6 +30,10 @@ type runtimeEmitter struct {
 	store    Store
 	emit     shell.Emitter
 	resolver SecretResolver
+}
+
+type runtimeFunctionNames struct {
+	apply, deactivate string
 }
 
 // NewRuntimeEmitter adapts the Phase 4 profile -> manifest -> plan -> source
@@ -65,16 +71,24 @@ func (r runtimeEmitter) Emit(ctx context.Context, mode, name string) (string, er
 		return "", err
 	}
 	targetManifest := activate.Build(target)
+	names, err := newRuntimeFunctionNames()
+	if err != nil {
+		return "", err
+	}
+	emitter, ok := r.emit.(shell.RuntimeEmitter)
+	if !ok {
+		return "", errors.New("runtime emitter does not support secure payload emission")
+	}
 	if mode == "deactivate" {
 		plan, err := activate.Diff(&targetManifest, nil)
 		if err != nil {
 			return "", err
 		}
-		_, deactivate, err := r.emit.Emit(plan)
+		_, deactivate, err := emitter.EmitRuntime(plan, names.apply, names.deactivate)
 		if err != nil {
 			return "", err
 		}
-		return deactivate + "\nzp_deactivate\n", nil
+		return runtimeDeactivatePayload(deactivate, names), nil
 	}
 
 	applyPlan, err := activate.Diff(nil, &targetManifest)
@@ -85,15 +99,48 @@ func (r runtimeEmitter) Emit(ctx context.Context, mode, name string) (string, er
 	if err != nil {
 		return "", err
 	}
-	apply, _, err := r.emit.Emit(applyPlan)
+	apply, _, err := emitter.EmitRuntime(applyPlan, names.apply, names.deactivate)
 	if err != nil {
 		return "", err
 	}
-	_, reverse, err := r.emit.Emit(reversePlan)
+	_, reverse, err := emitter.EmitRuntime(reversePlan, names.apply, names.deactivate)
 	if err != nil {
 		return "", err
 	}
-	// The caller retains this target-specific reverse in its current shell.
-	// A later target switch invokes it before the later payload replaces it.
-	return reverse + "\n" + apply + "\nzp_apply\n", nil
+	return runtimeApplyPayload(reverse, apply, names), nil
+}
+
+func newRuntimeFunctionNames() (runtimeFunctionNames, error) {
+	var token [16]byte
+	if _, err := rand.Read(token[:]); err != nil {
+		return runtimeFunctionNames{}, fmt.Errorf("generate runtime function names: %w", err)
+	}
+	suffix := hex.EncodeToString(token[:])
+	return runtimeFunctionNames{
+		apply:      "__zp_apply_" + suffix,
+		deactivate: "__zp_deactivate_" + suffix,
+	}, nil
+}
+
+func runtimeApplyPayload(reverse, apply string, names runtimeFunctionNames) string {
+	return fmt.Sprintf(`if (( ${+functions[%[1]s]} || ${+functions[%[2]s]} )); then
+  _zp_runtime_error 1 "generated runtime function collision"
+  false
+else
+%[3]s
+%[4]s
+  _zp_run_payload %[1]s %[2]s
+fi
+`, names.apply, names.deactivate, reverse, apply)
+}
+
+func runtimeDeactivatePayload(reverse string, names runtimeFunctionNames) string {
+	return fmt.Sprintf(`if (( ${+functions[%[1]s]} )); then
+  _zp_runtime_error 1 "generated runtime function collision"
+  false
+else
+%[2]s
+  _zp_run_transient_reverse_payload %[1]s
+fi
+`, names.deactivate, reverse)
 }

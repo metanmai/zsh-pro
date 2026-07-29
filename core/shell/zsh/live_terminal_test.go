@@ -19,8 +19,8 @@ func TestLiveTerminalLoaderSwitchesCurrentShellWithoutResidue(t *testing.T) {
 	shim := filepath.Join(dir, "zsh-pro")
 	const shimSource = `#!/bin/sh
 case "$1:$2:$3" in
-  emit:apply:A) printf '%s\n' "zp_deactivate() { unalias zp_test_alias 2>/dev/null; unset ZP_TEST_ENV; path=(\${(@s/:/)ZP_BASE_PATH}); }" "zp_apply() { export ZP_TEST_ENV=A; alias zp_test_alias='print A'; path=(/zp-a/bin \$path); }" "zp_apply" ;;
-  emit:apply:B) printf '%s\n' "zp_deactivate() { unalias zp_test_alias 2>/dev/null; unset ZP_TEST_ENV; path=(\${(@s/:/)ZP_BASE_PATH}); }" "zp_apply() { export ZP_TEST_ENV=B; alias zp_test_alias='print B'; path=(/zp-b/bin \$path); }" "zp_apply" ;;
+  emit:apply:A) printf '%s\n' "__zp_deactivate_A() { unalias zp_test_alias 2>/dev/null; unset ZP_TEST_ENV; path=(\${(@s/:/)ZP_BASE_PATH}); }" "__zp_apply_A() { export ZP_TEST_ENV=A; alias zp_test_alias='print A'; path=(/zp-a/bin \$path); }" "_zp_run_payload __zp_apply_A __zp_deactivate_A" ;;
+  emit:apply:B) printf '%s\n' "__zp_deactivate_B() { unalias zp_test_alias 2>/dev/null; unset ZP_TEST_ENV; path=(\${(@s/:/)ZP_BASE_PATH}); }" "__zp_apply_B() { export ZP_TEST_ENV=B; alias zp_test_alias='print B'; path=(/zp-b/bin \$path); }" "_zp_run_payload __zp_apply_B __zp_deactivate_B" ;;
   list) printf '%s\n' main A B ;;
   status) printf '%s\n' main ;;
   *) exit 64 ;;
@@ -72,7 +72,7 @@ func TestLiveTerminalActivationMarkerDistinguishesInheritedProfile(t *testing.T)
 case "$1:$2:$3" in
   emit:apply:A)
     printf '%s:%s\n' "$2" "$3" >> "$ZP_EMIT_LOG"
-    printf '%s\n' "zp_deactivate() { unset ZP_MARKER_TEST; }" "zp_apply() { export ZP_MARKER_TEST=A; }" "zp_apply"
+    printf '%s\n' "__zp_deactivate_marker() { unset ZP_MARKER_TEST; }" "__zp_apply_marker() { export ZP_MARKER_TEST=A; }" "_zp_run_payload __zp_apply_marker __zp_deactivate_marker"
     ;;
   *) exit 64 ;;
 esac
@@ -126,15 +126,15 @@ func TestLiveTerminalFailedEvalLeavesTruthfulInactiveStateAndRecovers(t *testing
 case "$1:$2:$3" in
   emit:apply:good)
     printf '%s\n' \
-      "zp_deactivate() { unset ZP_A_ENV; unalias zp_a_alias 2>/dev/null; unset -f zp_a_function; unsetopt extendedglob; path=(\${(@s/:/)ZP_BASE_PATH}); }" \
-      "zp_apply() { export ZP_A_ENV=1; alias zp_a_alias='print -r -- A'; functions[zp_a_function]='print -r -- A'; setopt extendedglob; path=(/zp-a/bin \$path); }" \
-      "zp_apply"
+      "__zp_deactivate_good() { unset ZP_A_ENV; unalias zp_a_alias 2>/dev/null; unset -f zp_a_function; unsetopt extendedglob; path=(\${(@s/:/)ZP_BASE_PATH}); }" \
+      "__zp_apply_good() { export ZP_A_ENV=1; alias zp_a_alias='print -r -- A'; functions[zp_a_function]='print -r -- A'; setopt extendedglob; path=(/zp-a/bin \$path); }" \
+      "_zp_run_payload __zp_apply_good __zp_deactivate_good"
     ;;
   emit:apply:bad)
     printf '%s\n' \
-      "zp_deactivate() { unset ZP_B_ENV; unalias zp_b_alias 2>/dev/null; unset -f zp_b_function; unsetopt nomatch; path=(\${(@s/:/)ZP_BASE_PATH}); }" \
-      "zp_apply() { export ZP_B_ENV=1; alias zp_b_alias='print -r -- B'; functions[zp_b_function]='print -r -- B'; setopt nomatch; path=(/zp-b/bin \$path); return 9; }" \
-      "zp_apply"
+      "__zp_deactivate_bad() { unset ZP_B_ENV; unalias zp_b_alias 2>/dev/null; unset -f zp_b_function; unsetopt nomatch; path=(\${(@s/:/)ZP_BASE_PATH}); }" \
+      "__zp_apply_bad() { export ZP_B_ENV=1; alias zp_b_alias='print -r -- B'; functions[zp_b_function]='print -r -- B'; setopt nomatch; path=(/zp-b/bin \$path); return 9; }" \
+      "_zp_run_payload __zp_apply_bad __zp_deactivate_bad"
     ;;
   *) exit 64 ;;
 esac
@@ -164,6 +164,7 @@ alias zp_b_alias >/dev/null 2>&1 && exit 35
 (( ${+functions[zp_a_function]} || ${+functions[zp_b_function]} )) && exit 36
 [[ ! -o extendedglob && ! -o nomatch ]] || exit 37
 [[ "$PATH" == "$before_path" ]] || exit 38
+(( ${+functions[__zp_apply_good]} || ${+functions[__zp_deactivate_good]} || ${+functions[__zp_apply_bad]} || ${+functions[__zp_deactivate_bad]} )) && exit 39
 
 # The failed B transition left a truthful inactive state, so activating the
 # previous profile must re-emit and restore it instead of taking a stale
@@ -175,12 +176,14 @@ alias zp_a_alias >/dev/null || exit 42
 (( ${+functions[zp_a_function]} )) || exit 43
 [[ -o extendedglob && ! -o nomatch ]] || exit 44
 [[ "$PATH" == /zp-a/bin:* ]] || exit 45
+[[ ${+functions[__zp_apply_good]} == 0 && ${+functions[__zp_deactivate_good]} == 1 ]] || exit 46
 deactivate
-[[ -z "${ZP_ACTIVE_PROFILE+x}" && -z "${ZSHPRO_PROFILE+x}" ]] || exit 46
-[[ -z "${ZP_A_ENV+x}" && -z "${ZP_B_ENV+x}" ]] || exit 47
-alias zp_a_alias >/dev/null 2>&1 && exit 48
-(( ${+functions[zp_a_function]} || ${+functions[zp_b_function]} )) && exit 49
-[[ ! -o extendedglob && ! -o nomatch && "$PATH" == "$before_path" ]] || exit 50
+[[ -z "${ZP_ACTIVE_PROFILE+x}" && -z "${ZSHPRO_PROFILE+x}" ]] || exit 47
+[[ -z "${ZP_A_ENV+x}" && -z "${ZP_B_ENV+x}" ]] || exit 48
+alias zp_a_alias >/dev/null 2>&1 && exit 49
+(( ${+functions[zp_a_function]} || ${+functions[zp_b_function]} )) && exit 50
+(( ${+functions[__zp_apply_good]} || ${+functions[__zp_deactivate_good]} || ${+functions[__zp_apply_bad]} || ${+functions[__zp_deactivate_bad]} )) && exit 51
+[[ ! -o extendedglob && ! -o nomatch && "$PATH" == "$before_path" ]] || exit 52
 `
 	cmd := exec.Command(realZsh, "-f", "-c", body, "zsh-pro-marker-failure-test", loader)
 	cmd.Env = liveEnv(dir, "PATH="+dir+":"+os.Getenv("PATH"))
@@ -198,20 +201,20 @@ func TestLiveTerminalRetainedSecretReverseSurvivesUnavailableBinary(t *testing.T
 	loader := writeLiveLoader(t, dir)
 	secretSource := filepath.Join(dir, "secret-apply.zsh")
 	if err := os.WriteFile(secretSource, []byte(`
-zp_deactivate() { unset ZP_RUNTIME_SECRET; }
-zp_apply() { export ZP_RUNTIME_SECRET=phase5-runtime-fixture; }
-zp_apply
+__zp_deactivate_secret() { unset ZP_RUNTIME_SECRET; }
+__zp_apply_secret() { export ZP_RUNTIME_SECRET=phase5-runtime-fixture; }
+_zp_run_payload __zp_apply_secret __zp_deactivate_secret
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	bSource := filepath.Join(dir, "b-apply.zsh")
 	if err := os.WriteFile(bSource, []byte(`
-zp_deactivate() { unset ZP_B_ONLY; }
-zp_apply() {
+__zp_deactivate_b() { unset ZP_B_ONLY; }
+__zp_apply_b() {
   [[ -z "${ZP_RUNTIME_SECRET+x}" ]] || return 91
   export ZP_B_ONLY=from-b
 }
-zp_apply
+_zp_run_payload __zp_apply_b __zp_deactivate_b
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -318,7 +321,7 @@ func TestLiveTerminalLoaderGatesEmptyEmitAndReportsRuntimeFailure(t *testing.T) 
 		name, emit, assertion string
 	}{
 		{"empty emit", "#!/bin/sh\nexit 0\n", `[[ "$ZSHPRO_PROFILE" == good ]] || exit 11; [[ "$ZP_LAST_GOOD_PROFILE" == good ]] || exit 12`},
-		{"runtime failure", "#!/bin/sh\nprintf '%s\\n' 'zp_apply() { export ZP_PARTIAL=1; return 9; }' 'zp_apply'\n", `[[ "$ZP_LAST_GOOD_PROFILE" == good ]] || exit 21; [[ "$ZP_PARTIAL" == 1 ]] || exit 22`},
+		{"runtime failure", "#!/bin/sh\nprintf '%s\\n' '__zp_deactivate_bad() { unset ZP_PARTIAL; }' '__zp_apply_bad() { export ZP_PARTIAL=1; return 9; }' '_zp_run_payload __zp_apply_bad __zp_deactivate_bad'\n", `[[ "$ZP_LAST_GOOD_PROFILE" == good ]] || exit 21; [[ -z "${ZP_PARTIAL+x}" ]] || exit 22`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()

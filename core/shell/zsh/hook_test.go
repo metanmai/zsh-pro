@@ -15,7 +15,7 @@ func TestHookScriptIsParseableAndDefinesRuntimeSurface(t *testing.T) {
 			t.Errorf("%s definitions = %d, want 1", name, got)
 		}
 	}
-	for _, surface := range []string{"zp_capture_env()", "zp_restore_env()"} {
+	for _, surface := range []string{"zp_capture_env()", "zp_restore_env()", "_zp_capture_scalar()", "_zp_restore_scalar()", "_zp_run_payload()"} {
 		if !strings.Contains(script, surface) {
 			t.Errorf("loader missing %q", surface)
 		}

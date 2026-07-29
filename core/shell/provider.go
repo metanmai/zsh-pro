@@ -43,6 +43,14 @@ type Emitter interface {
 	Emit(p activate.Plan) (apply, deactivate string, err error)
 }
 
+// RuntimeEmitter emits a loader-only payload whose apply and reverse function
+// names are chosen by the caller. The loader uses this narrower transport to
+// avoid replacing user-visible generic helper names in the live shell.
+type RuntimeEmitter interface {
+	Emitter
+	EmitRuntime(p activate.Plan, applyName, deactivateName string) (apply, deactivate string, err error)
+}
+
 // Hooker provides the sourced runtime loader. Like Regenerator and Emitter,
 // this is a boundary where zsh syntax originates, so implementations belong in
 // the concrete shell package rather than a caller assembling shell text.

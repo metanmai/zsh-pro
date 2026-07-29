@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -157,11 +158,15 @@ func TestRuntimeEmitterResolvesSecretRefBeforeBuild(t *testing.T) {
 	}
 
 	dir := t.TempDir()
+	loaderPath := filepath.Join(dir, "loader.zsh")
+	if err := os.WriteFile(loaderPath, []byte((zsh.Provider{}).HookScript()), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	sourcePath := filepath.Join(dir, "secret-apply.zsh")
 	if err := os.WriteFile(sourcePath, []byte(source), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(realZsh, "-f", "-c", `source "$1"; [[ "${ZP_RUNTIME_SECRET-}" == "$2" ]]`, "zsh-pro-secret-test", sourcePath, runtimeSecretFixture)
+	cmd := exec.Command(realZsh, "-f", "-c", `source "$1"; source "$2"; [[ "${ZP_RUNTIME_SECRET-}" == "$3" ]]`, "zsh-pro-secret-test", loaderPath, sourcePath, runtimeSecretFixture)
 	if err := cmd.Run(); err != nil {
 		t.Fatal("resolved secret assignment did not reach the live shell")
 	}
@@ -229,15 +234,22 @@ func TestRuntimeEmitterApplyUsesOnlyTargetAndRetainsTargetReverse(t *testing.T) 
 	assertPairedApplySource(t, source)
 
 	dir := t.TempDir()
+	loaderPath := filepath.Join(dir, "loader.zsh")
+	if err := os.WriteFile(loaderPath, []byte((zsh.Provider{}).HookScript()), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	sourcePath := writeTransitionSource(t, dir, "main-apply.zsh", source)
 	cmd := exec.Command(realZsh, "-f", "-c", `
 typeset -g ZP_BASE_PATH="$PATH"
 source "$1"
+source "$2"
 [[ "$ZP_A_ONLY" == from-a ]] || exit 10
-(( ${+functions[zp_deactivate]} )) || exit 11
-zp_deactivate
+[[ -n "${ZP_ACTIVE_REVERSE_FN-}" && ${+functions[$ZP_ACTIVE_REVERSE_FN]} == 1 ]] || exit 11
+typeset -g +x ZP_ACTIVE_PROFILE=main
+export ZSHPRO_PROFILE=main
+deactivate
 [[ -z "${ZP_A_ONLY+x}" ]] || exit 12
-`, "zsh-pro-target-only-test", sourcePath)
+`, "zsh-pro-target-only-test", loaderPath, sourcePath)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("target reverse did not clean target state: %v\n%s", err, out)
 	}
@@ -292,6 +304,164 @@ func TestRuntimeEmitterEmitsCompleteTransitionSource(t *testing.T) {
 			t.Fatalf("Emit(apply, %s): %v", name, err)
 		}
 		assertPairedApplySource(t, source)
+	}
+}
+
+func TestRuntimeEmitterPreservesUserFunctionsAndScrubsResolvedSecrets(t *testing.T) {
+	realZsh, err := exec.LookPath("zsh")
+	if err != nil {
+		t.Skip("zsh not installed")
+	}
+	ctx := context.Background()
+	profile := redactedSecretProfile()
+	source, err := newSecretRuntimeEmitter(
+		&secretProfileStore{profile: profile},
+		deterministicSecretResolver{kind: model.SecretRefFile, values: map[string]string{"runtime-fixture": runtimeSecretFixture}},
+	).Emit(ctx, "apply", "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(source, "zp_apply()") || strings.Contains(source, "zp_deactivate()") || strings.Contains(source, "zp_capture_scalar()") || strings.Contains(source, "zp_restore_scalar()") {
+		t.Fatalf("runtime payload retained a generic helper name:\n%s", source)
+	}
+	dir := t.TempDir()
+	loaderPath := filepath.Join(dir, "loader.zsh")
+	if err := os.WriteFile(loaderPath, []byte((zsh.Provider{}).HookScript()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sourcePath := writeTransitionSource(t, dir, "secret-apply.zsh", source)
+	body := `
+source "$1"
+zp_apply() { print -r -- user-apply; }
+zp_deactivate() { print -r -- user-deactivate; }
+zp_capture_scalar() { print -r -- user-capture; }
+zp_restore_scalar() { print -r -- user-restore; }
+before_apply="${functions[zp_apply]}"
+before_deactivate="${functions[zp_deactivate]}"
+before_capture="${functions[zp_capture_scalar]}"
+before_restore="${functions[zp_restore_scalar]}"
+source "$2"
+[[ "${ZP_RUNTIME_SECRET-}" == "$3" ]] || exit 10
+[[ "${functions[zp_apply]}" == "$before_apply" ]] || exit 11
+[[ "${functions[zp_deactivate]}" == "$before_deactivate" ]] || exit 12
+[[ "${functions[zp_capture_scalar]}" == "$before_capture" ]] || exit 13
+[[ "${functions[zp_restore_scalar]}" == "$before_restore" ]] || exit 14
+[[ -n "${ZP_ACTIVE_REVERSE_FN-}" && ${+functions[$ZP_ACTIVE_REVERSE_FN]} == 1 ]] || exit 15
+for function_name in ${(k)functions}; do
+  case "$function_name" in
+    __zp_apply_*) exit 16 ;;
+    __zp_deactivate_*) [[ "$function_name" == "$ZP_ACTIVE_REVERSE_FN" ]] || exit 17 ;;
+  esac
+done
+typeset -g +x ZP_ACTIVE_PROFILE=secret
+export ZSHPRO_PROFILE=secret
+deactivate
+[[ -z "${ZP_RUNTIME_SECRET+x}" && -z "${ZP_ACTIVE_REVERSE_FN+x}" ]] || exit 20
+[[ -z "${ZP_ACTIVE_PROFILE+x}" && -z "${ZSHPRO_PROFILE+x}" ]] || exit 21
+[[ "${functions[zp_apply]}" == "$before_apply" ]] || exit 22
+[[ "${functions[zp_deactivate]}" == "$before_deactivate" ]] || exit 23
+[[ "${functions[zp_capture_scalar]}" == "$before_capture" ]] || exit 24
+[[ "${functions[zp_restore_scalar]}" == "$before_restore" ]] || exit 25
+for function_name in ${(k)functions}; do
+  case "$function_name" in
+    __zp_apply_*|__zp_deactivate_*) exit 26 ;;
+  esac
+  [[ "${functions[$function_name]}" != *"$3"* ]] || exit 27
+done
+`
+	cmd := exec.Command(realZsh, "-f", "-c", body, "zsh-pro-runtime-secret-test", loaderPath, sourcePath, runtimeSecretFixture)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("runtime payload did not preserve user functions or scrub secret state: %v\n%s", err, out)
+	}
+}
+
+func TestRuntimeEmitterFailedSwitchScrubsResolvedSecretPayload(t *testing.T) {
+	realZsh, err := exec.LookPath("zsh")
+	if err != nil {
+		t.Skip("zsh not installed")
+	}
+	source, err := newSecretRuntimeEmitter(
+		&secretProfileStore{profile: redactedSecretProfile()},
+		deterministicSecretResolver{kind: model.SecretRefFile, values: map[string]string{"runtime-fixture": runtimeSecretFixture}},
+	).Emit(context.Background(), "apply", "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	runtimeRoot := filepath.Join(dir, "runtime")
+	if err := os.Mkdir(runtimeRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	loaderPath := filepath.Join(dir, "loader.zsh")
+	if err := os.WriteFile(loaderPath, []byte((zsh.Provider{}).HookScript()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	secretPath := writeTransitionSource(t, dir, "secret-apply.zsh", source)
+	bPath := writeTransitionSource(t, dir, "bad-apply.zsh", `
+__zp_deactivate_bad() { unset ZP_FAILED_TARGET; }
+__zp_apply_bad() { export ZP_FAILED_TARGET=1; return 9; }
+_zp_run_payload __zp_apply_bad __zp_deactivate_bad
+`)
+	shim := filepath.Join(dir, "zsh-pro")
+	if err := os.WriteFile(shim, []byte("#!/bin/sh\ncase \"$1:$2:$3\" in\nemit:apply:B) cat \"$ZP_APPLY_B\" ;;\n*) exit 64 ;;\nesac\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	body := `
+source "$1"
+source "$2"
+typeset -g +x ZP_ACTIVE_PROFILE=secret
+export ZSHPRO_PROFILE=secret
+activate B
+[[ "$ZP_LAST_RUNTIME_STATUS" -ne 0 ]] || exit 10
+[[ -z "${ZP_RUNTIME_SECRET+x}" && -z "${ZP_FAILED_TARGET+x}" ]] || exit 11
+[[ -z "${ZP_ACTIVE_PROFILE+x}" && -z "${ZSHPRO_PROFILE+x}" && -z "${ZP_ACTIVE_REVERSE_FN+x}" ]] || exit 12
+for function_name in ${(k)functions}; do
+  case "$function_name" in
+    __zp_apply_*|__zp_deactivate_*) exit 13 ;;
+  esac
+  [[ "${functions[$function_name]}" != *"$3"* ]] || exit 14
+done
+`
+	cmd := exec.Command(realZsh, "-f", "-c", body, "zsh-pro-secret-switch-test", loaderPath, secretPath, runtimeSecretFixture)
+	cmd.Env = transitionEnv(
+		"PATH="+dir+":"+os.Getenv("PATH"),
+		"ZSHPRO_HOME="+runtimeRoot,
+		"ZP_APPLY_B="+bPath,
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed switch retained resolved secret source: %v\n%s", err, out)
+	}
+}
+
+func TestRuntimePayloadCollisionLeavesPreexistingFunctionUntouched(t *testing.T) {
+	realZsh, err := exec.LookPath("zsh")
+	if err != nil {
+		t.Skip("zsh not installed")
+	}
+	names := runtimeFunctionNames{apply: "__zp_apply_collision", deactivate: "__zp_deactivate_collision"}
+	payload := runtimeApplyPayload(
+		"__zp_deactivate_collision() { export ZP_COLLISION_TARGET=reverse; }\n",
+		"__zp_apply_collision() { export ZP_COLLISION_TARGET=apply; }\n",
+		names,
+	)
+	dir := t.TempDir()
+	loaderPath := filepath.Join(dir, "loader.zsh")
+	if err := os.WriteFile(loaderPath, []byte((zsh.Provider{}).HookScript()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	payloadPath := writeTransitionSource(t, dir, "collision.zsh", payload)
+	body := `
+source "$1"
+__zp_apply_collision() { print -r -- user-function; }
+before="${functions[__zp_apply_collision]}"
+if source "$2"; then exit 10; fi
+[[ "${functions[__zp_apply_collision]}" == "$before" ]] || exit 11
+[[ -z "${ZP_COLLISION_TARGET+x}" ]] || exit 12
+[[ ${+functions[__zp_deactivate_collision]} == 0 ]] || exit 13
+`
+	cmd := exec.Command(realZsh, "-f", "-c", body, "zsh-pro-runtime-collision-test", loaderPath, payloadPath)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("collision-safe runtime payload overwrote user state: %v\n%s", err, out)
 	}
 }
 
@@ -401,8 +571,8 @@ alias zp_b_only >/dev/null 2>&1 && exit 78
 	if err != nil {
 		t.Fatalf("read validation log: %v", err)
 	}
-	if string(validations) != "..." {
-		t.Fatalf("validation count = %q, want one complete source validation per public transition", validations)
+	if string(validations) != ".." {
+		t.Fatalf("validation count = %q, want one complete source validation per emitted target payload", validations)
 	}
 	emissions, err := os.ReadFile(emitLog)
 	if err != nil {
@@ -449,15 +619,15 @@ func transitionProfile(t *testing.T, source string) model.Profile {
 
 func assertPairedApplySource(t *testing.T, source string) {
 	t.Helper()
-	trimmed := strings.TrimSpace(source)
-	if !strings.Contains(source, "zp_apply()") || !strings.HasSuffix(trimmed, "zp_apply") {
-		t.Fatalf("apply source is not directly executable:\n%s", source)
+	apply := regexp.MustCompile(`__zp_apply_[0-9a-f]{32}\(\) \{`)
+	reverse := regexp.MustCompile(`__zp_deactivate_[0-9a-f]{32}\(\) \{`)
+	if !apply.MatchString(source) || !reverse.MatchString(source) || !strings.Contains(source, "_zp_run_payload __zp_apply_") {
+		t.Fatalf("apply source is not a secure paired runtime payload:\n%s", source)
 	}
-	if !strings.Contains(source, "zp_deactivate()") {
-		t.Fatalf("apply source does not retain a target-specific reverse:\n%s", source)
-	}
-	if strings.Contains(source, "\nzp_deactivate\nzp_apply") {
-		t.Fatalf("target-only apply unexpectedly invokes a prior reverse:\n%s", source)
+	for _, generic := range []string{"zp_apply()", "zp_deactivate()", "zp_capture_scalar()", "zp_restore_scalar()"} {
+		if strings.Contains(source, generic) {
+			t.Fatalf("runtime payload retained generic helper %q:\n%s", generic, source)
+		}
 	}
 }
 
