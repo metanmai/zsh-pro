@@ -10,10 +10,13 @@ import (
 	"strings"
 	"testing"
 
+	"zsh-pro/core/activate"
 	"zsh-pro/core/buildinfo"
 	"zsh-pro/core/dto"
 	"zsh-pro/core/model"
+	"zsh-pro/core/shell"
 	"zsh-pro/core/shell/zsh"
+	"zsh-pro/core/store"
 )
 
 type fakeStore struct {
@@ -35,6 +38,31 @@ type fakeEmitter struct {
 }
 
 func (e fakeEmitter) Emit(context.Context, string, string) (string, error) { return e.text, e.err }
+
+type typedNilCLIEmitter struct{ text string }
+
+func (e *typedNilCLIEmitter) Emit(context.Context, string, string) (string, error) {
+	return e.text, nil
+}
+
+type typedNilShellEmitter struct{ source string }
+
+func (e *typedNilShellEmitter) Emit(activate.Plan) (string, string, error) {
+	return e.source, "", nil
+}
+
+type typedNilSecretResolver struct{ kind model.SecretRefKind }
+
+func (r *typedNilSecretResolver) Kind() model.SecretRefKind { return r.kind }
+func (r *typedNilSecretResolver) Retrieve(string) (string, error) {
+	return "", nil
+}
+
+var (
+	_ Emitter        = (*typedNilCLIEmitter)(nil)
+	_ shell.Emitter  = (*typedNilShellEmitter)(nil)
+	_ SecretResolver = (*typedNilSecretResolver)(nil)
+)
 
 func writeRC(t *testing.T, content string) string {
 	t.Helper()
@@ -200,4 +228,46 @@ func TestRuntimeVerbsFailClosedForEmitterAndNilStore(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestTypedNilDependenciesFailClosedWithoutPanic(t *testing.T) {
+	var typedStore *store.Store
+	var typedCLIEmitter *typedNilCLIEmitter
+	var typedShellEmitter *typedNilShellEmitter
+	var typedResolver *typedNilSecretResolver
+
+	for _, tc := range []struct {
+		name string
+		cli  *CLI
+		args []string
+	}{
+		{name: "store list", cli: New(zsh.Provider{}, typedStore, fakeEmitter{}), args: []string{"list"}},
+		{name: "store status", cli: New(zsh.Provider{}, typedStore, fakeEmitter{}), args: []string{"status"}},
+		{name: "CLI emitter", cli: New(zsh.Provider{}, fakeStore{}, typedCLIEmitter), args: []string{"emit", "apply", "main"}},
+		{name: "shell emitter", cli: New(zsh.Provider{}, fakeStore{}, NewRuntimeEmitter(fakeStore{}, typedShellEmitter)), args: []string{"emit", "apply", "main"}},
+		{name: "secret resolver", cli: New(zsh.Provider{}, fakeStore{}, NewRuntimeEmitter(&secretProfileStore{profile: redactedSecretProfile()}, zsh.Provider{}, typedResolver)), args: []string{"emit", "apply", "main"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out, errBuf bytes.Buffer
+			code := runCLINoPanic(t, func() int {
+				return tc.cli.Run(tc.args, &out, &errBuf)
+			})
+			if code != int(model.ExitRuntimeErr) {
+				t.Fatalf("code = %d, want runtime failure", code)
+			}
+			if out.Len() != 0 || errBuf.Len() == 0 {
+				t.Fatalf("failure output = stdout %q stderr %q", out.String(), errBuf.String())
+			}
+		})
+	}
+}
+
+func runCLINoPanic(t *testing.T, run func() int) (code int) {
+	t.Helper()
+	defer func() {
+		if recover() != nil {
+			t.Fatal("typed-nil dependency panicked")
+		}
+	}()
+	return run()
 }
