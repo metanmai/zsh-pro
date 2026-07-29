@@ -54,6 +54,9 @@ func TestHookScriptRuntimeStagingNeverUsesTMPDIR(t *testing.T) {
 	if !strings.Contains(script, "_zp_run_bounded") {
 		t.Fatal("loader must expose the shared bounded runtime boundary")
 	}
+	if !strings.Contains(script, "_zp_private_chain_safe") || !strings.Contains(script, "zstat -L") {
+		t.Fatal("runtime staging must validate each private-root ancestor without following symlinks")
+	}
 }
 
 func TestHookScriptTracksEnvPresenceSeparatelyFromData(t *testing.T) {

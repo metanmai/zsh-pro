@@ -99,9 +99,41 @@ _zp_runtime_ok() {
   return 0
 }
 
+# _zp_private_chain_safe validates every lexical ancestor before runtime
+# staging reopens a path beneath it. A root-owned sticky directory such as
+# /tmp is safe for a victim-owned child; a non-sticky group/other-writable
+# ancestor is not, because another account can swap the root or its staging
+# directory between validation, write, validation, and read.
+_zp_private_chain_safe() {
+  local root="$1" require_private_root="${2:-0}" current="$1"
+  local -a owners modes
+  zmodload -F zsh/stat b:zstat 2>/dev/null || return 1
+  while :; do
+    owners=()
+    modes=()
+    zstat -L -A owners +uid -- "$current" 2>/dev/null || return 1
+    zstat -L -A modes +mode -- "$current" 2>/dev/null || return 1
+    (( ${#owners} == 1 && ${#modes} == 1 )) || return 1
+    # zstat mode values are decimal. zsh requires an explicit 8# prefix for
+    # octal arithmetic literals, rather than C-style leading-zero literals.
+    (( (modes[1] & 8#170000) == 8#40000 )) || return 1
+    if [[ "$current" == "$root" ]]; then
+      (( owners[1] == EUID )) || return 1
+      if (( require_private_root )) && (( (modes[1] & 8#77) != 0 )); then return 1; fi
+    else
+      (( owners[1] == EUID || owners[1] == 0 )) || return 1
+      if (( (modes[1] & 8#22) != 0 && (modes[1] & 8#1000) == 0 )); then return 1; fi
+    fi
+    [[ "$current" == / ]] && break
+    current="${current:h}"
+  done
+  return 0
+}
+
 # _zp_private_root resolves the installer-managed cache only when it is an
-# absolute, owner-controlled directory. Explicit runtime verbs may repair an
-# owner-owned mode, but sourcing this loader never touches the filesystem.
+# absolute owner-controlled directory beneath a non-swappable ancestor chain.
+# Explicit runtime verbs may repair an owner-owned mode, but sourcing this
+# loader never touches the filesystem.
 _zp_private_root() {
   local root=''
   if [[ "${ZSHPRO_HOME+x}" == x ]]; then
@@ -111,9 +143,10 @@ _zp_private_root() {
     [[ -n "${HOME-}" ]] || return 1
     root="$HOME/.zsh-pro"
   fi
-  [[ "$root" == /* && -d "$root" && ! -L "$root" && -O "$root" ]] || return 1
+  [[ "$root" == /* ]] || return 1
+  _zp_private_chain_safe "$root" || return 1
   if command chmod 700 -- "$root" >/dev/null 2>&1; then :; else return 1; fi
-  [[ -d "$root" && ! -L "$root" && -O "$root" ]] || return 1
+  _zp_private_chain_safe "$root" 1 || return 1
   REPLY="$root"
   return 0
 }

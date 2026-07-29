@@ -765,6 +765,102 @@ if wait "$attacker_pid"; then :; else :; fi
 	assertPrivateRuntimeClean(t, liveRuntimeDir(dir))
 }
 
+func TestLiveTerminalStagingRejectsNonStickyWritableAncestorReplacement(t *testing.T) {
+	realZsh, err := exec.LookPath("zsh")
+	if err != nil {
+		t.Skip("zsh not installed")
+	}
+	dir := t.TempDir()
+	loader := writeLiveLoader(t, dir)
+	unsafeParent := filepath.Join(dir, "unsafe-parent")
+	if err := os.Mkdir(unsafeParent, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(unsafeParent, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	runtimeRoot := filepath.Join(unsafeParent, "victim-runtime")
+	if err := os.Mkdir(runtimeRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	attackerRoot := filepath.Join(dir, "attacker-runtime")
+	if err := os.Mkdir(attackerRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	attackerSource := filepath.Join(dir, "attacker-source.zsh")
+	if err := os.WriteFile(attackerSource, []byte("__zp_deactivate_attacker() { unset ZP_ATTACKED; }\n__zp_apply_attacker() { export ZP_ATTACKED=1; }\n_zp_run_payload __zp_apply_attacker __zp_deactivate_attacker\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	attackerSeen := filepath.Join(dir, "attacker-seen")
+	stageSeen := filepath.Join(dir, "stage-seen")
+	attackerStop := filepath.Join(dir, "attacker-stop")
+	parkedRoot := filepath.Join(unsafeParent, "victim-runtime-parked")
+
+	const body = `
+source "$1"
+restore_root() {
+  if [[ -L "$ZSHPRO_HOME" ]]; then command rm -f -- "$ZSHPRO_HOME"; fi
+  if [[ ! -e "$ZSHPRO_HOME" && -d "$ZP_PARKED_ROOT" ]]; then
+    command mv -- "$ZP_PARKED_ROOT" "$ZSHPRO_HOME" 2>/dev/null || :
+  fi
+}
+attacker() {
+  local candidate
+  while [[ ! -e "$ZP_ATTACKER_STOP" ]]; do
+    if [[ -d "$ZSHPRO_HOME" && ! -L "$ZSHPRO_HOME" ]]; then
+      if command mv -- "$ZSHPRO_HOME" "$ZP_PARKED_ROOT" 2>/dev/null; then
+        if command ln -s -- "$ZP_ATTACK_ROOT" "$ZSHPRO_HOME"; then
+          builtin print -r -- root > "$ZP_ATTACKER_SEEN"
+        fi
+      fi
+    else
+      restore_root
+    fi
+    for candidate in "$ZSHPRO_HOME"/.runtime-*/zsh-pro-eval(N) "$ZP_PARKED_ROOT"/.runtime-*/zsh-pro-eval(N); do
+      [[ -e "$candidate" || -L "$candidate" ]] || continue
+      command rm -f -- "$candidate"
+      if command ln -s -- "$ZP_ATTACK_SOURCE" "$candidate"; then
+        builtin print -r -- stage > "$ZP_STAGE_SEEN"
+      fi
+    done
+    command sleep 0.001
+  done
+  restore_root
+}
+attacker &
+attacker_pid=$!
+typeset -i attempts=0
+while [[ ! -e "$ZP_ATTACKER_SEEN" && attempts -lt 100 ]]; do
+  command sleep 0.01
+  (( attempts += 1 ))
+done
+_zp_eval_block $'export ZP_SECRET_LIKE="emitted-secret-like-payload"\n:'
+eval_rc=$?
+: > "$ZP_ATTACKER_STOP"
+if wait "$attacker_pid"; then :; else :; fi
+restore_root
+[[ -e "$ZP_ATTACKER_SEEN" ]] || exit 50
+(( eval_rc != 0 )) || exit 51
+[[ -z "${ZP_ATTACKED+x}" && -z "${ZP_SECRET_LIKE+x}" ]] || exit 52
+[[ ! -e "$ZP_STAGE_SEEN" ]] || exit 53
+[[ -d "$ZSHPRO_HOME" && ! -L "$ZSHPRO_HOME" ]] || exit 54
+`
+	cmd := exec.Command(realZsh, "-f", "-c", body, "zsh-pro-unsafe-ancestor-test", loader)
+	cmd.Env = liveEnvAt(runtimeRoot,
+		"PATH="+os.Getenv("PATH"),
+		"ZP_ATTACK_ROOT="+attackerRoot,
+		"ZP_ATTACK_SOURCE="+attackerSource,
+		"ZP_ATTACKER_SEEN="+attackerSeen,
+		"ZP_STAGE_SEEN="+stageSeen,
+		"ZP_ATTACKER_STOP="+attackerStop,
+		"ZP_PARKED_ROOT="+parkedRoot,
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("non-sticky writable ancestor allowed root/stage replacement: %v\n%s", err, out)
+	}
+	assertPrivateRuntimeClean(t, runtimeRoot)
+}
+
 func writeLiveLoader(t *testing.T, dir string) string {
 	t.Helper()
 	ensureLiveRuntimeDir(t, dir)
