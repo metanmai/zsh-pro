@@ -19,9 +19,8 @@ func TestLiveTerminalLoaderSwitchesCurrentShellWithoutResidue(t *testing.T) {
 	shim := filepath.Join(dir, "zsh-pro")
 	const shimSource = `#!/bin/sh
 case "$1:$2:$3" in
-  emit:apply:A) printf '%s\n' "zp_apply() { export ZP_TEST_ENV=A; alias zp_test_alias='print A'; path=(/zp-a/bin \$path); }" "zp_apply" ;;
-  emit:apply:B) printf '%s\n' "zp_apply() { export ZP_TEST_ENV=B; alias zp_test_alias='print B'; path=(/zp-b/bin \$path); }" "zp_apply" ;;
-  emit:deactivate:*) printf '%s\n' "zp_deactivate() { unalias zp_test_alias 2>/dev/null; unset ZP_TEST_ENV; path=(\${(@s/:/)ZP_BASE_PATH}); }" "zp_deactivate" ;;
+  emit:apply:A) printf '%s\n' "zp_deactivate() { unalias zp_test_alias 2>/dev/null; unset ZP_TEST_ENV; path=(\${(@s/:/)ZP_BASE_PATH}); }" "zp_apply() { export ZP_TEST_ENV=A; alias zp_test_alias='print A'; path=(/zp-a/bin \$path); }" "zp_apply" ;;
+  emit:apply:B) printf '%s\n' "zp_deactivate() { unalias zp_test_alias 2>/dev/null; unset ZP_TEST_ENV; path=(\${(@s/:/)ZP_BASE_PATH}); }" "zp_apply() { export ZP_TEST_ENV=B; alias zp_test_alias='print B'; path=(/zp-b/bin \$path); }" "zp_apply" ;;
   list) printf '%s\n' main A B ;;
   status) printf '%s\n' main ;;
   *) exit 64 ;;
@@ -150,6 +149,90 @@ activate bad
 	cmd.Env = liveEnv(dir, "PATH="+dir+":"+os.Getenv("PATH"))
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("failed evaluation advanced activation state: %v\n%s", err, out)
+	}
+}
+
+func TestLiveTerminalRetainedSecretReverseSurvivesUnavailableBinary(t *testing.T) {
+	realZsh, err := exec.LookPath("zsh")
+	if err != nil {
+		t.Skip("zsh not installed")
+	}
+	dir := t.TempDir()
+	loader := writeLiveLoader(t, dir)
+	secretSource := filepath.Join(dir, "secret-apply.zsh")
+	if err := os.WriteFile(secretSource, []byte(`
+zp_deactivate() { unset ZP_RUNTIME_SECRET; }
+zp_apply() { export ZP_RUNTIME_SECRET=phase5-runtime-fixture; }
+zp_apply
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bSource := filepath.Join(dir, "b-apply.zsh")
+	if err := os.WriteFile(bSource, []byte(`
+zp_deactivate() { unset ZP_B_ONLY; }
+zp_apply() {
+  [[ -z "${ZP_RUNTIME_SECRET+x}" ]] || return 91
+  export ZP_B_ONLY=from-b
+}
+zp_apply
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	emitLog := filepath.Join(dir, "emit.log")
+	shim := filepath.Join(dir, "zsh-pro")
+	const shimSource = `#!/bin/sh
+case "$1:$2:$3" in
+  emit:apply:B)
+    printf '%s:%s\n' "$2" "$3" >> "$ZP_EMIT_LOG"
+    cat "$ZP_APPLY_B"
+    ;;
+  *) exit 64 ;;
+esac
+`
+	if err := os.WriteFile(shim, []byte(shimSource), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const body = `
+source "$1"
+
+# This payload was generated and sourced while its resolver was available.
+# Afterwards the binary has no reverse route: only the retained function may
+# remove the old secret state.
+source "$2"
+typeset -g +x ZP_ACTIVE_PROFILE=secret
+export ZSHPRO_PROFILE=secret
+deactivate
+[[ -z "${ZP_RUNTIME_SECRET+x}" ]] || exit 30
+[[ -z "${ZP_ACTIVE_PROFILE+x}" && -z "${ZSHPRO_PROFILE+x}" ]] || exit 31
+
+# Re-establish the already-emitted payload, then make a distinct target apply.
+# Its payload refuses to apply until the retained secret reverse has run.
+source "$2"
+typeset -g +x ZP_ACTIVE_PROFILE=secret
+export ZSHPRO_PROFILE=secret
+activate B
+[[ -z "${ZP_RUNTIME_SECRET+x}" ]] || exit 32
+[[ "$ZP_B_ONLY" == from-b ]] || exit 33
+[[ "$ZP_ACTIVE_PROFILE" == B && "$ZSHPRO_PROFILE" == B ]] || exit 34
+deactivate
+[[ -z "${ZP_B_ONLY+x}" ]] || exit 35
+[[ -z "${ZP_ACTIVE_PROFILE+x}" && -z "${ZSHPRO_PROFILE+x}" ]] || exit 36
+`
+	cmd := exec.Command(realZsh, "-f", "-c", body, "zsh-pro-secret-reverse-test", loader, secretSource)
+	cmd.Env = liveEnv(dir,
+		"PATH="+dir+":"+os.Getenv("PATH"),
+		"ZP_APPLY_B="+bSource,
+		"ZP_EMIT_LOG="+emitLog,
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("retained reverse depended on an unavailable binary: %v\n%s", err, out)
+	}
+	emissions, err := os.ReadFile(emitLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(emissions); got != "apply:B\n" {
+		t.Fatalf("binary calls = %q, want only the new target apply", got)
 	}
 }
 

@@ -95,6 +95,27 @@ func (r deterministicSecretResolver) Retrieve(key string) (string, error) {
 	return value, nil
 }
 
+type statefulSecretResolver struct {
+	kind      model.SecretRefKind
+	values    map[string]string
+	available bool
+	calls     []string
+}
+
+func (r *statefulSecretResolver) Kind() model.SecretRefKind { return r.kind }
+
+func (r *statefulSecretResolver) Retrieve(key string) (string, error) {
+	r.calls = append(r.calls, key)
+	if !r.available {
+		return "", errors.New("fixture resolver unavailable")
+	}
+	value, ok := r.values[key]
+	if !ok {
+		return "", errors.New("fixture resolver key unavailable")
+	}
+	return value, nil
+}
+
 func newSecretRuntimeEmitter(s Store, resolver SecretResolver) Emitter {
 	return NewRuntimeEmitter(s, zsh.Provider{}, resolver)
 }
@@ -219,6 +240,44 @@ zp_deactivate
 `, "zsh-pro-target-only-test", sourcePath)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("target reverse did not clean target state: %v\n%s", err, out)
+	}
+}
+
+func TestRuntimeEmitterSwitchDoesNotResolveAnActiveSecretAgain(t *testing.T) {
+	ctx := context.Background()
+	s := &targetOnlyStore{
+		profiles: map[string]model.Profile{
+			"secret": redactedSecretProfile(),
+			"B":      transitionProfile(t, transitionProfileB),
+		},
+		current: "secret",
+	}
+	resolver := &statefulSecretResolver{
+		kind:      model.SecretRefFile,
+		values:    map[string]string{"runtime-fixture": runtimeSecretFixture},
+		available: true,
+	}
+	r := newSecretRuntimeEmitter(s, resolver)
+	secretSource, err := r.Emit(ctx, "apply", "secret")
+	if err != nil {
+		t.Fatalf("secret activation emit: %v", err)
+	}
+	assertPairedApplySource(t, secretSource)
+
+	resolver.available = false
+	bSource, err := r.Emit(ctx, "apply", "B")
+	if err != nil {
+		t.Fatalf("switch target emission re-resolved the active secret: %v", err)
+	}
+	assertPairedApplySource(t, bSource)
+	if got := strings.Join(resolver.calls, ","); got != "runtime-fixture" {
+		t.Fatalf("resolver calls = %q, want only the initial target secret", got)
+	}
+	if s.currentCalls != 0 {
+		t.Fatalf("switch consulted Store.Current %d times, which can reintroduce active-secret resolution", s.currentCalls)
+	}
+	if got := strings.Join(s.reads, ","); got != "secret,B" {
+		t.Fatalf("read profiles = %q, want secret then new target only", got)
 	}
 }
 
