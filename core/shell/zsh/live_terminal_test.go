@@ -66,10 +66,7 @@ func TestLiveTerminalLoaderRejectsInvalidEmitWithoutChangingLastGood(t *testing.
 		t.Skip("zsh not installed")
 	}
 	dir := t.TempDir()
-	loader := filepath.Join(dir, "loader.zsh")
-	if err := os.WriteFile(loader, []byte((Provider{}).HookScript()), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	loader := writeLiveLoader(t, dir)
 	shim := filepath.Join(dir, "zsh-pro")
 	if err := os.WriteFile(shim, []byte("#!/bin/sh\nprintf '%s\\n' 'this is ( invalid zsh'\n"), 0o700); err != nil {
 		t.Fatal(err)
@@ -112,10 +109,7 @@ func TestLiveTerminalLoaderGatesEmptyEmitAndReportsRuntimeFailure(t *testing.T) 
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
-			loader := filepath.Join(dir, "loader.zsh")
-			if err := os.WriteFile(loader, []byte((Provider{}).HookScript()), 0o600); err != nil {
-				t.Fatal(err)
-			}
+			loader := writeLiveLoader(t, dir)
 			if err := os.WriteFile(filepath.Join(dir, "zsh-pro"), []byte(tc.emit), 0o700); err != nil {
 				t.Fatal(err)
 			}

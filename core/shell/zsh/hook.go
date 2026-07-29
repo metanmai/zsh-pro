@@ -63,25 +63,63 @@ _zp_runtime_ok() {
   return 0
 }
 
-# _zp_private_temp creates a 0600 regular file with noclobber enabled in a
-# subshell. That gives staging and captured stdout exclusive ownership without
-# requiring GNU timeout or a platform-specific mktemp flag.
-_zp_private_temp() {
-  local stem="$1" base candidate attempt=0
-  base="${TMPDIR:-/tmp}"
-  if [[ ! -d "$base" || ! -w "$base" ]]; then
-    return 1
+# _zp_private_root resolves the installer-managed cache only when it is an
+# absolute, owner-controlled directory. Explicit runtime verbs may repair an
+# owner-owned mode, but sourcing this loader never touches the filesystem.
+_zp_private_root() {
+  local root=''
+  if [[ "${ZSHPRO_HOME+x}" == x ]]; then
+    [[ -n "$ZSHPRO_HOME" ]] || return 1
+    root="$ZSHPRO_HOME"
+  else
+    [[ -n "${HOME-}" ]] || return 1
+    root="$HOME/.zsh-pro"
   fi
-  base="${base%/}"
+  [[ "$root" == /* && -d "$root" && ! -L "$root" && -O "$root" ]] || return 1
+  if command chmod 700 -- "$root" >/dev/null 2>&1; then :; else return 1; fi
+  [[ -d "$root" && ! -L "$root" && -O "$root" ]] || return 1
+  REPLY="$root"
+  return 0
+}
+
+# _zp_private_temp creates one owner-controlled mode-0700 child for a single
+# staging file. The child is removed with the file, so later command output or
+# emitted source is never reopened through an untrusted directory.
+_zp_private_temp() {
+  local stem="$1" root='' stage='' candidate='' attempt=0
+  stem="${stem//[^A-Za-z0-9_-]/_}"
+  [[ -n "$stem" ]] || stem=zsh-pro-runtime
+  if ! _zp_private_root; then return 1; fi
+  root="$REPLY"
   while (( attempt < 32 )); do
-    candidate="$base/${stem}-${RANDOM}-$$"
-    if ( umask 077; set -C; : > "$candidate" ) 2>/dev/null; then
-      REPLY="$candidate"
-      return 0
+    stage="$root/.runtime-${$}-${RANDOM}"
+    if ( umask 077; command mkdir -m 700 -- "$stage" ) 2>/dev/null; then
+      candidate="$stage/$stem"
+      if ( umask 077; set -C; : > "$candidate" ) 2>/dev/null &&
+        [[ -f "$candidate" && ! -L "$candidate" && -O "$candidate" ]] &&
+        command chmod 600 -- "$candidate" >/dev/null 2>&1; then
+        REPLY="$candidate"
+        return 0
+      fi
+      if command rm -f -- "$candidate" >/dev/null 2>&1; then :; fi
+      if command rmdir -- "$stage" >/dev/null 2>&1; then :; fi
     fi
     (( attempt += 1 ))
   done
   return 1
+}
+
+_zp_cleanup_private_temp() {
+  local tmp="$1" stage=''
+  [[ -n "$tmp" ]] || return 0
+  stage="${tmp:h}"
+  if [[ -e "$tmp" || -L "$tmp" ]]; then
+    if command rm -f -- "$tmp" >/dev/null 2>&1; then :; fi
+  fi
+  if [[ -d "$stage" && ! -L "$stage" && -O "$stage" ]]; then
+    if command rmdir -- "$stage" >/dev/null 2>&1; then :; fi
+  fi
+  return 0
 }
 
 # _zp_run_bounded captures a command's stdout while a paired watchdog owns its
@@ -128,7 +166,12 @@ _zp_run_bounded() {
       if wait "$watchdog"; then watchdog_rc=0; else watchdog_rc=$?; fi
       watchdog=''
 
-      if [[ -r "$output" ]]; then REPLY="$(<"$output")"; else REPLY=''; fi
+      if [[ -r "$output" ]]; then
+        REPLY="$(<"$output"; print -rn -- $'\001')"
+        REPLY="${REPLY%$'\001'}"
+      else
+        REPLY=''
+      fi
       if (( watchdog_rc == 124 )); then
         if typeset -g ZP_RUNTIME_TIMED_OUT=1; then :; fi
         result=124
@@ -147,7 +190,7 @@ _zp_run_bounded() {
       if wait "$child"; then :; else :; fi
     fi
     if [[ -n "$output" ]]; then
-      if command rm -f -- "$output" >/dev/null 2>&1; then :; fi
+      _zp_cleanup_private_temp "$output"
     fi
   }
   return "$result"
@@ -231,7 +274,7 @@ _zp_eval_block() {
     fi
   } always {
     if [[ -n "$tmp" ]]; then
-      if command rm -f -- "$tmp" >/dev/null 2>&1; then :; fi
+      _zp_cleanup_private_temp "$tmp"
     fi
     if (( history_pushed )); then
       if fc -P 2>/dev/null; then :; fi
@@ -290,7 +333,19 @@ deactivate() {
 }
 
 list() {
-  command zsh-pro list
+  local rc timeout="${ZP_RUNTIME_TIMEOUT_SECONDS:-5}"
+  if _zp_run_bounded "$timeout" zsh-pro list; then
+    print -rn -- "$REPLY"
+    _zp_runtime_ok
+  else
+    rc=$?
+    if (( ZP_RUNTIME_TIMED_OUT )); then
+      _zp_runtime_error "$rc" "list timed out after ${timeout}s"
+    else
+      _zp_runtime_error "$rc" "list failed"
+    fi
+  fi
+  return 0
 }
 
 status() {
