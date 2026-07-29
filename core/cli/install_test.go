@@ -220,6 +220,10 @@ func TestReplaceManagedBlockRejectsEveryMalformedExactMarkerOrdering(t *testing.
 	}
 }
 
+// TestInstallRefusesMalformedExactMarkerOrderingsWithoutWriting pins the
+// D-09/D-10 marker transaction before D-11/D-13/D-14 cache work. A malformed
+// user-owned region must reject before either a known-good loader is promoted
+// over or a new runtime directory is created.
 func TestInstallRefusesMalformedExactMarkerOrderingsWithoutWriting(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -227,25 +231,61 @@ func TestInstallRefusesMalformedExactMarkerOrderingsWithoutWriting(t *testing.T)
 	}{
 		{"nested begins", "before\n# >>> zsh-pro >>>\n# >>> zsh-pro >>>\n# <<< zsh-pro <<<\nafter\n"},
 		{"stray end after region", "before\n# >>> zsh-pro >>>\n# <<< zsh-pro <<<\n# <<< zsh-pro <<<\nafter\n"},
+		{"unterminated begin", "before\n# >>> zsh-pro >>>\nafter\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			home := t.TempDir()
-			setInstallHome(t, home)
-			rc := filepath.Join(home, ".zshrc")
-			before := []byte(tc.input)
-			if err := os.WriteFile(rc, before, 0o600); err != nil {
-				t.Fatal(err)
-			}
+			for _, cache := range []struct {
+				name string
+				seed bool
+			}{
+				{name: "known good cache", seed: true},
+				{name: "missing cache"},
+			} {
+				t.Run(cache.name, func(t *testing.T) {
+					home := t.TempDir()
+					setInstallHome(t, home)
+					rc := filepath.Join(home, ".zshrc")
+					before := []byte(tc.input)
+					if err := os.WriteFile(rc, before, 0o600); err != nil {
+						t.Fatal(err)
+					}
 
-			if err := runInstall(zsh.Provider{}); err == nil {
-				t.Fatal("install accepted malformed exact marker ordering")
-			}
-			after, err := os.ReadFile(rc)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !bytes.Equal(after, before) {
-				t.Fatalf("malformed input was written:\n got: %q\nwant: %q", after, before)
+					cacheDir := filepath.Join(home, ".zsh-pro")
+					loader := filepath.Join(cacheDir, "loader.zsh")
+					knownGood := []byte("# known-good cached loader\n")
+					if cache.seed {
+						if err := os.Mkdir(cacheDir, 0o700); err != nil {
+							t.Fatal(err)
+						}
+						if err := os.WriteFile(loader, knownGood, 0o600); err != nil {
+							t.Fatal(err)
+						}
+					}
+
+					if err := runInstall(zsh.Provider{}); err == nil {
+						t.Fatal("install accepted malformed exact marker ordering")
+					}
+					after, err := os.ReadFile(rc)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !bytes.Equal(after, before) {
+						t.Fatalf("malformed input was written:\n got: %q\nwant: %q", after, before)
+					}
+					if cache.seed {
+						got, err := os.ReadFile(loader)
+						if err != nil || !bytes.Equal(got, knownGood) {
+							t.Fatalf("known-good cache changed after malformed-marker rejection: %q, err=%v", got, err)
+						}
+						if _, err := os.Stat(cacheDir); err != nil {
+							t.Fatalf("known-good cache directory disappeared: %v", err)
+						}
+						return
+					}
+					if _, err := os.Stat(cacheDir); !os.IsNotExist(err) {
+						t.Fatalf("missing cache directory changed by malformed-marker rejection: %v", err)
+					}
+				})
 			}
 		})
 	}
@@ -457,10 +497,13 @@ func TestInstallCacheFailureDoesNotTouchZshrc(t *testing.T) {
 
 func TestRenderedStubIsFailOpenAndParseable(t *testing.T) {
 	stub := string(renderInstallBlock())
-	for _, want := range []string{"if [[ -z", "command -v zsh-pro", "[[ -r", "source", "true"} {
+	for _, want := range []string{"if [[ -z", "[[ -f", "-r", "if source", "else", "true"} {
 		if !strings.Contains(stub, want) {
 			t.Fatalf("stub missing %q", want)
 		}
+	}
+	if strings.Contains(stub, "command -v zsh-pro") || strings.Contains(stub, "$(") {
+		t.Fatal("stub invokes a command or command substitution during shell startup")
 	}
 	if strings.Contains(stub, "\nreturn") {
 		t.Fatal("stub contains a top-level return")
@@ -522,23 +565,40 @@ func TestInstalledStubFailsOpenForDisabledMissingAndCorruptLoaders(t *testing.T)
 			t.Fatal("line after disabled stub did not run")
 		}
 	})
-	t.Run("corrupt cache", func(t *testing.T) {
-		home, bin := t.TempDir(), t.TempDir()
-		if err := os.WriteFile(filepath.Join(home, ".zshrc"), renderInstallBlock(), 0o600); err != nil {
+	t.Run("corrupt installed cache under hostile options", func(t *testing.T) {
+		zshPath, err := exec.LookPath("zsh")
+		if err != nil {
 			t.Fatal(err)
 		}
-		if err := os.Mkdir(filepath.Join(home, ".zsh-pro"), 0o700); err != nil {
-			t.Fatal(err)
+		home := t.TempDir()
+		setInstallHome(t, home)
+		if err := runInstall(zsh.Provider{}); err != nil {
+			t.Fatalf("install loader: %v", err)
 		}
 		if err := os.WriteFile(filepath.Join(home, ".zsh-pro", "loader.zsh"), []byte("this is ( corrupt\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
+
+		// Keep the old command guard live during RED. The repaired stub must
+		// source only the regular cached file, but this makes the pre-fix
+		// implementation reach its corrupt source path too.
+		bin := t.TempDir()
 		if err := os.WriteFile(filepath.Join(bin, "zsh-pro"), []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
 			t.Fatal(err)
 		}
-		out := run(t, []string{"HOME=" + home, "PATH=" + bin + ":/usr/bin:/bin"}, "print -r -- after")
-		if !strings.Contains(out, "after") {
-			t.Fatal("corrupt loader blocked startup")
+		t.Setenv("PATH", bin)
+		for _, option := range []string{"ERR_EXIT", "ERR_RETURN"} {
+			t.Run(strings.ToLower(option), func(t *testing.T) {
+				cmd := exec.Command(zshPath, "-f", "-c", "setopt "+option+"; source \"$1\"; print -r -- SURVIVED", "zsh-pro-test", filepath.Join(home, ".zshrc"))
+				cmd.Env = os.Environ()
+				out, err := cmd.CombinedOutput()
+				if err != nil {
+					t.Fatalf("corrupt installed cache aborted %s startup: %v\n%s", option, err, out)
+				}
+				if !strings.Contains(string(out), "SURVIVED") {
+					t.Fatalf("corrupt installed cache did not reach the command after source under %s: %s", option, out)
+				}
+			})
 		}
 	})
 }
