@@ -66,6 +66,16 @@ func TestHookScriptTracksEnvPresenceSeparatelyFromData(t *testing.T) {
 	}
 }
 
+func TestHookScriptUsesNonExportedActivationMarker(t *testing.T) {
+	script := (Provider{}).HookScript()
+	if !strings.Contains(script, "ZP_ACTIVE_PROFILE") {
+		t.Fatal("loader must track successful activation separately from inherited ZSHPRO_PROFILE")
+	}
+	if strings.Contains(script, "export ZP_ACTIVE_PROFILE") {
+		t.Fatal("activation marker must stay in the sourced shell rather than being exported")
+	}
+}
+
 // loaderTopLevel extracts lines outside function bodies. The loader may shell
 // out only when a user explicitly invokes a verb, never while it is sourced.
 func loaderTopLevel(script string) string {

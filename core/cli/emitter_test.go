@@ -44,6 +44,38 @@ func (s *secretProfileStore) Read(context.Context, string) (model.Profile, error
 	return s.profile, nil
 }
 
+type targetOnlyStore struct {
+	profiles     map[string]model.Profile
+	checkouts    []string
+	reads        []string
+	current      string
+	currentCalls int
+}
+
+func (s *targetOnlyStore) Branches(context.Context) ([]string, error) { return nil, nil }
+
+func (s *targetOnlyStore) Current() string {
+	s.currentCalls++
+	return s.current
+}
+
+func (s *targetOnlyStore) Checkout(_ context.Context, name string) error {
+	if _, ok := s.profiles[name]; !ok {
+		return errors.New("fixture profile unavailable")
+	}
+	s.checkouts = append(s.checkouts, name)
+	return nil
+}
+
+func (s *targetOnlyStore) Read(_ context.Context, name string) (model.Profile, error) {
+	p, ok := s.profiles[name]
+	if !ok {
+		return model.Profile{}, errors.New("fixture profile unavailable")
+	}
+	s.reads = append(s.reads, name)
+	return p, nil
+}
+
 type deterministicSecretResolver struct {
 	kind   model.SecretRefKind
 	values map[string]string
@@ -146,41 +178,61 @@ func TestRuntimeEmitterSecretResolverFailuresEmitNothing(t *testing.T) {
 	}
 }
 
+func TestRuntimeEmitterApplyUsesOnlyTargetAndRetainsTargetReverse(t *testing.T) {
+	realZsh, err := exec.LookPath("zsh")
+	if err != nil {
+		t.Skip("zsh not installed")
+	}
+	ctx := context.Background()
+	s := &targetOnlyStore{
+		profiles: map[string]model.Profile{
+			"main": transitionProfile(t, transitionProfileA),
+			"B":    transitionProfile(t, transitionProfileB),
+		},
+		current: "B",
+	}
+
+	source, err := NewRuntimeEmitter(s, zsh.Provider{}).Emit(ctx, "apply", "main")
+	if err != nil {
+		t.Fatalf("Emit(apply, main): %v", err)
+	}
+	if s.currentCalls != 0 {
+		t.Fatalf("apply consulted Store.Current %d times, want target-only emission", s.currentCalls)
+	}
+	if got := strings.Join(s.checkouts, ","); got != "main" {
+		t.Fatalf("validated profiles = %q, want main", got)
+	}
+	if got := strings.Join(s.reads, ","); got != "main" {
+		t.Fatalf("read profiles = %q, want main", got)
+	}
+	assertPairedApplySource(t, source)
+
+	dir := t.TempDir()
+	sourcePath := writeTransitionSource(t, dir, "main-apply.zsh", source)
+	cmd := exec.Command(realZsh, "-f", "-c", `
+typeset -g ZP_BASE_PATH="$PATH"
+source "$1"
+[[ "$ZP_A_ONLY" == from-a ]] || exit 10
+(( ${+functions[zp_deactivate]} )) || exit 11
+zp_deactivate
+[[ -z "${ZP_A_ONLY+x}" ]] || exit 12
+`, "zsh-pro-target-only-test", sourcePath)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("target reverse did not clean target state: %v\n%s", err, out)
+	}
+}
+
 func TestRuntimeEmitterEmitsCompleteTransitionSource(t *testing.T) {
 	ctx := context.Background()
 	s := newTransitionStore(t, ctx)
 	r := NewRuntimeEmitter(s, zsh.Provider{})
 
-	t.Setenv("ZSHPRO_PROFILE", "")
-	first, err := r.Emit(ctx, "apply", "A")
-	if err != nil {
-		t.Fatalf("first activation emit: %v", err)
-	}
-	assertCompleteApplySource(t, first, false)
-
-	t.Setenv("ZSHPRO_PROFILE", "A")
-	transition, err := r.Emit(ctx, "apply", "B")
-	if err != nil {
-		t.Fatalf("A-to-B emit: %v", err)
-	}
-	assertCompleteApplySource(t, transition, true)
-	if !strings.Contains(transition, "unalias zp_a_only") || !strings.Contains(transition, "export ZP_B_ONLY") {
-		t.Fatalf("A-to-B source does not own both halves:\n%s", transition)
-	}
-
-	same, err := r.Emit(ctx, "apply", "A")
-	if err != nil {
-		t.Fatalf("same-profile emit: %v", err)
-	}
-	assertCompleteApplySource(t, same, false)
-
-	t.Setenv("ZSHPRO_PROFILE", "B")
-	deactivate, err := r.Emit(ctx, "deactivate", "B")
-	if err != nil {
-		t.Fatalf("deactivate emit: %v", err)
-	}
-	if !strings.HasSuffix(strings.TrimSpace(deactivate), "zp_deactivate") {
-		t.Fatalf("deactivate source is not directly executable:\n%s", deactivate)
+	for _, name := range []string{"main", "B"} {
+		source, err := r.Emit(ctx, "apply", name)
+		if err != nil {
+			t.Fatalf("Emit(apply, %s): %v", name, err)
+		}
+		assertPairedApplySource(t, source)
 	}
 }
 
@@ -202,26 +254,26 @@ func testRuntimeEmitterLiveTransition(t *testing.T, switchCommand string) {
 	r := NewRuntimeEmitter(s, zsh.Provider{})
 
 	t.Setenv("ZSHPRO_PROFILE", "")
-	applyA := mustEmitTransition(t, r, ctx, "apply", "A")
-	t.Setenv("ZSHPRO_PROFILE", "A")
+	applyMain := mustEmitTransition(t, r, ctx, "apply", "main")
+	t.Setenv("ZSHPRO_PROFILE", "main")
 	applyB := mustEmitTransition(t, r, ctx, "apply", "B")
-	t.Setenv("ZSHPRO_PROFILE", "B")
-	deactivateB := mustEmitTransition(t, r, ctx, "deactivate", "B")
 
 	dir := t.TempDir()
+	runtimeRoot := filepath.Join(dir, "runtime")
+	if err := os.Mkdir(runtimeRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	loader := filepath.Join(dir, "loader.zsh")
 	if err := os.WriteFile(loader, []byte((zsh.Provider{}).HookScript()), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	applyAPath := writeTransitionSource(t, dir, "apply-a.zsh", applyA)
+	applyMainPath := writeTransitionSource(t, dir, "apply-main.zsh", applyMain)
 	applyBPath := writeTransitionSource(t, dir, "apply-b.zsh", applyB)
-	deactivateBPath := writeTransitionSource(t, dir, "deactivate-b.zsh", deactivateB)
 	shim := filepath.Join(dir, "zsh-pro")
 	shimSource := `#!/bin/sh
 case "$1:$2:$3" in
-  emit:apply:A) cat "$ZP_APPLY_A" ;;
-  emit:apply:B) cat "$ZP_APPLY_B" ;;
-  emit:deactivate:B) cat "$ZP_DEACTIVATE_B" ;;
+  emit:apply:main) printf '%s:%s\n' "$2" "$3" >> "$ZP_EMIT_LOG"; cat "$ZP_APPLY_MAIN" ;;
+  emit:apply:B) printf '%s:%s\n' "$2" "$3" >> "$ZP_EMIT_LOG"; cat "$ZP_APPLY_B" ;;
   *) exit 64 ;;
 esac
 `
@@ -236,21 +288,23 @@ esac
 	}
 
 	body := `
-unset ZSHPRO_PROFILE
+unset ZSHPRO_PROFILE ZP_ACTIVE_PROFILE
 source "$1"
 before_path_count=$#path
-activate A
-[[ "$ZSHPRO_PROFILE" == A ]] || exit 60
+activate main
+[[ "$ZSHPRO_PROFILE" == main ]] || exit 60
+[[ "$ZP_ACTIVE_PROFILE" == main ]] || exit 61
 [[ "$ZP_A_ONLY" == from-a ]] || exit 61
 alias zp_a_only >/dev/null || exit 62
 (( ${+functions[zp_a_only_fn]} )) || exit 63
 [[ -o extendedglob ]] || exit 64
 (( $#path == before_path_count + 1 )) || exit 65
 
-activate A
+activate main
 (( $#path == before_path_count + 1 )) || exit 66
 ` + switchCommand + `
 [[ "$ZSHPRO_PROFILE" == B ]] || exit 66
+[[ "$ZP_ACTIVE_PROFILE" == B ]] || exit 67
 [[ -z "${ZP_A_ONLY+x}" ]] || exit 67
 alias zp_a_only >/dev/null 2>&1 && exit 68
 (( ${+functions[zp_a_only_fn]} )) && exit 69
@@ -262,6 +316,7 @@ alias zp_b_only >/dev/null || exit 72
 
 deactivate
 [[ -z "${ZSHPRO_PROFILE+x}" ]] || exit 75
+[[ -z "${ZP_ACTIVE_PROFILE+x}" ]] || exit 76
 [[ -z "${ZP_A_ONLY+x}" && -z "${ZP_B_ONLY+x}" ]] || exit 76
 alias zp_a_only >/dev/null 2>&1 && exit 77
 alias zp_b_only >/dev/null 2>&1 && exit 78
@@ -269,15 +324,16 @@ alias zp_b_only >/dev/null 2>&1 && exit 78
 [[ -o extendedglob ]] && exit 80
 (( $#path == before_path_count )) || exit 81
 `
+	emitLog := filepath.Join(dir, "emit.log")
 	cmd := exec.Command(realZsh, "-f", "-c", body, "zsh-pro-transition-test", loader)
-	cmd.Env = append(os.Environ(),
+	cmd.Env = transitionEnv(
 		"PATH="+dir+":"+os.Getenv("PATH"),
-		"TMPDIR="+dir,
-		"ZP_APPLY_A="+applyAPath,
+		"ZSHPRO_HOME="+runtimeRoot,
+		"ZP_APPLY_MAIN="+applyMainPath,
 		"ZP_APPLY_B="+applyBPath,
-		"ZP_DEACTIVATE_B="+deactivateBPath,
 		"ZP_REAL_ZSH="+realZsh,
 		"ZP_VALIDATOR_LOG="+validatorLog,
+		"ZP_EMIT_LOG="+emitLog,
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("real Store A-to-B transition left residue: %v\n%s", err, out)
@@ -286,8 +342,15 @@ alias zp_b_only >/dev/null 2>&1 && exit 78
 	if err != nil {
 		t.Fatalf("read validation log: %v", err)
 	}
-	if string(validations) != "...." {
+	if string(validations) != "..." {
 		t.Fatalf("validation count = %q, want one complete source validation per public transition", validations)
+	}
+	emissions, err := os.ReadFile(emitLog)
+	if err != nil {
+		t.Fatalf("read emit log: %v", err)
+	}
+	if got := string(emissions); got != "apply:main\napply:B\n" {
+		t.Fatalf("runtime emitter calls = %q, want one apply per distinct target and no binary deactivate", got)
 	}
 }
 
@@ -303,19 +366,14 @@ func newTransitionStore(t *testing.T, ctx context.Context) *store.Store {
 	if err := s.Init(ctx); err != nil {
 		t.Fatal(err)
 	}
-	for _, profile := range []struct {
-		name   string
-		source string
-	}{
-		{name: "A", source: transitionProfileA},
-		{name: "B", source: transitionProfileB},
-	} {
-		if err := s.Create(ctx, profile.name); err != nil {
-			t.Fatalf("Create(%s): %v", profile.name, err)
-		}
-		if _, err := s.Commit(ctx, profile.name, transitionProfile(t, profile.source), "transition fixture "+profile.name); err != nil {
-			t.Fatalf("Commit(%s): %v", profile.name, err)
-		}
+	if _, err := s.Commit(ctx, "main", transitionProfile(t, transitionProfileA), "transition fixture main"); err != nil {
+		t.Fatalf("Commit(main): %v", err)
+	}
+	if err := s.Create(ctx, "B"); err != nil {
+		t.Fatalf("Create(B): %v", err)
+	}
+	if _, err := s.Commit(ctx, "B", transitionProfile(t, transitionProfileB), "transition fixture B"); err != nil {
+		t.Fatalf("Commit(B): %v", err)
 	}
 	return s
 }
@@ -330,20 +388,17 @@ func transitionProfile(t *testing.T, source string) model.Profile {
 	return ir.Build(blocks, provider)
 }
 
-func assertCompleteApplySource(t *testing.T, source string, wantDeactivate bool) {
+func assertPairedApplySource(t *testing.T, source string) {
 	t.Helper()
 	trimmed := strings.TrimSpace(source)
 	if !strings.Contains(source, "zp_apply()") || !strings.HasSuffix(trimmed, "zp_apply") {
 		t.Fatalf("apply source is not directly executable:\n%s", source)
 	}
-	if wantDeactivate {
-		if !strings.HasSuffix(trimmed, "zp_deactivate\nzp_apply") {
-			t.Fatalf("transition source does not run deactivate before apply:\n%s", source)
-		}
-		return
+	if !strings.Contains(source, "zp_deactivate()") {
+		t.Fatalf("apply source does not retain a target-specific reverse:\n%s", source)
 	}
-	if strings.Contains(source, "zp_deactivate") {
-		t.Fatalf("first/same-profile apply unexpectedly deactivates:\n%s", source)
+	if strings.Contains(source, "\nzp_deactivate\nzp_apply") {
+		t.Fatalf("target-only apply unexpectedly invokes a prior reverse:\n%s", source)
 	}
 }
 
@@ -363,4 +418,20 @@ func writeTransitionSource(t *testing.T, dir, name, source string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func transitionEnv(overrides ...string) []string {
+	replaced := make(map[string]bool, len(overrides))
+	for _, override := range overrides {
+		key, _, _ := strings.Cut(override, "=")
+		replaced[key] = true
+	}
+	env := make([]string, 0, len(os.Environ())+len(overrides))
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		if !replaced[key] {
+			env = append(env, entry)
+		}
+	}
+	return append(env, overrides...)
 }

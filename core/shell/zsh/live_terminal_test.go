@@ -60,6 +60,98 @@ activate A || exit 22
 	}
 }
 
+func TestLiveTerminalActivationMarkerDistinguishesInheritedProfile(t *testing.T) {
+	realZsh, err := exec.LookPath("zsh")
+	if err != nil {
+		t.Skip("zsh not installed")
+	}
+	dir := t.TempDir()
+	loader := writeLiveLoader(t, dir)
+	emitLog := filepath.Join(dir, "emit.log")
+	shim := filepath.Join(dir, "zsh-pro")
+	const shimSource = `#!/bin/sh
+case "$1:$2:$3" in
+  emit:apply:A)
+    printf '%s:%s\n' "$2" "$3" >> "$ZP_EMIT_LOG"
+    printf '%s\n' "zp_deactivate() { unset ZP_MARKER_TEST; }" "zp_apply() { export ZP_MARKER_TEST=A; }" "zp_apply"
+    ;;
+  *) exit 64 ;;
+esac
+`
+	if err := os.WriteFile(shim, []byte(shimSource), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const body = `
+unset ZP_ACTIVE_PROFILE
+export ZSHPRO_PROFILE=inherited
+source "$1"
+[[ -z "${ZP_ACTIVE_PROFILE+x}" ]] || exit 10
+[[ "$(status)" == main ]] || exit 11
+
+activate A
+[[ "$ZP_ACTIVE_PROFILE" == A ]] || exit 12
+[[ "$ZSHPRO_PROFILE" == A ]] || exit 13
+[[ "$ZP_MARKER_TEST" == A ]] || exit 14
+
+activate A
+[[ "$ZP_MARKER_TEST" == A ]] || exit 15
+
+deactivate
+[[ -z "${ZP_ACTIVE_PROFILE+x}" && -z "${ZSHPRO_PROFILE+x}" ]] || exit 16
+[[ -z "${ZP_MARKER_TEST+x}" ]] || exit 17
+`
+	cmd := exec.Command(realZsh, "-f", "-c", body, "zsh-pro-marker-test", loader)
+	cmd.Env = liveEnv(dir, "PATH="+dir+":"+os.Getenv("PATH"), "ZP_EMIT_LOG="+emitLog)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("loader did not distinguish inherited profile state: %v\n%s", err, out)
+	}
+	emissions, err := os.ReadFile(emitLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(emissions); got != "apply:A\n" {
+		t.Fatalf("emissions = %q, want one target apply and no binary deactivate", got)
+	}
+}
+
+func TestLiveTerminalFailedEvalKeepsActivationMarkerAndProfile(t *testing.T) {
+	realZsh, err := exec.LookPath("zsh")
+	if err != nil {
+		t.Skip("zsh not installed")
+	}
+	dir := t.TempDir()
+	loader := writeLiveLoader(t, dir)
+	shim := filepath.Join(dir, "zsh-pro")
+	const shimSource = `#!/bin/sh
+case "$1:$2:$3" in
+  emit:apply:good)
+    printf '%s\n' "zp_deactivate() { unset ZP_GOOD; }" "zp_apply() { export ZP_GOOD=1; }" "zp_apply"
+    ;;
+  emit:apply:bad)
+    printf '%s\n' "zp_deactivate() { :; }" "zp_apply() { return 9; }" "zp_apply"
+    ;;
+  *) exit 64 ;;
+esac
+`
+	if err := os.WriteFile(shim, []byte(shimSource), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const body = `
+unset ZSHPRO_PROFILE ZP_ACTIVE_PROFILE
+source "$1"
+activate good
+[[ "$ZP_ACTIVE_PROFILE" == good && "$ZSHPRO_PROFILE" == good ]] || exit 20
+activate bad
+[[ "$ZP_LAST_RUNTIME_STATUS" -ne 0 ]] || exit 21
+[[ "$ZP_ACTIVE_PROFILE" == good && "$ZSHPRO_PROFILE" == good ]] || exit 22
+`
+	cmd := exec.Command(realZsh, "-f", "-c", body, "zsh-pro-marker-failure-test", loader)
+	cmd.Env = liveEnv(dir, "PATH="+dir+":"+os.Getenv("PATH"))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("failed evaluation advanced activation state: %v\n%s", err, out)
+	}
+}
+
 func TestLiveTerminalLoaderRejectsInvalidEmitWithoutChangingLastGood(t *testing.T) {
 	realZsh, err := exec.LookPath("zsh")
 	if err != nil {
