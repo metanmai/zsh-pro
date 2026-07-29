@@ -1,60 +1,93 @@
 ---
 phase: 05-runtime-loader-cli-bootstrap
-verified: 2026-07-27T14:59:02Z
+verified: 2026-07-29T19:22:28Z
 status: gaps_found
-score: 0/4 must-haves verified
+score: "0/4 must-haves verified"
 behavior_unverified: 1
 overrides_applied: 0
+re_verification:
+  previous_status: gaps_found
+  previous_score: 0/4
+  gaps_closed:
+    - "Exact physical-line marker scanning closes the prior quoted-marker substring deletion path."
+    - "Non-main A-to-B transitions now emit a combined deactivate-then-apply source."
+    - "Typed-nil Store, CLI Emitter, shell Emitter, and SecretResolver inputs are normalized."
+  gaps_remaining:
+    - "Current terminal and bootstrap fail-open behavior"
+    - "Transactional installer safety"
+    - "Profile transition/deactivation zero-residue behavior"
+    - "Measured startup-budget evidence"
+  regressions: []
 gaps:
-  - truth: "The installer preserves every byte of unmanaged .zshrc content outside real BEGIN/END marker lines."
+  - truth: "A corrupt readable cached loader never aborts an ERR_EXIT shell startup."
     status: failed
-    reason: "replaceManagedBlock recognizes marker text as an arbitrary substring, so quoted ordinary content is removed as though it were a managed block."
+    reason: "The installed stub runs source as an unguarded simple command; a corrupt loader exits before the trailing true can consume the failure."
     artifacts:
-      - path: "core/cli/install.go"
-        issue: "bytes.Index at lines 98-99 is not line/marker anchored."
+      - path: core/cli/install.go
+        issue: "renderInstallBlock emits an unguarded source at line 125."
     missing:
-      - "Replace the substring scan with a line-based exact-marker parser and add quoted-string and suffix-comment regression tests."
-  - truth: "A broken, missing, or slow zsh-pro never locks the current terminal out of a working shell."
+      - "Guard and consume the source result under ERR_EXIT, with a regression for a corrupt readable regular loader."
+  - truth: "Every public sourced verb leaves an ERR_EXIT/ERR_RETURN terminal usable when the binary is missing, fails, or hangs."
     status: failed
-    reason: "The loader has no timeout around either emit or zsh -n; a one-second external watchdog killed both three-second hangs. A failed verb also exits a caller using ERR_EXIT before its next command can run."
+    reason: "list bypasses _zp_run_bounded and directly executes command zsh-pro list."
     artifacts:
-      - path: "core/shell/zsh/hook.go"
-        issue: "_zp_emit and _zp_eval_block run unbounded subprocesses; their error result remains fatal to a direct ERR_EXIT caller."
+      - path: core/shell/zsh/hook.go
+        issue: "list at lines 292-294 returns the binary's nonzero status directly."
     missing:
-      - "Add a portable bounded-execution mechanism for emit and validation, clean staged files on every path, and test ERR_EXIT survivability plus emitter/validator timeout behavior."
-  - truth: "activate, checkout, and deactivate leave the current terminal in exactly the selected profile state."
+      - "Route list through the bounded, error-consuming public runtime boundary and cover failure, timeout, ERR_EXIT, and ERR_RETURN."
+  - truth: "Switching from every activated profile to another profile removes prior-only state immediately."
     status: failed
-    reason: "activate B after activate A evaluates only zp_apply for B, leaving A-only state present."
+    reason: "runtimeEmitter treats current == main as inactive even though main can be explicitly activated."
     artifacts:
-      - path: "core/shell/zsh/hook.go"
-        issue: "activate at lines 84-92 does not transition through checkout or emit/deactivate the prior profile."
-      - path: "core/cli/emitter.go"
-        issue: "runtimeEmitter computes Diff(active,target) but returns only the apply half at lines 78-83."
+      - path: core/cli/emitter.go
+        issue: "The active-manifest condition at line 82 excludes main, so main-to-B output contains no zp_deactivate call."
     missing:
-      - "Make active-profile activate use one combined deactivate-prior plus apply-target block (or delegate to checkout) and add a real-store A-only-state regression test."
-  - truth: "Nil-like composition-root dependencies fail through cli.fail rather than panicking."
+      - "Track active-versus-default state independently of the profile display name and add a real-store main-to-B-to-deactivate regression."
+  - truth: "An install rejected for malformed managed markers leaves both the .zshrc and prior cached loader unchanged."
     status: failed
-    reason: "A typed nil *store.Store satisfies the Store interface and bypasses c.store == nil, then panics in Store.Branches."
+    reason: "runInstall promotes the loader before it reads and validates the .zshrc marker structure."
     artifacts:
-      - path: "core/cli/cli.go"
-        issue: "nil guards at runList/runStatus/runEmit only reject nil interfaces."
-      - path: "core/cli/emitter.go"
-        issue: "NewRuntimeEmitter also accepts a typed-nil Store."
+      - path: core/cli/install.go
+        issue: "Lines 39-48 create and replace the cache before lines 51-61 validate/prepare the .zshrc replacement."
     missing:
-      - "Normalize/reject nil-like injected interfaces at construction (or use an internal reflection helper) and add typed-nil Store/Emitter tests."
+      - "Prepare and validate the .zshrc transaction before any cache-directory creation or cache promotion; test preservation of an existing cache."
+  - truth: "Every public CLI dependency seam rejects typed-nil values through normal runtime errors rather than panicking."
+    status: failed
+    reason: "CLI.New normalizes Store and Emitter but retains a literal or typed-nil shell.Provider."
+    artifacts:
+      - path: core/cli/cli.go
+        issue: "New at lines 33-40 does not normalize p; hook dereferences c.provider at line 57."
+    missing:
+      - "Normalize provider with isNilLike and fail provider-dependent commands before method dispatch; add typed-nil provider cases."
+  - truth: "A successfully activated secret-bearing profile can always be deactivated without a fresh secret retrieval."
+    status: failed
+    reason: "Deactivate and active-profile transition paths re-resolve SecretRefs; a later resolver failure produces no reverse source."
+    artifacts:
+      - path: core/cli/emitter.go
+        issue: "Target resolution at lines 60-67 occurs for deactivate, and active resolution at lines 83-90 occurs for a switch."
+    missing:
+      - "Retain activation-local reverse data/source after successful activation and use it for deactivation/switching without another resolver lookup."
+  - truth: "Staged emitted shell source remains private and cannot be replaced through an untrusted TMPDIR."
+    status: failed
+    reason: "The loader accepts any writable TMPDIR, closes the exclusive file, then reopens the path by name for writing and validation."
+    artifacts:
+      - path: core/shell/zsh/hook.go
+        issue: "_zp_private_temp accepts writable TMPDIR at lines 69-84; _zp_eval_block reopens tmp at lines 198 and 204."
+    missing:
+      - "Use an owner-controlled 0700 runtime directory and retain safe file ownership across write/validate/eval; add a non-sticky shared-directory race regression."
 behavior_unverified_items:
-  - truth: "The file-sourced hot path adds less than the required startup budget, measured by hyperfine."
-    test: "Run ZSHPRO_BIN=<built binary> scripts/perf-hyperfine.sh on a host with hyperfine installed."
-    expected: "The script proves activate is sourced and reports added interactive-shell mean below 10 ms."
-    why_human: "The mandatory structural no-subprocess check passed, but hyperfine was absent, so no timing measurement exercised the budget."
+  - truth: "The file-sourced startup hot path adds less than 10 ms of interactive-shell mean startup cost."
+    test: "Run ZSHPRO_BIN=<absolute built binary> scripts/perf-hyperfine.sh on a host with hyperfine."
+    expected: "The harness proves activate is sourced and reports added mean below 10 ms."
+    why_human: "The mandatory structural test passes, but hyperfine is absent here, so the runtime budget was not exercised."
 ---
 
 # Phase 5: Runtime Loader + CLI + Bootstrap Verification Report
 
 **Phase Goal:** Wire the live terminal to the binary and ship the user-facing surface: a sourced loader, profile verbs, an idempotent fail-open bootstrap block, and a fast hot path.
-**Verified:** 2026-07-27T14:59:02Z
+**Verified:** 2026-07-29T19:22:28Z
 **Status:** gaps_found
-**Re-verification:** No — initial verification
+**Re-verification:** Yes — after gap-closure Plans 05-03 through 05-05
 
 ## Goal Achievement
 
@@ -62,100 +95,105 @@ behavior_unverified_items:
 
 | # | Truth | Status | Evidence |
 | --- | --- | --- | --- |
-| 1 | `checkout`/`activate`/`deactivate` change the current terminal into the selected profile state; `list`/`status` report state. | ✗ FAILED | Loader functions exist and basic synthetic test passes, but a live zsh repro of `activate A; activate B` leaves A-only alias state present (exit 42). |
-| 2 | Installer is byte-idempotent and never changes unmanaged `.zshrc` content. | ✗ FAILED | Real `zsh-pro install` deleted `ordinary-content-must-survive` between quoted marker substrings. |
-| 3 | Broken, missing, or slow runtime dependencies cannot lock out a working terminal. | ✗ FAILED | Both a sleeping emitter and sleeping validator were killed only by an external `timeout 1s` (exit 124); typed-nil store also panics. |
-| 4 | The sourced startup hot path has zero subprocesses and meets the measured budget. | ⚠️ PRESENT_BEHAVIOR_UNVERIFIED | Structural hot-path check and `hook | zsh -n` pass; `hyperfine` is unavailable, so the <10 ms runtime budget was not measured. |
+| 1 | `checkout`/`activate`/`deactivate` change the current terminal into the selected profile state; `list`/`status` report state. | ✗ FAILED | A direct `list` under `ERR_EXIT` exited 127 before `SURVIVED`; a current=`main` emitter probe generated B apply source without `zp_deactivate`; and a resolver that succeeds on activation then fails causes `deactivate` to emit no source. |
+| 2 | The installer is safe and idempotent: its marked `.zshrc` block preserves unmanaged content and a rejected install has no runtime side effects. | ✗ FAILED | Exact marker scanning and idempotence tests pass, but a nested-marker real install exited 1 after replacing a known-good cached loader (`CACHE_PRESERVED=no`). |
+| 3 | A broken, missing, or slow runtime dependency never locks a terminal out of a usable shell. | ✗ FAILED | A corrupt cached loader under `ERR_EXIT` exited 1 before `SURVIVED`; `list` with a missing binary exited 127; a typed-nil provider panics; and emitted source can be replaced through an untrusted staging directory. |
+| 4 | The sourced startup hot path is zero-subprocess and meets the measured startup budget. | ⚠️ PRESENT_BEHAVIOR_UNVERIFIED | `TestHookScriptStartPathIsZeroSubprocessAndNonSpeculative` passes, but `scripts/perf-hyperfine.sh` explicitly skipped because hyperfine is unavailable. |
 
 **Score:** 0/4 truths verified (1 present, behavior-unverified)
+
+The repair commits did close narrower prior paths: exact marker-line recognition, non-main A-to-B composition, bounded emit/validator work, and several typed-nil seams. Those improvements are not enough to establish the four outcome-level truths above.
 
 ### Required Artifacts
 
 | Artifact | Expected | Status | Details |
 | --- | --- | --- | --- |
-| `core/shell/zsh/hook.go` | Sourced loader and five shell verbs | ⚠️ WIRED, FUNCTIONALLY BLOCKED | 136 substantive lines; returned by `HookScript()` and loaded by the installer. Its active-profile transition and unbounded command paths fail live repros. |
-| `core/cli/install.go` | Safe idempotent installer and cached loader | ⚠️ WIRED, FUNCTIONALLY BLOCKED | Cache-first atomic-write/symlink logic is substantive and dispatch-wired, but marker recognition deletes ordinary quoted content. |
-| `core/cli/cli.go` | Runtime verb dispatch and dependency guards | ⚠️ WIRED, FUNCTIONALLY BLOCKED | `hook/install/list/status/emit` cases are wired; nil-interface guards do not protect typed nils. |
-| `core/cli/emitter.go` | Store/profile-to-emitted-zsh adapter | ⚠️ WIRED, FUNCTIONALLY BLOCKED | It reads profiles, builds/diffs manifests, and calls `Provider.Emit`, but discards the computed deactivate half on the apply path. |
-| `core/cmd/zsh-pro/main.go` | Concrete provider/store/emitter injection | ⚠️ PARTIAL | Main uses a literal nil interface on `store.New` error, but CLI construction still accepts typed-nil dependencies from other composition paths. |
-| `core/shell/zsh/live_terminal_test.go` | Runtime behavior coverage | ⚠️ INSUFFICIENT | Existing shim always overwrites the same alias and its deactivate resets all test state; it cannot expose A-only residue after `activate A -> activate B`. |
+| `core/shell/zsh/hook.go` | Sourced loader, public verbs, bounded emit/validation path | ⚠️ WIRED, FUNCTIONALLY BLOCKED | 306 substantive lines; `HookScript()` flows through the CLI and cache. `list` bypasses the bounded path, staging trusts arbitrary writable `TMPDIR`, and public profile behavior still has residue/failure gaps. |
+| `core/cli/install.go` | Exact-marker installer, cache writer, fail-open stub | ⚠️ WIRED, FUNCTIONALLY BLOCKED | 313 substantive lines; real line-aware scanner and validated cache writer exist. The cache is promoted before malformed `.zshrc` is rejected, and the stub's `source` result is unguarded. |
+| `core/cli/emitter.go` | Store/profile-to-emitted transition adapter | ⚠️ WIRED, FUNCTIONALLY BLOCKED | 109 substantive lines; it reads profiles, resolves secrets, builds/diffs manifests, and calls the zsh emitter. It treats `main` as inactive and requires a new secret read for reverse source. |
+| `core/cli/cli.go` | Hook/install/list/status/emit dispatch with dependency normalization | ⚠️ WIRED, FUNCTIONALLY BLOCKED | 169 substantive lines; all verbs dispatch, but `New` does not normalize `shell.Provider`, so `hook` panics with a typed-nil provider. |
+| `core/cmd/zsh-pro/main.go` | Concrete provider/store/resolver injection | ✓ WIRED | Main constructs the real provider/store/keychain and injects `NewRuntimeEmitter` then `cli.New`. The defect is the public constructor boundary, not this normal composition path. |
+| `core/perf/hyperfine.go` and `scripts/perf-hyperfine.sh` | Typed timing decoder and hermetic measured backstop | ⚠️ PRESENT, NOT MEASURED | Parser and harness are substantive and linked; the only local execution path is the documented hyperfine-absent skip. |
 
 ### Key Link Verification
 
 | From | To | Via | Status | Details |
 | --- | --- | --- | --- | --- |
-| `core/cli/cli.go` | `core/shell/zsh` loader | `provider.HookScript()` | ✓ WIRED | `hook` prints `HookScript()` and installer caches the same value. |
-| `core/cmd/zsh-pro/main.go` | CLI runtime seams | `cli.New(provider, cliStore, emitter)` | ⚠️ PARTIAL | Injection exists; typed-nil interface inputs are not fail-closed. |
-| Loader verbs | `zsh-pro emit` | `_zp_emit` -> `command zsh-pro emit` -> `_zp_eval_block` | ⚠️ WIRED, UNSAFE | Exit/empty guards exist, but emitter and validator calls are unbounded; state transition is incomplete. |
-| Installer stub | cached loader | guarded `command -v` + `[[ -r ]]` + `source` | ✓ WIRED | Missing/corrupt/disabled basic fail-open tests pass. |
+| `core/cli/cli.go` | `core/shell/zsh` loader | `c.provider.HookScript()` | ⚠️ PARTIAL | The normal link exists at `cli.go:57`, but a typed-nil provider crosses it and panics. |
+| `core/cmd/zsh-pro/main.go` | CLI runtime seams | `NewRuntimeEmitter(...); cli.New(...)` | ✓ WIRED | Concrete provider, literal-nil store policy, and keychain resolver are injected at lines 27-44. |
+| Loader switch verbs | `zsh-pro emit` and `zsh -n` | `_zp_emit` / `_zp_eval_block` | ⚠️ PARTIAL | The bounded switch link exists, but `list` is an unbounded direct command and reverse secret source can be unavailable. |
+| Installed stub | Cached loader | guarded `command -v` + readable file + `source` | ⚠️ PARTIAL | The path is correct, but an unguarded source propagates a corrupt-loader error under `ERR_EXIT`. |
+| Installer transaction | cache plus `.zshrc` | validated candidate then marker replacement | ✗ NOT TRANSACTIONAL | Cache replacement happens before the `.zshrc` marker validation that can reject the install. |
 
 ### Data-Flow Trace (Level 4)
 
 | Artifact | Data Variable | Source | Produces Real Data | Status |
 | --- | --- | --- | --- | --- |
-| Loader | `REPLY` / emitted block | `_zp_emit` invokes CLI `emit` | Yes — `runtimeEmitter` validates/reads Store profiles then calls `Provider.Emit` | ⚠️ FLOWING BUT INCORRECT | On `activate` it receives only `zp_apply`; `runtimeEmitter` returns only `apply` even when `Diff(active,target)` generated deactivation operations. |
-| Loader status | `ZSHPRO_PROFILE` | current terminal environment | Yes | ✓ FLOWING | No shared active-profile file; unset reports `main`. |
+| Loader switch | `REPLY` emitted source | `_zp_emit` → CLI `emit` → `runtimeEmitter` → Store/manifest/zsh emitter | Yes | ⚠️ FLOWING BUT INCOMPLETE: `Current()=="main"` suppresses the active manifest, so no main deactivation flows into B. |
+| Secret reverse path | resolved active profile | `Store.Read` → `resolveSecretRefs` | Yes on first activation | ✗ DISCONNECTED ON RESOLVER LOSS: deactivation requires a new resolve and returns empty source after a later fault. |
+| Loader staging | `tmp` path | `_zp_private_temp` using `TMPDIR` | Yes | ✗ UNSAFE FLOW: exclusive creation is followed by reopening the path by name in a directory that need only be writable. |
+| Installer | candidate loader then `.zshrc` block | `writeValidatedLoader` then `replaceManagedBlock` | Yes | ✗ WRONG ORDER: a malformed marker rejection occurs after cache replacement. |
 
 ### Behavioral Spot-Checks
 
 | Behavior | Command / setup | Result | Status |
 | --- | --- | --- | --- |
-| Repository regression suite | `go test ./...` | All packages passed. | ✓ PASS — not sufficient for the adversarial gaps below. |
-| Loader syntax | `<built zsh-pro> hook \| zsh -n` | Exit 0. | ✓ PASS |
-| Startup structure | loader top-level structural scan | No `$(`, backticks, `git`, or `zsh-pro` invocation. | ✓ PASS |
-| CR-01 marker preservation | Temp HOME/ZDOTDIR with quoted marker strings; real `zsh-pro install` | `ordinary-content-must-survive` removed; resulting file spliced the install block into the quoted text. | ✗ FAIL |
-| CR-02 ERR_EXIT | `setopt ERR_EXIT; source loader; activate bad; print survived`, malformed emission | Exit 1; validation handler printed, but `survived` did not run. | ✗ FAIL |
-| CR-03 emitter timeout | Sleeping fake `zsh-pro`; outer `timeout 1s` | Exit 124. | ✗ FAIL |
-| CR-03 validator timeout | Sleeping fake `zsh`; outer `timeout 1s` | Exit 124. | ✗ FAIL |
-| CR-04 active transition | Fake production-shaped A-only/B-only emit blocks; `activate A; activate B` | `STALE_A_SURVIVED`, exit 42. | ✗ FAIL |
-| CR-05 typed nil | `var s *store.Store; cli.New(..., s, ...).Run(["list"])` | Panic in `(*Store).Branches`, exit 1. | ✗ FAIL |
-| WR-01 cache permission repair | Pre-create `loader.zsh` mode 0644, then real install | Remained mode 0644. | ⚠️ WARNING |
-| WR-02 xtrace preservation | `setopt XTRACE; activate trace; [[ -o XTRACE ]]` | `XTRACE_PRESERVED`, exit 0. | ℹ️ REFUTED — this warning does not reproduce on zsh 5.9; `NOXTRACE` is function-scoped here. |
+| Focused CLI, zsh, and performance suites | `go test -count=1 ./core/cli ./core/shell/zsh ./core/perf && go vet ./... && bash -n scripts/perf-hyperfine.sh` | Passed | ✓ PASS — insufficient for the direct failures below. |
+| Workspace regression suite | `go test -count=1 ./...` | All packages passed | ✓ PASS — does not exercise the missing cases. |
+| Corrupt cached loader under hostile startup option | Built binary installed into a disposable HOME; cache replaced with malformed zsh; `setopt ERR_EXIT; source .zshrc; print SURVIVED` | Exit 1; `SURVIVED=0` | ✗ FAIL |
+| Failed public `list` | Source valid loader; remove binary from `PATH`; `setopt ERR_EXIT; list; print SURVIVED` | Exit 127; `SURVIVED=0` | ✗ FAIL |
+| Malformed-marker install transaction | Exact nested markers plus recognizable existing cache; run real `install` | Exit 1; cache bytes changed (`CACHE_PRESERVED=no`) | ✗ FAIL |
+| Typed-nil provider | Disposable Go consumer calls `cli.New((*zsh.Provider)(nil), ...).Run(["hook"])` | `TYPED_NIL_PROVIDER_PANIC=true` | ✗ FAIL |
+| Active `main` to B transition | Disposable Store reports `Current()=="main"`; emit `apply B` | `MAIN_TO_B_HAS_DEACTIVATE=false` | ✗ FAIL |
+| Resolver loss after activation | Resolver succeeds once, then fails; emit apply then deactivate | Apply succeeds; deactivation errors with empty source | ✗ FAIL |
+| Staging path replacement | Simulate an attacker swap after exclusive create in a mode-0777 non-sticky `TMPDIR` | `_zp_eval_block` followed the replacement symlink and overwrote the target (`FOLLOWED_REPLACED_PATH`) | ✗ FAIL |
+| Sentinel collision | Original environment value equals `__zsh_pro_unset_7c5a0a15__` | Value was unset after restore | ⚠️ WARNING |
+| Startup structural gate | `go test -count=1 ./core/shell/zsh -run TestHookScriptStartPathIsZeroSubprocessAndNonSpeculative -v` | Passed | ✓ PASS |
 
 ### Probe Execution
 
+No phase-declared or conventional `scripts/*/tests/probe-*.sh` probes were found. The performance harness was independently executed:
+
 | Probe | Command | Result | Status |
 | --- | --- | --- | --- |
-| Performance backstop | `ZSHPRO_BIN=<built binary> scripts/perf-hyperfine.sh` | `SKIP: hyperfine absent` | ? SKIP — see Human Verification |
+| Startup timing backstop | `ZSHPRO_BIN=<built binary> scripts/perf-hyperfine.sh` | `SKIP: hyperfine absent; structural zero-subprocess test is the gate` | ? SKIP |
 
 ### Requirements Coverage
 
-| Requirement | Source Plan | Description | Status | Evidence |
-| --- | --- | --- | --- | --- |
-| BOOT-01 | 05-01, 05-02 | Marked idempotent `.zshrc` block preserving unmanaged content plus live runtime surface | ✗ BLOCKED | CR-01 proves data loss from quoted marker substrings; CR-04 proves `activate` does not reliably transition an active terminal. |
-| BOOT-02 | 05-01, 05-02 | Fail-open/fast loader with guarded sourcing, validation, last-good path, and escape hatch | ✗ BLOCKED | CR-02 direct ERR_EXIT caller exits; CR-03 hangs indefinitely; CR-05 panics on typed nil. Structural startup check passes but timing is unmeasured. |
+| Requirement | Source Plans | Description | Status | Evidence |
+| --- | --- | --- | --- |
+| BOOT-01 | 05-01 through 05-04 | Safe idempotent bootstrap and current-terminal profile surface | ✗ BLOCKED | Marker recognition is now correct, but rejected malformed input still replaces the cached runtime loader, and an explicitly active `main` profile leaks state into B. |
+| BOOT-02 | 05-01 through 05-05 | Fail-open, validated, dependency-safe, fast loader | ✗ BLOCKED | Corrupt cache and `list` can terminate `ERR_EXIT`; provider typed nil panics; resolver loss prevents deactivation; emitted source staging is replaceable. Timing remains unmeasured. |
 
-No orphaned Phase 5 requirements were found: both declared plan IDs (`BOOT-01`, `BOOT-02`) map to Phase 5 in `REQUIREMENTS.md`.
+No orphaned Phase 5 requirements were found: BOOT-01 and BOOT-02 are declared by the plans and mapped to Phase 5 in `REQUIREMENTS.md`.
 
 ### Anti-Patterns Found
 
 | File | Line | Pattern | Severity | Impact |
-| --- | --- | --- | --- | --- |
-| `core/cli/install.go` | 98-99 | Raw `bytes.Index` marker substring search | 🛑 BLOCKER | Deletes unmanaged user `.zshrc` content. |
-| `core/shell/zsh/hook.go` | 45, 65 | Unbounded emitter and validator subprocesses | 🛑 BLOCKER | A slow dependency blocks the terminal indefinitely. |
-| `core/shell/zsh/hook.go` | 84-92 | Active `activate` path omits prior deactivation | 🛑 BLOCKER | Stale prior-profile state survives a transition. |
-| `core/cli/cli.go` | 68, 81, 99 | Interface equality used as typed-nil protection | 🛑 BLOCKER | Nil pointer panic instead of `cli.fail`. |
-| `core/cli/install.go` | 165-168 | Existing cached-loader mode is preserved | ⚠️ WARNING | Reinstall does not repair an insecure 0644 cache. |
+| --- | --- | --- | --- |
+| `core/shell/zsh/hook.go` | 7, 31 | Fixed-string unset sentinel doubles as a legitimate data value | ⚠️ WARNING | A valid original environment value equal to the sentinel is removed on deactivation; direct probe reproduced it. |
 
-No untracked `TBD`, `FIXME`, or `XXX` debt marker was found in Phase 5 source files.
+No unreferenced `TBD`, `FIXME`, or `XXX` debt markers were found in the Phase 5 source files. The seven blocker paths are implementation/wiring failures, not placeholder code.
 
-### Human Verification Required
+### Behavior Evidence Still Needed After Gap Closure
 
-### 1. Startup performance budget
-
-**Test:** Install a built binary into a disposable `HOME`/`ZDOTDIR` on a host with `hyperfine`, then run `ZSHPRO_BIN=<absolute binary> scripts/perf-hyperfine.sh`.
-
-**Expected:** The installer-produced loader is sourced and added interactive-startup mean is below 10 ms.
-
-**Why human:** `hyperfine` is not installed in this verification environment; static no-subprocess evidence cannot measure startup latency.
+Run the hermetic `scripts/perf-hyperfine.sh` on a host with `hyperfine` after the blockers are fixed. It must first prove `activate` is sourced, then report added interactive startup mean below 10 ms. This remains a present-but-unverified behavior; it does not excuse the blocking runtime failures.
 
 ### Gaps Summary
 
-Phase 5 is not ready to advance. The implementation has substantive, normally-wired artifacts, but the decisive runtime/reliability properties are false: it can delete ordinary `.zshrc` content, block indefinitely, leave profile residue on `activate` transitions, and panic on typed-nil dependencies. The all-green Go suite is not contrary evidence: its current live-loader fixture does not model the A-only/B-only production transition, and it has no marker-substring, timeout, or typed-nil cases.
+Phase 5 is not ready to advance. Current code and fresh probes confirm seven blockers:
 
-The performance check remains unmeasured rather than failed. It does not defer any blocker: no later roadmap phase specifically covers these Phase 5 bootstrap/reliability defects.
+1. A corrupt readable cached loader aborts `ERR_EXIT` startup.
+2. `list` directly exposes binary failure/timeout to `ERR_EXIT` and `ERR_RETURN` callers.
+3. `activate main; activate B` omits main's deactivation.
+4. A malformed `.zshrc` rejects only after the cached loader has changed.
+5. A typed-nil shell provider panics through public CLI verbs.
+6. Resolver loss after a secret-bearing activation makes deactivation/switching impossible and leaves live state in place.
+7. An untrusted writable `TMPDIR` permits staged-source path replacement before validation/eval.
+
+Phase 6 does not explicitly cover these runtime/bootstrap fixes, so none are deferred. The shared verification-status routing resolves this report to `gaps_found`: plan the fixes, execute them, then re-verify.
 
 ---
 
-_Verified: 2026-07-27T14:59:02Z_
+_Verified: 2026-07-29T19:22:28Z_
 _Verifier: the agent (gsd-verifier)_
