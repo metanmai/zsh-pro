@@ -219,13 +219,13 @@ Plans:
   3. A broken, missing, or slow `zsh-pro` never locks the user out: the stub guards sourcing (`command -v`, `[[ -r ]]`), generated manifests are `zsh -n`-validated with a last-good fallback, and `ZSHPRO_DISABLE=1` fully no-ops the loader.
   4. The hot path adds only a small, file-sourced startup cost — zero subprocesses (no `git`, no binary, no `$(...)`) on shell start — verified within budget via `hyperfine 'zsh -i -c exit'`.
 
-**Plans**: 4/5 plans executed
+**Plans**: 5/5 plans executed
 
 Plans:
 
 - [x] 05-03-PLAN.md
 - [x] 05-04-PLAN.md
-- [ ] 05-05-PLAN.md
+- [x] 05-05-PLAN.md
 
 - [x] 05-01-PLAN.md
 - [x] 05-02-PLAN.md
@@ -263,7 +263,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 | 2. IR + Partial Evaluation | 3/3 | Complete   | 2026-06-26 |
 | 3. Git-Backed Store | 3/3 | Complete   | 2026-06-27 |
 | 4. Manifest Builder + Emit | 19/19 | Complete    | 2026-07-27 |
-| 5. Runtime Loader + CLI + Bootstrap | 4/5 | In Progress|  |
+| 5. Runtime Loader + CLI + Bootstrap | 5/5 | In Progress|  |
 | 6. Ingest End-to-End | 0/2 | Not started | - |
 
 ## Requirement Coverage

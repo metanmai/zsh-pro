@@ -4,17 +4,17 @@ milestone: v2.0
 milestone_name: Branchable Shell Environments
 current_phase: 05
 current_phase_name: Runtime Loader + CLI + Bootstrap
-status: executing
-stopped_at: "Completed 05-04-PLAN.md; next: execute 05-05"
-last_updated: "2026-07-29T18:32:02.592Z"
+status: verifying
+stopped_at: Completed 05-05-PLAN.md
+last_updated: "2026-07-29T18:52:31.360Z"
 last_activity: 2026-07-29
-last_activity_desc: Completed 05-03 installer marker, cache, and performance reliability work
+last_activity_desc: Completed 05-04 bounded runtime failure containment and complete profile transition work
 progress:
   total_phases: 6
-  completed_phases: 4
+  completed_phases: 5
   total_plans: 32
-  completed_plans: 31
-  percent: 97
+  completed_plans: 32
+  percent: 83
 ---
 
 # Project State
@@ -30,10 +30,10 @@ See: .planning/PROJECT.md (updated 2026-06-25)
 
 Phase: 05 — Runtime Loader + CLI + Bootstrap
 Plan: 5 of 5
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-07-29 — Completed 05-04 bounded runtime failure containment and complete profile transition work
 
-Progress: [██████████] 97%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
@@ -88,6 +88,7 @@ Progress: [██████████] 97%
 | Phase 05 P02 | 10 min | 3 tasks | 8 files |
 | Phase 05 P03 | 19min | 3 tasks | 5 files |
 | Phase 05 P04 | 36 min | 2 tasks | 4 files |
+| Phase 05 P05 | 9min | 2 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -154,6 +155,8 @@ Recent decisions affecting current work:
 - [Phase ?]: Runtime subprocesses use a zsh-native child plus watchdog and bounded 1-99 second timeout input rather than GNU timeout.
 - [Phase ?]: Expected public verb failures report through ZP_LAST_RUNTIME_STATUS/ZP_LAST_RUNTIME_ERROR and return zero to preserve an interactive ERR_EXIT or ERR_RETURN caller.
 - [Phase ?]: The runtime emitter owns the complete executable transition, so the loader validates and evaluates one deactivate-then-apply source exactly once.
+- [Phase ?]: Runtime SecretRefs resolve only on an activation copy after backend-kind validation, preserving persisted redaction.
+- [Phase ?]: Nil-like runtime dependencies are normalized at CLI constructors so public verbs fail through cli.fail instead of panicking.
 
 ### Pending Todos
 
@@ -182,6 +185,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-29T18:32:02.586Z
-Stopped at: Completed 05-04-PLAN.md; next: execute 05-05
+Last session: 2026-07-29T18:52:31.354Z
+Stopped at: Completed 05-05-PLAN.md
 Resume file: None
