@@ -4,37 +4,44 @@ package zsh
 // emulate -L/LOCAL_OPTIONS: state changes made by emitted apply/deactivate
 // blocks must persist in the caller's terminal after these functions return.
 const loaderScript = `
-typeset -g ZP_UNSET_SENTINEL='__zsh_pro_unset_7c5a0a15__'
 typeset -g ZP_LAST_RUNTIME_STATUS=0
 typeset -g ZP_LAST_RUNTIME_ERROR=''
 typeset -g ZP_RUNTIME_TIMED_OUT=0
 
 zp_capture_env() {
-  local name="$1" safe slot
+  local name="$1" safe slot present_slot
   safe="${name//[^A-Za-z0-9_]/_}"
   slot="__ZP_ORIG_${safe}"
-  (( ${+parameters[$slot]} )) && return 0
+  present_slot="__ZP_ORIG_${safe}_PRESENT"
+  if (( ${+parameters[$slot]} )); then
+    # A loader refreshed during an old activation lacks presence metadata.
+    # Preserve that retained value as data rather than treating any string as
+    # an encoded unset value.
+    (( ${+parameters[$present_slot]} )) || typeset -g "$present_slot=1"
+    return 0
+  fi
   if [[ "${(P)+name}" == "1" ]]; then
-    typeset -g "$slot=${(P)name}"
+    typeset -g "$slot=${(P)name}" "$present_slot=1"
   else
-    typeset -g "$slot=$ZP_UNSET_SENTINEL"
+    typeset -g "$slot=" "$present_slot=0"
   fi
 }
 
 zp_restore_env() {
-  local name="$1" applied="$2" safe slot prior
+  local name="$1" applied="$2" safe slot present_slot prior was_set
   safe="${name//[^A-Za-z0-9_]/_}"
   slot="__ZP_ORIG_${safe}"
-  (( ${+parameters[$slot]} )) || return 0
+  present_slot="__ZP_ORIG_${safe}_PRESENT"
+  (( ${+parameters[$slot]} && ${+parameters[$present_slot]} )) || return 0
   prior="${(P)slot}"
+  was_set="${(P)present_slot}"
   if [[ "${(P)+name}" == "1" && "${(P)name}" == "$applied" ]]; then
-    if [[ "$prior" == "$ZP_UNSET_SENTINEL" ]]; then
-      unset "$name"
-    else
-      export "$name=$prior"
-    fi
+    case "$was_set" in
+      1) export "$name=$prior" ;;
+      0) unset "$name" ;;
+    esac
   fi
-  unset "$slot"
+  unset "$slot" "$present_slot"
 }
 
 _zp_prepare_eval_state() {
