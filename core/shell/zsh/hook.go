@@ -225,7 +225,7 @@ _zp_emit() {
 }
 
 _zp_eval_block() {
-  local block="$1" applied="$2" tmp='' rc=0 validator_rc=1 timeout="${ZP_RUNTIME_TIMEOUT_SECONDS:-5}"
+  local block="$1" applied="$2" cleanup_target="${3:-0}" tmp='' rc=0 validator_rc=1 timeout="${ZP_RUNTIME_TIMEOUT_SECONDS:-5}"
   local history_pushed=0 xtrace_was_on=0
   if [[ -z "$block" ]]; then
     _zp_runtime_error 1 "emitted empty shell source; shell state unchanged"
@@ -270,6 +270,13 @@ _zp_eval_block() {
     if (( rc == 0 )); then
       if eval "$block"; then :; else
         rc=$?
+        # A valid target payload can still fail after mutating the current
+        # shell. Its newly defined reverse is the only safe cleanup source at
+        # this point, so consume that failure and leave lifecycle state
+        # inactive rather than claiming the previously reversed target lives.
+        if (( cleanup_target )) && (( ${+functions[zp_deactivate]} )); then
+          if zp_deactivate; then :; else :; fi
+        fi
         _zp_runtime_error "$rc" "switch failed at runtime; shell may be partially changed; run checkout ${ZP_LAST_GOOD_PROFILE:-main}"
       fi
     fi
@@ -295,24 +302,46 @@ _zp_eval_block() {
   return "$rc"
 }
 
+_zp_has_known_active_profile() {
+  local name="$1"
+  [[ "${ZP_ACTIVE_PROFILE+x}" == x && "$ZP_ACTIVE_PROFILE" == "$name" &&
+    "${ZSHPRO_PROFILE-}" == "$name" && ${+functions[zp_deactivate]} == 1 ]]
+}
+
+_zp_reverse_active_profile() {
+  local rc=1
+  # Clear both public and authoritative markers before invoking the retained
+  # reverse. A reverse can fail, but it must never leave the old marker behind
+  # after it has begun changing the shell.
+  if unset ZP_ACTIVE_PROFILE ZSHPRO_PROFILE; then :; else
+    _zp_runtime_error 1 "unable to clear active profile before reversal"
+    return 1
+  fi
+  if (( ! ${+functions[zp_deactivate]} )); then
+    _zp_runtime_error 1 "active profile reverse is unavailable; shell state may be partially changed"
+    return 1
+  fi
+  if zp_deactivate; then return 0; else rc=$?; fi
+  _zp_runtime_error "$rc" "active profile reversal failed; shell state may be partially changed"
+  return "$rc"
+}
+
 _zp_switch() {
   local name="$1" block
-  if [[ "${ZP_ACTIVE_PROFILE+x}" == x && "$ZP_ACTIVE_PROFILE" == "$name" ]]; then
+  if _zp_has_known_active_profile "$name"; then
     if export ZSHPRO_PROFILE="$name"; then return 0; fi
     _zp_runtime_error 1 "unable to record active profile"
     return 1
   fi
+  if [[ "${ZP_ACTIVE_PROFILE+x}" == x ]]; then
+    if ! _zp_reverse_active_profile; then return 1; fi
+  fi
   if ! _zp_prepare_eval_state; then return 1; fi
-  # The apply emitter returns the requested target only: its retained reverse
-  # is defined before zp_apply runs so the caller can later unwind this target.
+  # The apply emitter returns the requested target only. The old target has
+  # already been reversed while the loader marker was deliberately inactive.
   if ! _zp_emit apply "$name"; then return 1; fi
   block="$REPLY"
-  if [[ "${ZP_ACTIVE_PROFILE+x}" == x ]]; then
-    # Execute the active target's retained reverse before this new payload can
-    # redefine zp_deactivate or apply a new target's state.
-    block=$'zp_deactivate\n'"$block"
-  fi
-  if ! _zp_eval_block "$block" "$name"; then return 1; fi
+  if ! _zp_eval_block "$block" "$name" 1; then return 1; fi
   if ! typeset -g +x ZP_ACTIVE_PROFILE="$name"; then
     _zp_runtime_error 1 "unable to record active profile"
     return 1
@@ -343,12 +372,9 @@ checkout() {
 }
 
 deactivate() {
-	local block
 	if [[ "${ZP_ACTIVE_PROFILE+x}" != x ]]; then _zp_runtime_ok; return 0; fi
 	if ! _zp_prepare_eval_state; then return 0; fi
-	block='zp_deactivate'
-	if ! _zp_eval_block "$block" ""; then return 0; fi
-	if unset ZP_ACTIVE_PROFILE && unset ZSHPRO_PROFILE; then _zp_runtime_ok; else _zp_runtime_error 1 "unable to clear active profile"; fi
+	if _zp_reverse_active_profile; then _zp_runtime_ok; fi
 	return 0
 }
 

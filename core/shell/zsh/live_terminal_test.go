@@ -114,7 +114,7 @@ deactivate
 	}
 }
 
-func TestLiveTerminalFailedEvalKeepsActivationMarkerAndProfile(t *testing.T) {
+func TestLiveTerminalFailedEvalLeavesTruthfulInactiveStateAndRecovers(t *testing.T) {
 	realZsh, err := exec.LookPath("zsh")
 	if err != nil {
 		t.Skip("zsh not installed")
@@ -125,10 +125,16 @@ func TestLiveTerminalFailedEvalKeepsActivationMarkerAndProfile(t *testing.T) {
 	const shimSource = `#!/bin/sh
 case "$1:$2:$3" in
   emit:apply:good)
-    printf '%s\n' "zp_deactivate() { unset ZP_GOOD; }" "zp_apply() { export ZP_GOOD=1; }" "zp_apply"
+    printf '%s\n' \
+      "zp_deactivate() { unset ZP_A_ENV; unalias zp_a_alias 2>/dev/null; unset -f zp_a_function; unsetopt extendedglob; path=(\${(@s/:/)ZP_BASE_PATH}); }" \
+      "zp_apply() { export ZP_A_ENV=1; alias zp_a_alias='print -r -- A'; functions[zp_a_function]='print -r -- A'; setopt extendedglob; path=(/zp-a/bin \$path); }" \
+      "zp_apply"
     ;;
   emit:apply:bad)
-    printf '%s\n' "zp_deactivate() { :; }" "zp_apply() { return 9; }" "zp_apply"
+    printf '%s\n' \
+      "zp_deactivate() { unset ZP_B_ENV; unalias zp_b_alias 2>/dev/null; unset -f zp_b_function; unsetopt nomatch; path=(\${(@s/:/)ZP_BASE_PATH}); }" \
+      "zp_apply() { export ZP_B_ENV=1; alias zp_b_alias='print -r -- B'; functions[zp_b_function]='print -r -- B'; setopt nomatch; path=(/zp-b/bin \$path); return 9; }" \
+      "zp_apply"
     ;;
   *) exit 64 ;;
 esac
@@ -139,16 +145,47 @@ esac
 	const body = `
 unset ZSHPRO_PROFILE ZP_ACTIVE_PROFILE
 source "$1"
+before_path="$PATH"
+unsetopt extendedglob nomatch
 activate good
 [[ "$ZP_ACTIVE_PROFILE" == good && "$ZSHPRO_PROFILE" == good ]] || exit 20
+[[ "$ZP_A_ENV" == 1 ]] || exit 21
+alias zp_a_alias >/dev/null || exit 22
+(( ${+functions[zp_a_function]} )) || exit 23
+[[ -o extendedglob ]] || exit 24
+[[ "$PATH" == /zp-a/bin:* ]] || exit 25
 activate bad
-[[ "$ZP_LAST_RUNTIME_STATUS" -ne 0 ]] || exit 21
-[[ "$ZP_ACTIVE_PROFILE" == good && "$ZSHPRO_PROFILE" == good ]] || exit 22
+[[ "$ZP_LAST_RUNTIME_STATUS" -ne 0 ]] || exit 30
+[[ -z "${ZP_ACTIVE_PROFILE+x}" && -z "${ZSHPRO_PROFILE+x}" ]] || exit 31
+[[ "$(status)" == main ]] || exit 32
+[[ -z "${ZP_A_ENV+x}" && -z "${ZP_B_ENV+x}" ]] || exit 33
+alias zp_a_alias >/dev/null 2>&1 && exit 34
+alias zp_b_alias >/dev/null 2>&1 && exit 35
+(( ${+functions[zp_a_function]} || ${+functions[zp_b_function]} )) && exit 36
+[[ ! -o extendedglob && ! -o nomatch ]] || exit 37
+[[ "$PATH" == "$before_path" ]] || exit 38
+
+# The failed B transition left a truthful inactive state, so activating the
+# previous profile must re-emit and restore it instead of taking a stale
+# same-profile shortcut.
+activate good
+[[ "$ZP_ACTIVE_PROFILE" == good && "$ZSHPRO_PROFILE" == good ]] || exit 40
+[[ "$ZP_A_ENV" == 1 && -z "${ZP_B_ENV+x}" ]] || exit 41
+alias zp_a_alias >/dev/null || exit 42
+(( ${+functions[zp_a_function]} )) || exit 43
+[[ -o extendedglob && ! -o nomatch ]] || exit 44
+[[ "$PATH" == /zp-a/bin:* ]] || exit 45
+deactivate
+[[ -z "${ZP_ACTIVE_PROFILE+x}" && -z "${ZSHPRO_PROFILE+x}" ]] || exit 46
+[[ -z "${ZP_A_ENV+x}" && -z "${ZP_B_ENV+x}" ]] || exit 47
+alias zp_a_alias >/dev/null 2>&1 && exit 48
+(( ${+functions[zp_a_function]} || ${+functions[zp_b_function]} )) && exit 49
+[[ ! -o extendedglob && ! -o nomatch && "$PATH" == "$before_path" ]] || exit 50
 `
 	cmd := exec.Command(realZsh, "-f", "-c", body, "zsh-pro-marker-failure-test", loader)
 	cmd.Env = liveEnv(dir, "PATH="+dir+":"+os.Getenv("PATH"))
 	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("failed evaluation advanced activation state: %v\n%s", err, out)
+		t.Fatalf("failed evaluation left an untruthful or unrecoverable shell: %v\n%s", err, out)
 	}
 }
 
