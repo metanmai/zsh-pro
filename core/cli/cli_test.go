@@ -301,6 +301,9 @@ func TestTypedNilDependenciesFailClosedWithoutPanic(t *testing.T) {
 					if out.Len() != 0 || errBuf.Len() == 0 {
 						t.Fatalf("failure output = stdout %q stderr %q", out.String(), errBuf.String())
 					}
+					if !strings.Contains(errBuf.String(), "shell provider unavailable") {
+						t.Fatalf("provider failure diagnostic = %q", errBuf.String())
+					}
 					if installHome == "" {
 						return
 					}

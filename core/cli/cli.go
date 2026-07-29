@@ -31,6 +31,9 @@ type CLI struct {
 
 // New returns a CLI bound to a Provider.
 func New(p shell.Provider, s Store, e Emitter) *CLI {
+	if isNilLike(p) {
+		p = nil
+	}
 	if isNilLike(s) {
 		s = nil
 	}
@@ -54,7 +57,11 @@ func (c *CLI) Run(args []string, stdout, stderr io.Writer) int {
 	case buildinfo.Command:
 		return c.runAnalyze(args[1:], stdout, stderr)
 	case "hook":
-		_, _ = fmt.Fprint(stdout, c.provider.HookScript())
+		provider, code := c.providerOrFail(stdout, stderr, false)
+		if code != int(model.ExitClean) {
+			return code
+		}
+		_, _ = fmt.Fprint(stdout, provider.HookScript())
 		return int(model.ExitClean)
 	case "install":
 		return c.runInstall(stdout, stderr)
@@ -129,6 +136,10 @@ func (c *CLI) runAnalyze(args []string, stdout, stderr io.Writer) int {
 			path = a
 		}
 	}
+	provider, code := c.providerOrFail(stdout, stderr, asJSON)
+	if code != int(model.ExitClean) {
+		return code
+	}
 	path = util.ExpandHome(path)
 
 	src, err := os.ReadFile(path)
@@ -136,7 +147,7 @@ func (c *CLI) runAnalyze(args []string, stdout, stderr io.Writer) int {
 		return c.fail(stdout, stderr, asJSON, fmt.Sprintf("cannot read %s: %v", path, err))
 	}
 
-	a := analyze.New(c.provider).Analyze(src, path)
+	a := analyze.New(provider).Analyze(src, path)
 
 	var r render.Renderer = render.HumanRenderer{}
 	if asJSON {
@@ -148,6 +159,13 @@ func (c *CLI) runAnalyze(args []string, stdout, stderr io.Writer) int {
 	}
 	_, _ = fmt.Fprintln(stdout, string(b))
 	return int(a.ExitCode())
+}
+
+func (c *CLI) providerOrFail(stdout, stderr io.Writer, asJSON bool) (shell.Provider, int) {
+	if isNilLike(c.provider) {
+		return nil, c.fail(stdout, stderr, asJSON, "shell provider unavailable")
+	}
+	return c.provider, int(model.ExitClean)
 }
 
 // fail emits a runtime error (exit 1) in either mode. The agent contract

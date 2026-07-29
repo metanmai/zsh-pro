@@ -65,7 +65,11 @@ func runInstall(provider shell.Hooker) error {
 }
 
 func (c *CLI) runInstall(stdout, stderr io.Writer) int {
-	if err := runInstall(c.provider); err != nil {
+	provider, code := c.providerOrFail(stdout, stderr, false)
+	if code != 0 {
+		return code
+	}
+	if err := runInstall(provider); err != nil {
 		return c.fail(stdout, stderr, false, err.Error())
 	}
 	_, _ = fmt.Fprintln(stdout, "zsh-pro: installed")
