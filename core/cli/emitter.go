@@ -63,7 +63,10 @@ func (r runtimeEmitter) Emit(ctx context.Context, mode, name string) (string, er
 			return "", err
 		}
 		_, deactivate, err := r.emit.Emit(plan)
-		return deactivate, err
+		if err != nil {
+			return "", err
+		}
+		return deactivate + "\nzp_deactivate\n", nil
 	}
 
 	var activeManifest *model.Manifest
@@ -79,6 +82,15 @@ func (r runtimeEmitter) Emit(ctx context.Context, mode, name string) (string, er
 	if err != nil {
 		return "", err
 	}
-	apply, _, err := r.emit.Emit(plan)
-	return apply, err
+	apply, deactivate, err := r.emit.Emit(plan)
+	if err != nil {
+		return "", err
+	}
+	if activeManifest != nil {
+		// The loader validates and evaluates this exact one-source transaction.
+		// Define both halves first, then run the active-profile cleanup before the
+		// target apply so no A-only identity can escape into B.
+		return deactivate + "\n" + apply + "\nzp_deactivate\nzp_apply\n", nil
+	}
+	return apply + "\nzp_apply\n", nil
 }

@@ -68,6 +68,14 @@ func TestRuntimeEmitterEmitsCompleteTransitionSource(t *testing.T) {
 }
 
 func TestRuntimeEmitterLiveTransitionRemovesAOnlyState(t *testing.T) {
+	testRuntimeEmitterLiveTransition(t, "activate B")
+}
+
+func TestRuntimeEmitterLiveCheckoutTransitionRemovesAOnlyState(t *testing.T) {
+	testRuntimeEmitterLiveTransition(t, "checkout B")
+}
+
+func testRuntimeEmitterLiveTransition(t *testing.T, switchCommand string) {
 	realZsh, err := exec.LookPath("zsh")
 	if err != nil {
 		t.Skip("zsh not installed")
@@ -103,6 +111,12 @@ esac
 	if err := os.WriteFile(shim, []byte(shimSource), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	validatorLog := filepath.Join(dir, "validator.log")
+	validator := filepath.Join(dir, "zsh")
+	validatorSource := "#!/bin/sh\nprintf . >> \"$ZP_VALIDATOR_LOG\"\nexec \"$ZP_REAL_ZSH\" \"$@\"\n"
+	if err := os.WriteFile(validator, []byte(validatorSource), 0o700); err != nil {
+		t.Fatal(err)
+	}
 
 	body := `
 unset ZSHPRO_PROFILE
@@ -116,7 +130,9 @@ alias zp_a_only >/dev/null || exit 62
 [[ -o extendedglob ]] || exit 64
 (( $#path == before_path_count + 1 )) || exit 65
 
-activate B
+activate A
+(( $#path == before_path_count + 1 )) || exit 66
+` + switchCommand + `
 [[ "$ZSHPRO_PROFILE" == B ]] || exit 66
 [[ -z "${ZP_A_ONLY+x}" ]] || exit 67
 alias zp_a_only >/dev/null 2>&1 && exit 68
@@ -143,9 +159,18 @@ alias zp_b_only >/dev/null 2>&1 && exit 78
 		"ZP_APPLY_A="+applyAPath,
 		"ZP_APPLY_B="+applyBPath,
 		"ZP_DEACTIVATE_B="+deactivateBPath,
+		"ZP_REAL_ZSH="+realZsh,
+		"ZP_VALIDATOR_LOG="+validatorLog,
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("real Store A-to-B transition left residue: %v\n%s", err, out)
+	}
+	validations, err := os.ReadFile(validatorLog)
+	if err != nil {
+		t.Fatalf("read validation log: %v", err)
+	}
+	if string(validations) != "...." {
+		t.Fatalf("validation count = %q, want one complete source validation per public transition", validations)
 	}
 }
 

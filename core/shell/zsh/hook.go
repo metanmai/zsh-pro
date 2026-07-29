@@ -245,40 +245,37 @@ _zp_eval_block() {
   return "$rc"
 }
 
+_zp_switch() {
+  local name="$1" block
+  if ! _zp_prepare_eval_state; then return 1; fi
+  # The apply emitter validates the target branch and returns one complete,
+  # executable transaction: deactivate-prior (when needed), then apply-target.
+  if ! _zp_emit apply "$name"; then return 1; fi
+  block="$REPLY"
+  if ! _zp_eval_block "$block" "$name"; then return 1; fi
+  if export ZSHPRO_PROFILE="$name"; then return 0; fi
+  _zp_runtime_error 1 "unable to record active profile"
+  return 1
+}
+
 activate() {
-	local name="$1" block
+	local name="$1"
 	if [[ -z "$name" ]]; then
 		_zp_runtime_error 2 "usage: activate <profile>"
 		return 0
 	fi
-	if ! _zp_prepare_eval_state; then return 0; fi
-	if ! _zp_emit apply "$name"; then return 0; fi
-	block="$REPLY"$'\n'"zp_apply"
-	if ! _zp_eval_block "$block" "$name"; then return 0; fi
-	if export ZSHPRO_PROFILE="$name"; then _zp_runtime_ok; else _zp_runtime_error 1 "unable to record active profile"; fi
+	if _zp_switch "$name"; then _zp_runtime_ok; fi
 	return 0
 }
 
 checkout() {
-  local name="$1" prior="${ZSHPRO_PROFILE-}" target priorBlock block
+  local name="$1"
   if [[ -z "$name" ]]; then
     _zp_runtime_error 2 "usage: checkout <profile>"
     return 0
   fi
-  if ! _zp_prepare_eval_state; then return 0; fi
-  # The emit-apply command validates the requested Store branch before returning source.
-	if ! _zp_emit apply "$name"; then return 0; fi
-	target="$REPLY"
-	if [[ -n "$prior" ]]; then
-		if ! _zp_emit deactivate "$prior"; then return 0; fi
-		priorBlock="$REPLY"
-	fi
-	block="$priorBlock"$'\n'
-	if [[ -n "$prior" ]]; then block+="zp_deactivate"$'\n'; fi
-	block+="$target"$'\n'"zp_apply"
-	if ! _zp_eval_block "$block" "$name"; then return 0; fi
-	if export ZSHPRO_PROFILE="$name"; then _zp_runtime_ok; else _zp_runtime_error 1 "unable to record active profile"; fi
-	return 0
+  if _zp_switch "$name"; then _zp_runtime_ok; fi
+  return 0
 }
 
 deactivate() {
@@ -286,7 +283,7 @@ deactivate() {
 	if [[ -z "$name" ]]; then _zp_runtime_ok; return 0; fi
 	if ! _zp_prepare_eval_state; then return 0; fi
 	if ! _zp_emit deactivate "$name"; then return 0; fi
-	block="$REPLY"$'\n'"zp_deactivate"
+	block="$REPLY"
 	if ! _zp_eval_block "$block" ""; then return 0; fi
 	if unset ZSHPRO_PROFILE; then _zp_runtime_ok; else _zp_runtime_error 1 "unable to clear active profile"; fi
 	return 0

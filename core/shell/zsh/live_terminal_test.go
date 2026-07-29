@@ -22,9 +22,9 @@ func TestLiveTerminalLoaderSwitchesCurrentShellWithoutResidue(t *testing.T) {
 	shim := filepath.Join(dir, "zsh-pro")
 	const shimSource = `#!/bin/sh
 case "$1:$2:$3" in
-  emit:apply:A) printf '%s\n' "zp_apply() { export ZP_TEST_ENV=A; alias zp_test_alias='print A'; path=(/zp-a/bin \$path); }" ;;
-  emit:apply:B) printf '%s\n' "zp_apply() { export ZP_TEST_ENV=B; alias zp_test_alias='print B'; path=(/zp-b/bin \$path); }" ;;
-  emit:deactivate:*) printf '%s\n' "zp_deactivate() { unalias zp_test_alias 2>/dev/null; unset ZP_TEST_ENV; path=(\${(@s/:/)ZP_BASE_PATH}); }" ;;
+  emit:apply:A) printf '%s\n' "zp_apply() { export ZP_TEST_ENV=A; alias zp_test_alias='print A'; path=(/zp-a/bin \$path); }" "zp_apply" ;;
+  emit:apply:B) printf '%s\n' "zp_apply() { export ZP_TEST_ENV=B; alias zp_test_alias='print B'; path=(/zp-b/bin \$path); }" "zp_apply" ;;
+  emit:deactivate:*) printf '%s\n' "zp_deactivate() { unalias zp_test_alias 2>/dev/null; unset ZP_TEST_ENV; path=(\${(@s/:/)ZP_BASE_PATH}); }" "zp_deactivate" ;;
   list) printf '%s\n' main A B ;;
   status) printf '%s\n' main ;;
   *) exit 64 ;;
@@ -111,7 +111,7 @@ func TestLiveTerminalLoaderGatesEmptyEmitAndReportsRuntimeFailure(t *testing.T) 
 		name, emit, assertion string
 	}{
 		{"empty emit", "#!/bin/sh\nexit 0\n", `[[ "$ZSHPRO_PROFILE" == good ]] || exit 11; [[ "$ZP_LAST_GOOD_PROFILE" == good ]] || exit 12`},
-		{"runtime failure", "#!/bin/sh\nprintf '%s\\n' 'zp_apply() { export ZP_PARTIAL=1; return 9; }'\n", `[[ "$ZP_LAST_GOOD_PROFILE" == good ]] || exit 21; [[ "$ZP_PARTIAL" == 1 ]] || exit 22`},
+		{"runtime failure", "#!/bin/sh\nprintf '%s\\n' 'zp_apply() { export ZP_PARTIAL=1; return 9; }' 'zp_apply'\n", `[[ "$ZP_LAST_GOOD_PROFILE" == good ]] || exit 21; [[ "$ZP_PARTIAL" == 1 ]] || exit 22`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -196,9 +196,9 @@ func TestLiveTerminalConsumesAllExpectedRuntimeFailures(t *testing.T) {
 	}{
 		{name: "emitter failure", emitter: "#!/bin/sh\nexit 9\n"},
 		{name: "empty emitter output", emitter: "#!/bin/sh\nexit 0\n"},
-		{name: "staging failure", emitter: "#!/bin/sh\nprintf '%s\\n' 'zp_apply() { :; }'\n", badTempDir: true},
-		{name: "validation failure", emitter: "#!/bin/sh\nprintf '%s\\n' 'zp_apply() { :; }'\n", validator: "#!/bin/sh\nexit 9\n"},
-		{name: "evaluation failure", emitter: "#!/bin/sh\nprintf '%s\\n' 'zp_apply() { return 9; }'\n"},
+		{name: "staging failure", emitter: "#!/bin/sh\nprintf '%s\\n' 'zp_apply() { :; }' 'zp_apply'\n", badTempDir: true},
+		{name: "validation failure", emitter: "#!/bin/sh\nprintf '%s\\n' 'zp_apply() { :; }' 'zp_apply'\n", validator: "#!/bin/sh\nexit 9\n"},
+		{name: "evaluation failure", emitter: "#!/bin/sh\nprintf '%s\\n' 'zp_apply() { return 9; }' 'zp_apply'\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -253,7 +253,7 @@ func TestLiveTerminalTimeoutsAreBoundedAndCleanedUp(t *testing.T) {
 		validator string
 	}{
 		{name: "emitter", emitter: "#!/bin/sh\nexec sleep 5\n"},
-		{name: "validator", emitter: "#!/bin/sh\nprintf '%s\\n' 'zp_apply() { :; }'\n", validator: "#!/bin/sh\nexec sleep 5\n"},
+		{name: "validator", emitter: "#!/bin/sh\nprintf '%s\\n' 'zp_apply() { :; }' 'zp_apply'\n", validator: "#!/bin/sh\nexec sleep 5\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
