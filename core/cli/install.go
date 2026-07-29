@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"zsh-pro/core/buildinfo"
 	"zsh-pro/core/shell"
@@ -17,13 +19,23 @@ import (
 const (
 	installBegin = "# >>> zsh-pro >>>"
 	installEnd   = "# <<< zsh-pro <<<"
+
+	validationTimeout = 5 * time.Second
 )
+
+type installPaths struct {
+	runtimeDir string
+	zshrcPath  string
+}
 
 // runInstall writes the cached loader before it changes .zshrc. The cache path
 // is deliberately resolved by the same environment expression rendered in the
 // stub, so sourcing never depends on a binary invocation during shell startup.
 func runInstall(provider shell.Hooker) error {
-	cacheDir := runtimeDir()
+	cacheDir, err := runtimeDir()
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
 		return fmt.Errorf("create runtime directory: %w", err)
 	}
@@ -32,14 +44,14 @@ func runInstall(provider shell.Hooker) error {
 	}
 	loader := filepath.Join(cacheDir, "loader.zsh")
 	loaderScript := "# zsh-pro cached loader version " + buildinfo.Version + "\n" + provider.HookScript()
-	if err := atomicWrite(loader, []byte(loaderScript), 0o600); err != nil {
-		return fmt.Errorf("write cached loader: %w", err)
-	}
-	if err := validateZsh(loaderScript); err != nil {
-		return fmt.Errorf("validate cached loader: %w", err)
+	if err := writeValidatedLoader(loader, []byte(loaderScript)); err != nil {
+		return fmt.Errorf("install cached loader: %w", err)
 	}
 
-	rc := zshrcPath()
+	rc, err := zshrcPath()
+	if err != nil {
+		return err
+	}
 	current, err := os.ReadFile(rc)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("read %s: %w", rc, err)
@@ -62,19 +74,48 @@ func (c *CLI) runInstall(stdout, stderr io.Writer) int {
 	return 0
 }
 
-func runtimeDir() string {
-	if dir := os.Getenv("ZSHPRO_HOME"); dir != "" {
-		return dir
+func runtimeDir() (string, error) {
+	paths, err := resolveInstallPaths()
+	if err != nil {
+		return "", err
 	}
-	return filepath.Join(os.Getenv("HOME"), ".zsh-pro")
+	return paths.runtimeDir, nil
 }
 
-func zshrcPath() string {
-	base := os.Getenv("ZDOTDIR")
-	if base == "" {
-		base = os.Getenv("HOME")
+func zshrcPath() (string, error) {
+	paths, err := resolveInstallPaths()
+	if err != nil {
+		return "", err
 	}
-	return filepath.Join(base, ".zshrc")
+	return paths.zshrcPath, nil
+}
+
+func resolveInstallPaths() (installPaths, error) {
+	home, present := os.LookupEnv("HOME")
+	if !present || home == "" || !filepath.IsAbs(home) {
+		return installPaths{}, errors.New("install requires a non-empty absolute HOME")
+	}
+
+	runtime := filepath.Join(home, ".zsh-pro")
+	if configured, present := os.LookupEnv("ZSHPRO_HOME"); present {
+		if configured == "" || !filepath.IsAbs(configured) {
+			return installPaths{}, errors.New("install requires ZSHPRO_HOME to be a non-empty absolute path when set")
+		}
+		runtime = configured
+	}
+
+	zdotdir := home
+	if configured, present := os.LookupEnv("ZDOTDIR"); present {
+		if configured == "" || !filepath.IsAbs(configured) {
+			return installPaths{}, errors.New("install requires ZDOTDIR to be a non-empty absolute path when set")
+		}
+		zdotdir = configured
+	}
+
+	return installPaths{
+		runtimeDir: runtime,
+		zshrcPath:  filepath.Join(zdotdir, ".zshrc"),
+	}, nil
 }
 
 func renderInstallBlock() []byte {
@@ -156,44 +197,96 @@ func replaceManagedBlock(current, block []byte) ([]byte, error) {
 }
 
 func atomicWrite(path string, content []byte, defaultMode os.FileMode) (err error) {
-	target := path
-	info, statErr := os.Lstat(path)
-	if statErr == nil && info.Mode()&os.ModeSymlink != 0 {
-		target, err = filepath.EvalSymlinks(path)
-		if err != nil {
-			return err
-		}
-		info, statErr = os.Stat(target)
-	}
-	if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
-		return statErr
+	target, err := resolveWriteTarget(path)
+	if err != nil {
+		return err
 	}
 	mode := defaultMode
+	info, statErr := os.Stat(target)
 	if statErr == nil {
 		mode = info.Mode().Perm()
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return statErr
 	}
-	dir := filepath.Dir(target)
-	f, err := os.CreateTemp(dir, ".zsh-pro-*")
+	temp, err := writeTemp(target, content, mode)
 	if err != nil {
 		return err
 	}
-	temp := f.Name()
 	defer func() { _ = os.Remove(temp) }()
-	if err = f.Chmod(mode); err == nil {
-		_, err = f.Write(content)
-	}
-	if err == nil {
-		err = f.Sync()
-	}
-	if closeErr := f.Close(); err == nil {
-		err = closeErr
-	}
-	if err != nil {
-		return err
-	}
 	if err = os.Rename(temp, target); err != nil {
 		return err
 	}
+	return syncDirectory(filepath.Dir(target))
+}
+
+func writeValidatedLoader(path string, content []byte) error {
+	target, err := resolveWriteTarget(path)
+	if err != nil {
+		return err
+	}
+	temp, err := writeTemp(target, content, 0o600)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(temp) }()
+	if err := validateZsh(temp); err != nil {
+		return err
+	}
+	if err := os.Rename(temp, target); err != nil {
+		return err
+	}
+	return syncDirectory(filepath.Dir(target))
+}
+
+func resolveWriteTarget(path string) (string, error) {
+	target := path
+	info, err := os.Lstat(path)
+	if err == nil && info.Mode()&os.ModeSymlink != 0 {
+		target, err = filepath.EvalSymlinks(path)
+		if err != nil {
+			return "", err
+		}
+		return target, nil
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	return target, nil
+}
+
+func writeTemp(target string, content []byte, mode os.FileMode) (string, error) {
+	f, err := os.CreateTemp(filepath.Dir(target), ".zsh-pro-loader-*")
+	if err != nil {
+		return "", err
+	}
+	temp := f.Name()
+	cleanup := func() {
+		_ = f.Close()
+		_ = os.Remove(temp)
+	}
+	if err := f.Chmod(mode); err != nil {
+		cleanup()
+		return "", err
+	}
+	if n, err := f.Write(content); err != nil {
+		cleanup()
+		return "", err
+	} else if n != len(content) {
+		cleanup()
+		return "", io.ErrShortWrite
+	}
+	if err := f.Sync(); err != nil {
+		cleanup()
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(temp)
+		return "", err
+	}
+	return temp, nil
+}
+
+func syncDirectory(dir string) error {
 	d, err := os.Open(dir)
 	if err != nil {
 		return err
@@ -202,14 +295,18 @@ func atomicWrite(path string, content []byte, defaultMode os.FileMode) (err erro
 	return d.Sync()
 }
 
-func validateZsh(script string) error {
+func validateZsh(path string) error {
 	zsh, err := exec.LookPath("zsh")
 	if err != nil {
-		return nil
+		return fmt.Errorf("find zsh for loader validation: %w", err)
 	}
-	cmd := exec.Command(zsh, "-n")
-	cmd.Stdin = strings.NewReader(script)
+	ctx, cancel := context.WithTimeout(context.Background(), validationTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, zsh, "-n", path)
 	if out, err := cmd.CombinedOutput(); err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return errors.New("zsh -n validation timed out")
+		}
 		return fmt.Errorf("zsh -n: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
