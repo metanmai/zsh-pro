@@ -86,7 +86,8 @@ func TestLiveTerminalLoaderRejectsInvalidEmitWithoutChangingLastGood(t *testing.
 	body := `
 source "$1"
 export ZSHPRO_PROFILE=good ZP_LAST_GOOD_PROFILE=good
-checkout bad && exit 10
+checkout bad
+[[ "$ZP_LAST_RUNTIME_STATUS" -ne 0 ]] || exit 10
 [[ "$ZSHPRO_PROFILE" == good ]] || exit 11
 [[ "$ZP_LAST_GOOD_PROFILE" == good ]] || exit 12
 [[ -z "${ZP_TEST_ENV+x}" ]] || exit 13
@@ -126,7 +127,7 @@ func TestLiveTerminalLoaderGatesEmptyEmitAndReportsRuntimeFailure(t *testing.T) 
 			if err := os.WriteFile(filepath.Join(dir, "zsh"), []byte(validator), 0o700); err != nil {
 				t.Fatal(err)
 			}
-			body := "source \"$1\"; export ZSHPRO_PROFILE=good ZP_LAST_GOOD_PROFILE=good; activate bad && exit 10; " + tc.assertion
+			body := "source \"$1\"; export ZSHPRO_PROFILE=good ZP_LAST_GOOD_PROFILE=good; activate bad; [[ \"$ZP_LAST_RUNTIME_STATUS\" -ne 0 ]] || exit 10; " + tc.assertion
 			cmd := exec.Command(realZsh, "-f", "-c", body, "zsh-pro-test", loader)
 			cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "ZP_VALIDATION_MARKER="+marker, "ZP_REAL_ZSH="+realZsh)
 			out, err := cmd.CombinedOutput()
@@ -218,11 +219,13 @@ func TestLiveTerminalConsumesAllExpectedRuntimeFailures(t *testing.T) {
 source "$1"
 export ZSHPRO_PROFILE=good ZP_LAST_GOOD_PROFILE=good
 setopt ERR_EXIT
+setopt XTRACE
 activate bad
 print -r -- SURVIVED
 [[ "$ZP_LAST_RUNTIME_STATUS" -ne 0 ]] || exit 30
 [[ "$ZSHPRO_PROFILE" == good ]] || exit 31
 [[ "$ZP_LAST_GOOD_PROFILE" == good ]] || exit 32
+[[ -o xtrace ]] || exit 33
 `
 			cmd := exec.Command(realZsh, "-f", "-c", body, "zsh-pro-test", loader)
 			cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "TMPDIR="+tempDir)
@@ -233,6 +236,7 @@ print -r -- SURVIVED
 			if !strings.Contains(string(out), "SURVIVED") {
 				t.Fatalf("%s did not reach the next command:\n%s", tc.name, out)
 			}
+			assertNoStagedSource(t, dir)
 		})
 	}
 }
