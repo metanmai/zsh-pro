@@ -62,6 +62,7 @@ var (
 	_ Emitter        = (*typedNilCLIEmitter)(nil)
 	_ shell.Emitter  = (*typedNilShellEmitter)(nil)
 	_ SecretResolver = (*typedNilSecretResolver)(nil)
+	_ shell.Provider = (*zsh.Provider)(nil)
 )
 
 func writeRC(t *testing.T, content string) string {
@@ -235,6 +236,7 @@ func TestTypedNilDependenciesFailClosedWithoutPanic(t *testing.T) {
 	var typedCLIEmitter *typedNilCLIEmitter
 	var typedShellEmitter *typedNilShellEmitter
 	var typedResolver *typedNilSecretResolver
+	var typedProvider *zsh.Provider
 
 	for _, tc := range []struct {
 		name string
@@ -260,13 +262,67 @@ func TestTypedNilDependenciesFailClosedWithoutPanic(t *testing.T) {
 			}
 		})
 	}
+
+	// The constructor's nil-like boundary must cover the Provider seam too.
+	// These public verbs respectively dispatch HookScript, runInstall, and the
+	// analyzer, so a failure must occur before loader output or install writes.
+	analysisPath := writeRC(t, "export EDITOR=nvim\n")
+	for _, provider := range []struct {
+		name  string
+		value shell.Provider
+	}{
+		{name: "literal nil"},
+		{name: "typed nil", value: typedProvider},
+	} {
+		t.Run("provider "+provider.name, func(t *testing.T) {
+			for _, verb := range []struct {
+				name string
+				args []string
+			}{
+				{name: "hook", args: []string{"hook"}},
+				{name: "install", args: []string{"install"}},
+				{name: "analyze", args: []string{"analyze", analysisPath}},
+			} {
+				t.Run(verb.name, func(t *testing.T) {
+					var installHome string
+					if verb.name == "install" {
+						installHome = t.TempDir()
+						setInstallHome(t, installHome)
+					}
+
+					c := New(provider.value, fakeStore{}, fakeEmitter{})
+					var out, errBuf bytes.Buffer
+					code := runCLINoPanic(t, func() int {
+						return c.Run(verb.args, &out, &errBuf)
+					})
+					if code != int(model.ExitRuntimeErr) {
+						t.Fatalf("code = %d, want runtime failure", code)
+					}
+					if out.Len() != 0 || errBuf.Len() == 0 {
+						t.Fatalf("failure output = stdout %q stderr %q", out.String(), errBuf.String())
+					}
+					if installHome == "" {
+						return
+					}
+					for _, path := range []string{
+						filepath.Join(installHome, ".zshrc"),
+						filepath.Join(installHome, ".zsh-pro"),
+					} {
+						if _, err := os.Lstat(path); !os.IsNotExist(err) {
+							t.Fatalf("nil-like Provider changed install target %s: %v", path, err)
+						}
+					}
+				})
+			}
+		})
+	}
 }
 
 func runCLINoPanic(t *testing.T, run func() int) (code int) {
 	t.Helper()
 	defer func() {
 		if recover() != nil {
-			t.Fatal("typed-nil dependency panicked")
+			t.Fatal("nil-like dependency panicked")
 		}
 	}()
 	return run()
