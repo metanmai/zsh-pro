@@ -7,15 +7,55 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"zsh-pro/core/buildinfo"
 	"zsh-pro/core/shell/zsh"
 )
 
+type staticHooker string
+
+func (h staticHooker) HookScript() string { return string(h) }
+
+func setInstallHome(t *testing.T, home string) {
+	t.Helper()
+	t.Setenv("HOME", home)
+	unsetInstallEnv(t, "ZDOTDIR")
+	unsetInstallEnv(t, "ZSHPRO_HOME")
+}
+
+func unsetInstallEnv(t *testing.T, key string) {
+	t.Helper()
+	previous, wasSet := os.LookupEnv(key)
+	if err := os.Unsetenv(key); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if wasSet {
+			_ = os.Setenv(key, previous)
+			return
+		}
+		_ = os.Unsetenv(key)
+	})
+}
+
+func setTempWorkingDir(t *testing.T) string {
+	t.Helper()
+	previous, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	workingDir := t.TempDir()
+	if err := os.Chdir(workingDir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(previous) })
+	return workingDir
+}
+
 func TestInstallIdempotentPreservesUserContent(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("ZSHPRO_HOME", "")
+	setInstallHome(t, home)
 	rc := filepath.Join(home, ".zshrc")
 	if err := os.WriteFile(rc, []byte("export EDITOR=nvim\nalias ll='ls -l'\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -48,8 +88,7 @@ func TestInstallIdempotentPreservesUserContent(t *testing.T) {
 
 func TestInstallCollapsesBalancedDuplicatesAndPreservesInterveningContent(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("ZSHPRO_HOME", "")
+	setInstallHome(t, home)
 	rc := filepath.Join(home, ".zshrc")
 	before := "before\n" + installBegin + "\nold\n" + installEnd + "\nkeep-me\n" + installBegin + "\nold-again\n" + installEnd + "\nafter\n"
 	if err := os.WriteFile(rc, []byte(before), 0o644); err != nil {
@@ -70,8 +109,7 @@ func TestInstallCollapsesBalancedDuplicatesAndPreservesInterveningContent(t *tes
 func TestInstallCreatesAndRefusesUnbalancedMarkersWithoutWriting(t *testing.T) {
 	t.Run("missing", func(t *testing.T) {
 		home := t.TempDir()
-		t.Setenv("HOME", home)
-		t.Setenv("ZSHPRO_HOME", "")
+		setInstallHome(t, home)
 		if err := runInstall(zsh.Provider{}); err != nil {
 			t.Fatal(err)
 		}
@@ -90,8 +128,7 @@ func TestInstallCreatesAndRefusesUnbalancedMarkersWithoutWriting(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home := t.TempDir()
-			t.Setenv("HOME", home)
-			t.Setenv("ZSHPRO_HOME", "")
+			setInstallHome(t, home)
 			rc := filepath.Join(home, ".zshrc")
 			if err := os.WriteFile(rc, []byte(tc.content), 0o600); err != nil {
 				t.Fatal(err)
@@ -193,8 +230,7 @@ func TestInstallRefusesMalformedExactMarkerOrderingsWithoutWriting(t *testing.T)
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home := t.TempDir()
-			t.Setenv("HOME", home)
-			t.Setenv("ZSHPRO_HOME", "")
+			setInstallHome(t, home)
 			rc := filepath.Join(home, ".zshrc")
 			before := []byte(tc.input)
 			if err := os.WriteFile(rc, before, 0o600); err != nil {
@@ -215,10 +251,152 @@ func TestInstallRefusesMalformedExactMarkerOrderingsWithoutWriting(t *testing.T)
 	}
 }
 
+func TestInstallRejectsUnstablePathInputsBeforeMutation(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		configure func(t *testing.T)
+	}{
+		{"HOME unset", func(t *testing.T) { unsetInstallEnv(t, "HOME") }},
+		{"HOME empty", func(t *testing.T) { t.Setenv("HOME", "") }},
+		{"HOME relative", func(t *testing.T) { t.Setenv("HOME", "relative-home") }},
+		{"ZDOTDIR empty", func(t *testing.T) { t.Setenv("ZDOTDIR", "") }},
+		{"ZDOTDIR relative", func(t *testing.T) { t.Setenv("ZDOTDIR", "relative-zdotdir") }},
+		{"ZSHPRO_HOME empty", func(t *testing.T) { t.Setenv("ZSHPRO_HOME", "") }},
+		{"ZSHPRO_HOME relative", func(t *testing.T) { t.Setenv("ZSHPRO_HOME", "relative-zshpro") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			workingDir := setTempWorkingDir(t)
+			setInstallHome(t, filepath.Join(workingDir, "home"))
+			tc.configure(t)
+
+			if err := runInstall(zsh.Provider{}); err == nil {
+				t.Fatal("install accepted an unstable path input")
+			}
+			entries, err := os.ReadDir(workingDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != 0 {
+				t.Fatalf("install wrote relative to the working directory: %v", entries)
+			}
+		})
+	}
+}
+
+func TestInstallRepairsCachedLoaderModeWithoutChangingZshrcMode(t *testing.T) {
+	home := t.TempDir()
+	setInstallHome(t, home)
+	cacheDir := filepath.Join(home, ".zsh-pro")
+	if err := os.Mkdir(cacheDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	loader := filepath.Join(cacheDir, "loader.zsh")
+	if err := os.WriteFile(loader, []byte("old loader\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(loader, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rc := filepath.Join(home, ".zshrc")
+	if err := os.WriteFile(rc, []byte("export KEEP=1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(rc, 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runInstall(zsh.Provider{}); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(loader); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("cached loader mode = %v, err=%v; want 0600", info.Mode().Perm(), err)
+	}
+	if info, err := os.Stat(rc); err != nil || info.Mode().Perm() != 0o640 {
+		t.Fatalf("zshrc mode = %v, err=%v; want 0640", info.Mode().Perm(), err)
+	}
+}
+
+func TestInstallInvalidCandidatePreservesKnownGoodCacheAndCleansStaging(t *testing.T) {
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("zsh not installed")
+	}
+	home := t.TempDir()
+	setInstallHome(t, home)
+	cacheDir := filepath.Join(home, ".zsh-pro")
+	if err := os.Mkdir(cacheDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	loader := filepath.Join(cacheDir, "loader.zsh")
+	oldLoader := []byte("known-good loader\n")
+	if err := os.WriteFile(loader, oldLoader, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rc := filepath.Join(home, ".zshrc")
+	oldRC := []byte("export KEEP=1\n")
+	if err := os.WriteFile(rc, oldRC, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runInstall(staticHooker("if then\n")); err == nil {
+		t.Fatal("install accepted a syntax-invalid loader candidate")
+	}
+	if got, err := os.ReadFile(loader); err != nil || !bytes.Equal(got, oldLoader) {
+		t.Fatalf("known-good cache changed after failed validation: %q, err=%v", got, err)
+	}
+	if got, err := os.ReadFile(rc); err != nil || !bytes.Equal(got, oldRC) {
+		t.Fatalf("zshrc changed after failed validation: %q, err=%v", got, err)
+	}
+	entries, err := os.ReadDir(cacheDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "loader.zsh" {
+		t.Fatalf("candidate staging was not cleaned: %v", entries)
+	}
+}
+
+func TestInstallValidationDeadlinePreservesKnownGoodCache(t *testing.T) {
+	home := t.TempDir()
+	setInstallHome(t, home)
+	cacheDir := filepath.Join(home, ".zsh-pro")
+	if err := os.Mkdir(cacheDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	loader := filepath.Join(cacheDir, "loader.zsh")
+	oldLoader := []byte("known-good loader\n")
+	if err := os.WriteFile(loader, oldLoader, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rc := filepath.Join(home, ".zshrc")
+	oldRC := []byte("export KEEP=1\n")
+	if err := os.WriteFile(rc, oldRC, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	binDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(binDir, "zsh"), []byte("#!/bin/sh\nexec /bin/sleep 6\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+
+	started := time.Now()
+	err := runInstall(zsh.Provider{})
+	if elapsed := time.Since(started); elapsed >= 5500*time.Millisecond {
+		t.Fatalf("validation was not bounded: took %s", elapsed)
+	}
+	if err == nil {
+		t.Fatal("install accepted a timed-out loader validation")
+	}
+	if got, readErr := os.ReadFile(loader); readErr != nil || !bytes.Equal(got, oldLoader) {
+		t.Fatalf("known-good cache changed after timed-out validation: %q, err=%v", got, readErr)
+	}
+	if got, readErr := os.ReadFile(rc); readErr != nil || !bytes.Equal(got, oldRC) {
+		t.Fatalf("zshrc changed after timed-out validation: %q, err=%v", got, readErr)
+	}
+}
+
 func TestInstallPreservesSymlinkAndModesAndWritesSecureCacheFirst(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("ZSHPRO_HOME", "")
+	setInstallHome(t, home)
 	realDir := t.TempDir()
 	realRC := filepath.Join(realDir, "zshrc")
 	if err := os.WriteFile(realRC, []byte("export X=1\n"), 0o600); err != nil {
@@ -254,7 +432,7 @@ func TestInstallPreservesSymlinkAndModesAndWritesSecureCacheFirst(t *testing.T) 
 
 func TestInstallCacheFailureDoesNotTouchZshrc(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setInstallHome(t, home)
 	bad := filepath.Join(home, "not-a-dir")
 	if err := os.WriteFile(bad, []byte("file"), 0o600); err != nil {
 		t.Fatal(err)
