@@ -110,6 +110,111 @@ func TestInstallCreatesAndRefusesUnbalancedMarkersWithoutWriting(t *testing.T) {
 	}
 }
 
+func TestReplaceManagedBlockOnlyRecognizesExactPhysicalMarkerLines(t *testing.T) {
+	replacement := []byte("replacement")
+	appendBlock := func(current string) []byte {
+		return append([]byte(current+"\n"), replacement...)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		input string
+		want  []byte
+	}{
+		{
+			name:  "quoted marker text remains user content",
+			input: "before\nprint -r -- '# >>> zsh-pro >>>'\nordinary-content-must-survive\nprint -r -- '# <<< zsh-pro <<<'\nafter\n",
+			want:  appendBlock("before\nprint -r -- '# >>> zsh-pro >>>'\nordinary-content-must-survive\nprint -r -- '# <<< zsh-pro <<<'\nafter\n"),
+		},
+		{
+			name:  "prefixed marker text remains user content",
+			input: "prefix # >>> zsh-pro >>>\nordinary-content-must-survive\nprefix # <<< zsh-pro <<<\n",
+			want:  appendBlock("prefix # >>> zsh-pro >>>\nordinary-content-must-survive\nprefix # <<< zsh-pro <<<\n"),
+		},
+		{
+			name:  "suffixed marker text remains user content",
+			input: "# >>> zsh-pro >>> # ordinary comment\nordinary-content-must-survive\n# <<< zsh-pro <<< # ordinary comment\n",
+			want:  appendBlock("# >>> zsh-pro >>> # ordinary comment\nordinary-content-must-survive\n# <<< zsh-pro <<< # ordinary comment\n"),
+		},
+		{
+			name:  "CRLF marker lines preserve surrounding CRLF bytes",
+			input: "before\r\n# >>> zsh-pro >>>\r\nold\r\n# <<< zsh-pro <<<\r\nafter\r\n",
+			want:  []byte("before\r\nreplacement\r\nafter\r\n"),
+		},
+		{
+			name:  "no final newline is only changed by append separator",
+			input: "ordinary-content-must-survive",
+			want:  []byte("ordinary-content-must-survive\n\nreplacement"),
+		},
+		{
+			name:  "duplicate real regions collapse while intervening bytes survive",
+			input: "before\n# >>> zsh-pro >>>\nold\n# <<< zsh-pro <<<\nkeep-me\n# >>> zsh-pro >>>\nold-again\n# <<< zsh-pro <<<\nafter\n",
+			want:  []byte("before\nreplacement\nkeep-me\n\nafter\n"),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := replaceManagedBlock([]byte(tc.input), replacement)
+			if err != nil {
+				t.Fatalf("replaceManagedBlock: %v", err)
+			}
+			if !bytes.Equal(got, tc.want) {
+				t.Fatalf("replacement changed unmanaged bytes:\n got: %q\nwant: %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestReplaceManagedBlockRejectsEveryMalformedExactMarkerOrdering(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		input string
+	}{
+		{"begin only", "before\n# >>> zsh-pro >>>\n"},
+		{"end only", "before\n# <<< zsh-pro <<<\n"},
+		{"end before begin", "# <<< zsh-pro <<<\n# >>> zsh-pro >>>\n"},
+		{"nested begins", "# >>> zsh-pro >>>\n# >>> zsh-pro >>>\n# <<< zsh-pro <<<\n"},
+		{"stray end after region", "# >>> zsh-pro >>>\n# <<< zsh-pro <<<\n# <<< zsh-pro <<<\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := replaceManagedBlock([]byte(tc.input), []byte("replacement")); err == nil {
+				t.Fatal("malformed exact marker ordering was accepted")
+			}
+		})
+	}
+}
+
+func TestInstallRefusesMalformedExactMarkerOrderingsWithoutWriting(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		input string
+	}{
+		{"nested begins", "before\n# >>> zsh-pro >>>\n# >>> zsh-pro >>>\n# <<< zsh-pro <<<\nafter\n"},
+		{"stray end after region", "before\n# >>> zsh-pro >>>\n# <<< zsh-pro <<<\n# <<< zsh-pro <<<\nafter\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("ZSHPRO_HOME", "")
+			rc := filepath.Join(home, ".zshrc")
+			before := []byte(tc.input)
+			if err := os.WriteFile(rc, before, 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := runInstall(zsh.Provider{}); err == nil {
+				t.Fatal("install accepted malformed exact marker ordering")
+			}
+			after, err := os.ReadFile(rc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(after, before) {
+				t.Fatalf("malformed input was written:\n got: %q\nwant: %q", after, before)
+			}
+		})
+	}
+}
+
 func TestInstallPreservesSymlinkAndModesAndWritesSecureCacheFirst(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
