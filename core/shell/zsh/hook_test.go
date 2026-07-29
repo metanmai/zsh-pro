@@ -15,7 +15,7 @@ func TestHookScriptIsParseableAndDefinesRuntimeSurface(t *testing.T) {
 			t.Errorf("%s definitions = %d, want 1", name, got)
 		}
 	}
-	for _, surface := range []string{"zp_capture_env()", "zp_restore_env()", "typeset -g ZP_UNSET_SENTINEL"} {
+	for _, surface := range []string{"zp_capture_env()", "zp_restore_env()"} {
 		if !strings.Contains(script, surface) {
 			t.Errorf("loader missing %q", surface)
 		}
@@ -53,6 +53,16 @@ func TestHookScriptRuntimeStagingNeverUsesTMPDIR(t *testing.T) {
 	}
 	if !strings.Contains(script, "_zp_run_bounded") {
 		t.Fatal("loader must expose the shared bounded runtime boundary")
+	}
+}
+
+func TestHookScriptTracksEnvPresenceSeparatelyFromData(t *testing.T) {
+	script := (Provider{}).HookScript()
+	if strings.Contains(script, "ZP_UNSET_SENTINEL") {
+		t.Fatal("loader must not encode an unset original value in a data sentinel")
+	}
+	if !strings.Contains(script, "__ZP_ORIG_${safe}_PRESENT") {
+		t.Fatal("loader must store original environment presence in a separate sanitized slot")
 	}
 }
 

@@ -263,6 +263,53 @@ print -r -- SURVIVED
 	}
 }
 
+func TestLiveTerminalEnvRestorePreservesPresenceAndLegacyMarkerData(t *testing.T) {
+	realZsh, err := exec.LookPath("zsh")
+	if err != nil {
+		t.Skip("zsh not installed")
+	}
+	dir := t.TempDir()
+	loader := writeLiveLoader(t, dir)
+	const body = `
+source "$1"
+legacy='__zsh_pro_unset_7c5a0a15__'
+
+export ZP_LEGACY_VALUE="$legacy"
+zp_capture_env ZP_LEGACY_VALUE
+export ZP_LEGACY_VALUE=applied
+zp_restore_env ZP_LEGACY_VALUE applied
+[[ "${ZP_LEGACY_VALUE+x}" == x && "$ZP_LEGACY_VALUE" == "$legacy" ]] || exit 10
+[[ -z "${__ZP_ORIG_ZP_LEGACY_VALUE+x}" && -z "${__ZP_ORIG_ZP_LEGACY_VALUE_PRESENT+x}" ]] || exit 11
+
+export ZP_EMPTY_VALUE=''
+zp_capture_env ZP_EMPTY_VALUE
+export ZP_EMPTY_VALUE=applied
+zp_restore_env ZP_EMPTY_VALUE applied
+[[ "${ZP_EMPTY_VALUE+x}" == x && -z "$ZP_EMPTY_VALUE" ]] || exit 20
+[[ -z "${__ZP_ORIG_ZP_EMPTY_VALUE+x}" && -z "${__ZP_ORIG_ZP_EMPTY_VALUE_PRESENT+x}" ]] || exit 21
+
+unset ZP_ABSENT_VALUE
+zp_capture_env ZP_ABSENT_VALUE
+export ZP_ABSENT_VALUE=applied
+zp_restore_env ZP_ABSENT_VALUE applied
+[[ -z "${ZP_ABSENT_VALUE+x}" ]] || exit 30
+[[ -z "${__ZP_ORIG_ZP_ABSENT_VALUE+x}" && -z "${__ZP_ORIG_ZP_ABSENT_VALUE_PRESENT+x}" ]] || exit 31
+
+export ZP_DRIFT_VALUE=original
+zp_capture_env ZP_DRIFT_VALUE
+export ZP_DRIFT_VALUE=applied
+export ZP_DRIFT_VALUE=manual
+zp_restore_env ZP_DRIFT_VALUE applied
+[[ "$ZP_DRIFT_VALUE" == manual ]] || exit 40
+[[ -z "${__ZP_ORIG_ZP_DRIFT_VALUE+x}" && -z "${__ZP_ORIG_ZP_DRIFT_VALUE_PRESENT+x}" ]] || exit 41
+`
+	cmd := exec.Command(realZsh, "-f", "-c", body, "zsh-pro-test", loader)
+	cmd.Env = liveEnv(dir, "PATH="+os.Getenv("PATH"))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("environment restoration lost presence or literal data: %v\n%s", err, out)
+	}
+}
+
 func TestLiveTerminalConsumesAllExpectedRuntimeFailures(t *testing.T) {
 	realZsh, err := exec.LookPath("zsh")
 	if err != nil {
