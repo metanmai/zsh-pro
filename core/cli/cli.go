@@ -64,11 +64,17 @@ func (c *CLI) Run(args []string, stdout, stderr io.Writer) int {
 	}
 	switch args[0] {
 	case "--version", "-v":
+		if len(args) != 1 {
+			return noArgumentUsage(stderr, args[0])
+		}
 		_, _ = fmt.Fprintf(stdout, "zsh-pro %s\n", buildinfo.Version)
 		return int(model.ExitClean)
 	case buildinfo.Command:
 		return c.runAnalyze(args[1:], stdout, stderr)
 	case "hook":
+		if len(args) != 1 {
+			return noArgumentUsage(stderr, args[0])
+		}
 		provider, code := c.providerOrFail(stdout, stderr, false)
 		if code != int(model.ExitClean) {
 			return code
@@ -76,10 +82,19 @@ func (c *CLI) Run(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprint(stdout, provider.HookScript())
 		return int(model.ExitClean)
 	case "install":
+		if len(args) != 1 {
+			return noArgumentUsage(stderr, args[0])
+		}
 		return c.runInstall(stdout, stderr)
 	case "list":
+		if len(args) != 1 {
+			return noArgumentUsage(stderr, args[0])
+		}
 		return c.runList(stdout, stderr)
 	case "status":
+		if len(args) != 1 {
+			return noArgumentUsage(stderr, args[0])
+		}
 		return c.runStatus(stdout, stderr)
 	case "emit":
 		return c.runEmit(args[1:], stdout, stderr)
@@ -89,6 +104,14 @@ func (c *CLI) Run(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "zsh-pro: unknown command %q\n", args[0])
 		return int(model.ExitUsageErr)
 	}
+}
+
+// noArgumentUsage reports an invalid invocation for a command that has no
+// positional arguments. It is intentionally called by the dispatcher before
+// command dependencies or filesystem paths are resolved.
+func noArgumentUsage(stderr io.Writer, command string) int {
+	_, _ = fmt.Fprintf(stderr, "usage: zsh-pro %s\n", command)
+	return int(model.ExitUsageErr)
 }
 
 func (c *CLI) runList(stdout, stderr io.Writer) int {

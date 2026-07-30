@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"zsh-pro/core/buildinfo"
+	"zsh-pro/core/model"
 	"zsh-pro/core/shell/zsh"
 )
 
@@ -66,6 +68,176 @@ func setTempWorkingDir(t *testing.T) string {
 	}
 	t.Cleanup(func() { _ = os.Chdir(previous) })
 	return workingDir
+}
+
+// TestBuiltBinaryInstallRejectsTrailingArgumentsWithoutMutation exercises the
+// real composition root. A dispatcher regression here would otherwise create a
+// profile store, cached loader, and managed .zshrc before the installer sees
+// that an accidental trailing argument was supplied.
+func TestBuiltBinaryInstallRejectsTrailingArgumentsWithoutMutation(t *testing.T) {
+	binary := buildZshProBinary(t)
+
+	for _, fixture := range []struct {
+		name        string
+		preexisting bool
+	}{
+		{name: "fresh home"},
+		{name: "preexisting home", preexisting: true},
+	} {
+		for _, trailing := range []string{"--help", "unexpected-argument"} {
+			t.Run(fixture.name+"/"+trailing, func(t *testing.T) {
+				home := installArgumentFixture(t, fixture.preexisting)
+				before := snapshotInstallTree(t, home)
+
+				cmd := exec.Command(binary, "install", trailing)
+				cmd.Env = installBinaryEnv(home)
+				out, err := cmd.CombinedOutput()
+				if err == nil {
+					t.Fatalf("install %q unexpectedly succeeded: %s", trailing, out)
+				}
+				var exitErr *exec.ExitError
+				if !errors.As(err, &exitErr) || exitErr.ExitCode() != int(model.ExitUsageErr) {
+					t.Fatalf("install %q exit = %v, want %d; output: %s", trailing, err, model.ExitUsageErr, out)
+				}
+				if got, want := string(out), "usage: zsh-pro install\n"; got != want {
+					t.Fatalf("install %q output = %q, want %q", trailing, got, want)
+				}
+
+				after := snapshotInstallTree(t, home)
+				if !bytes.Equal(after, before) {
+					t.Fatalf("install %q mutated home despite usage rejection:\n before: %q\n  after: %q", trailing, before, after)
+				}
+				if !fixture.preexisting {
+					for _, path := range []string{
+						filepath.Join(home, ".zshrc"),
+						filepath.Join(home, ".zsh-pro"),
+						filepath.Join(home, ".local", "share", "zsh-pro"),
+					} {
+						if _, statErr := os.Lstat(path); !errors.Is(statErr, os.ErrNotExist) {
+							t.Fatalf("install %q created %s: %v", trailing, path, statErr)
+						}
+					}
+				}
+			})
+		}
+	}
+}
+
+func buildZshProBinary(t *testing.T) string {
+	t.Helper()
+	root := repositoryRoot(t)
+	binary := filepath.Join(t.TempDir(), "zsh-pro")
+	cmd := exec.Command("go", "build", "-o", binary, "./core/cmd/zsh-pro")
+	cmd.Dir = root
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build zsh-pro binary: %v\n%s", err, out)
+	}
+	return binary
+}
+
+func repositoryRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("could not find repository go.mod")
+		}
+		dir = parent
+	}
+}
+
+func installArgumentFixture(t *testing.T, preexisting bool) string {
+	t.Helper()
+	home := t.TempDir()
+	if !preexisting {
+		return home
+	}
+	for _, fixture := range []struct {
+		path string
+		data string
+		mode os.FileMode
+	}{
+		{path: ".zshrc", data: "export KEEP_ZSHRC=1\n", mode: 0o600},
+		{path: ".zsh-pro/loader.zsh", data: "# preserve cached loader\n", mode: 0o600},
+		{path: ".local/share/zsh-pro/profiles/sentinel", data: "preserve profile store bytes\n", mode: 0o640},
+	} {
+		path := filepath.Join(home, fixture.path)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(fixture.data), fixture.mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return home
+}
+
+func installBinaryEnv(home string) []string {
+	removed := map[string]bool{
+		"HOME":          true,
+		"XDG_DATA_HOME": true,
+		"ZDOTDIR":       true,
+		"ZSHPRO_HOME":   true,
+	}
+	env := make([]string, 0, len(os.Environ())+1)
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		if !removed[key] {
+			env = append(env, entry)
+		}
+	}
+	return append(env, "HOME="+home)
+}
+
+func snapshotInstallTree(t *testing.T, root string) []byte {
+	t.Helper()
+	var snapshot bytes.Buffer
+	var walk func(string)
+	walk = func(dir string) {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range entries {
+			path := filepath.Join(dir, entry.Name())
+			rel, err := filepath.Rel(root, path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			info, err := os.Lstat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _ = fmt.Fprintf(&snapshot, "%q mode=%#o\n", rel, info.Mode())
+			switch {
+			case info.Mode().IsDir():
+				walk(path)
+			case info.Mode()&os.ModeSymlink != 0:
+				target, err := os.Readlink(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, _ = fmt.Fprintf(&snapshot, "target=%q\n", target)
+			case info.Mode().IsRegular():
+				data, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, _ = fmt.Fprintf(&snapshot, "bytes=%d\n", len(data))
+				_, _ = snapshot.Write(data)
+				_ = snapshot.WriteByte('\n')
+			}
+		}
+	}
+	walk(root)
+	return snapshot.Bytes()
 }
 
 func TestInstallIdempotentPreservesUserContent(t *testing.T) {

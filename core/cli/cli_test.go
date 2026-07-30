@@ -188,6 +188,39 @@ func TestRunUnknownCommandExitsTwo(t *testing.T) {
 	}
 }
 
+func TestNoArgumentCommandsRejectTrailingArgumentsBeforeDependencies(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{name: "install", args: []string{"install", "--help"}},
+		{name: "hook", args: []string{"hook", "extra"}},
+		{name: "list", args: []string{"list", "extra"}},
+		{name: "status", args: []string{"status", "extra"}},
+		{name: "version long", args: []string{"--version", "extra"}},
+		{name: "version short", args: []string{"-v", "extra"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Nil dependencies make a dispatch-order regression visible: each
+			// malformed invocation must return usage before touching provider or
+			// store seams that would otherwise return a runtime failure.
+			c := New(nil, nil, nil)
+			var out, errBuf bytes.Buffer
+			code := c.Run(tc.args, &out, &errBuf)
+			if code != int(model.ExitUsageErr) {
+				t.Fatalf("code = %d, want usage error; stdout=%q stderr=%q", code, out.String(), errBuf.String())
+			}
+			if out.Len() != 0 {
+				t.Fatalf("malformed invocation wrote stdout: %q", out.String())
+			}
+			wantUsage := "usage: zsh-pro " + tc.args[0] + "\n"
+			if errBuf.String() != wantUsage {
+				t.Fatalf("usage = %q, want %q", errBuf.String(), wantUsage)
+			}
+		})
+	}
+}
+
 func TestRuntimeVerbsUseInjectedSeams(t *testing.T) {
 	var out, errBuf bytes.Buffer
 	c := New(zsh.Provider{}, fakeStore{branches: []string{"main", "dev"}, current: "dev"}, fakeEmitter{text: "export EDITOR=nvim"})
