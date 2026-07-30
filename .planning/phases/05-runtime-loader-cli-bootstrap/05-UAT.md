@@ -1,5 +1,5 @@
 ---
-status: testing
+status: partial
 phase: 05-runtime-loader-cli-bootstrap
 source:
   - 05-01-SUMMARY.md
@@ -13,7 +13,7 @@ source:
   - 05-VERIFICATION.md
   - 05-REVIEW.md
 started: 2026-07-30T20:31:57Z
-updated: 2026-07-30T20:31:57Z
+updated: 2026-07-30T20:46:36Z
 handoff_to: next-agent
 test_count: 21
 ---
@@ -26,13 +26,7 @@ must be rerun against the current commit.
 
 ## Current Test
 
-number: 1
-name: Cold install and sourced-shell lifecycle
-expected: |
-  A freshly built binary installs entirely inside a disposable HOME/ZDOTDIR,
-  defines all five sourced verbs, lists the main profile, activates and
-  deactivates without error, and creates only the expected private artifacts.
-awaiting: next-agent execution
+[testing paused — Test 20 is blocked on the local Hyperfine executable]
 
 ## Next-Agent Operating Instructions
 
@@ -82,13 +76,13 @@ evidence is needed.
 
 ## Execution Environment
 
-commit: [record]
-os_arch: [record]
-go: [record]
-zsh: [record]
-git: [record]
-hyperfine: [record or "locally staged"]
-run_root: [record]
+commit: 1fd9be039dc15357a7a5e39c7b0e944298cc2574
+os_arch: Linux 6.18.33.2-microsoft-standard-WSL2 x86_64
+go: go1.25.0 linux/amd64
+zsh: zsh 5.9 (x86_64-ubuntu-linux-gnu)
+git: git 2.43.0
+hyperfine: not installed on PATH (case 20 blocked)
+run_root: /tmp/tmp.XNxY66PDH7 (preserved with per-case logs)
 
 ## Tests
 
@@ -161,7 +155,8 @@ evidence_to_capture:
 - `find`/`stat` listing rooted at the fixture.
 - Hash of `.zshrc` and cached loader after the second source.
 
-result: [pending]
+result: pass
+evidence: Fresh built binary installed and a native `zsh -f` source exposed all five verbs; lifecycle completed and private store/cache modes were captured in evidence/01.log.
 
 ### 2. Store-root precedence and path validation matrix
 
@@ -220,7 +215,8 @@ evidence_to_capture:
 - Ordinary versus sourced `list` output.
 - Before/after fixture tree for every invalid-path case.
 
-result: [pending]
+result: pass
+evidence: All three named store-root/composition/unsafe-path regressions passed uncached (evidence/02a.log through 02c.log).
 
 ### 3. Installer idempotence, exact markers, and byte preservation
 
@@ -275,7 +271,8 @@ evidence_to_capture:
 - Marker counts and byte-level diff.
 - Exit status and error for each malformed arrangement.
 
-result: [pending]
+result: pass
+evidence: All idempotence, duplicate-marker, malformed-order, and byte-preservation regressions passed uncached (evidence/03.log).
 
 ### 4. Transactional install rollback across every failure stage
 
@@ -332,7 +329,8 @@ evidence_to_capture:
 - Before/after tree manifests, modes, and Git refs.
 - Retry result.
 
-result: [pending]
+result: pass
+evidence: Built-binary promotion/staging/bootstrap rollback and store ownership rollback regressions passed uncached (evidence/04a.log and 04b.log).
 
 ### 5. Cache no-follow policy and `.zshrc` symlink compatibility
 
@@ -388,7 +386,8 @@ evidence_to_capture:
 - Target hashes and modes.
 - Fixture tree and installer diagnostic.
 
-result: [pending]
+result: pass
+evidence: Direct and built-binary cache symlink/replacement plus supported .zshrc symlink regressions passed uncached (evidence/05a.log and 05b.log).
 
 ### 6. Top-level CLI argument contract and mutation-free usage errors
 
@@ -438,7 +437,8 @@ evidence_to_capture:
 - Command/exit/output matrix.
 - Before/after tree hashes for fresh and pre-populated fixtures.
 
-result: [pending]
+result: pass
+evidence: Fresh and populated fixture matrices returned command-specific usage with exit 2 and byte-identical manifests; valid list/status still returned main (evidence/06-manual.log). Dependency-order regression also passed (evidence/06.log).
 
 ### 7. Bootstrap fail-open behavior for disabled, missing, unreadable, and corrupt loader states
 
@@ -491,7 +491,8 @@ evidence_to_capture:
 - Function availability before/after source.
 - Exit status and diagnostics.
 
-result: [pending]
+result: pass
+evidence: Installed-stub disabled/missing/corrupt loader native-zsh regression passed uncached (evidence/07.log).
 
 ### 8. Public sourced-verb arity under restrictive shell options
 
@@ -545,7 +546,8 @@ evidence_to_capture:
 - All option/verb/arity combinations with exit/status/diagnostic.
 - Before/after state snapshots.
 
-result: [pending]
+result: pass
+evidence: Full missing/empty/surplus public-verb arity matrix under restrictive zsh options passed uncached (evidence/08.log).
 
 ### 9. Bounded `list` and truthful `status`
 
@@ -598,7 +600,8 @@ evidence_to_capture:
 - Duration and status for each failure mode.
 - Post-timeout child-process check.
 
-result: [pending]
+result: pass
+evidence: Bounded list/status native-zsh child-process failure matrix passed uncached (evidence/09.log).
 
 ### 10. Complete A-to-B transition and zero-residue deactivation
 
@@ -654,7 +657,8 @@ evidence_to_capture:
 - Encoded before/A/B/after snapshots.
 - Per-category diff and command status.
 
-result: [pending]
+result: pass
+evidence: Real emitter activation/checkout A-to-B transitions and native-zsh zero-residue regression passed uncached (evidence/10a.log and 10b.log).
 
 ### 11. Inherited profile metadata versus terminal-owned activation
 
@@ -705,7 +709,8 @@ evidence_to_capture:
 - Parent/child parameter export flags and values.
 - Proof that marker-absent deactivate did not invoke the binary.
 
-result: [pending]
+result: pass
+evidence: Inherited-profile versus private activation-marker native-zsh regression passed uncached (evidence/11.log).
 
 ### 12. Target preflight failures preserve the active profile
 
@@ -757,7 +762,8 @@ evidence_to_capture:
 - State snapshot after each failure.
 - Runtime status/error and proof of no leaked target functions.
 
-result: [pending]
+result: pass
+evidence: Emitter/empty/syntax/transport/staging target-preflight preservation regressions passed uncached (evidence/12.log).
 
 ### 13. Partial apply, failed compensation, retained recovery, and retry
 
@@ -811,7 +817,8 @@ evidence_to_capture:
 - Apply/compensation/retry status timeline.
 - Marker, pointer, undo-slot, function, and user-state snapshots.
 
-result: [pending]
+result: pass
+evidence: Apply/compensation failure, retained recovery, readonly retry, and partial reverse native-zsh matrix passed uncached (evidence/13.log).
 
 ### 14. Runtime deadlines, child reaping, and cleanup
 
@@ -867,7 +874,8 @@ evidence_to_capture:
 - Process list before/after and runtime-root tree.
 - Status/error and active-state snapshot.
 
-result: [pending]
+result: pass
+evidence: Emitter/validator/list timeout, child cleanup, hostile option, and bounded capture regressions passed uncached (evidence/14a.log and 14b.log).
 
 ### 15. Exact environment presence, export state, drift, and readonly recovery
 
@@ -919,7 +927,8 @@ evidence_to_capture:
 - `${(P)+name}`, quoted value, and export-flag snapshots at each stage.
 - Retry state before/after readonly release.
 
-result: [pending]
+result: pass
+evidence: Exact variable presence/export/drift restoration and readonly retry native-zsh regressions passed uncached (evidence/15.log).
 
 ### 16. Secret resolution, redaction, lifetime, and resolver-loss reversal
 
@@ -980,7 +989,8 @@ evidence_to_capture:
 - Token scan counts without printing the token itself.
 - Resolver-loss deactivation state and function/global inventory.
 
-result: [pending]
+result: pass
+evidence: Secret resolution/failure/scrubbing and resolver-loss retained-reverse native-zsh regressions passed uncached without printing fixture secrets (evidence/16a.log and 16b.log).
 
 ### 17. Generated-function collision resistance and user-function preservation
 
@@ -1032,7 +1042,8 @@ evidence_to_capture:
 - Function body hashes before/after.
 - Generated-function inventory and retained pointer at each stage.
 
-result: [pending]
+result: pass
+evidence: Collision and resolved-secret function-preservation regression passed 10 consecutive uncached iterations (evidence/17.log).
 
 ### 18. Descriptor-bound runtime root and shared-directory replacement resistance
 
@@ -1091,7 +1102,8 @@ evidence_to_capture:
 - Fixture topology/modes before and after.
 - Child invocation count, output identity, and shared-directory inventory.
 
-result: [pending]
+result: pass
+evidence: Private-pipe/descriptor binding, TMPDIR race, unsafe-ancestor, and sticky symlink replacement regressions passed uncached (evidence/18a.log and 18b.log).
 
 ### 19. Store permission migration and supported-platform boundary
 
@@ -1148,7 +1160,8 @@ evidence_to_capture:
 - Mode/owner/repository checks.
 - Cross-build outputs and fallback-test result.
 
-result: [pending]
+result: pass
+evidence: Store migration/unsafe-root and platform-boundary binary regressions passed; Darwin arm64, FreeBSD amd64, and Windows amd64 cross-builds passed (evidence/19a.log through 19e.log).
 
 ### 20. Startup zero-subprocess structure and measured Hyperfine budget
 
@@ -1207,7 +1220,10 @@ evidence_to_capture:
 - Added means and any outlier warnings.
 - Absolute binary path and commit.
 
-result: [pending]
+result: blocked
+blocked_by: third-party
+reason: "hyperfine is not installed on PATH in this environment; the structural zero-subprocess test passed, but the UAT expressly requires a fresh three-run Hyperfine measurement before this case can pass."
+evidence: evidence/20.log
 
 ### 21. Final repository, cross-platform, and artifact consistency gate
 
@@ -1272,7 +1288,8 @@ evidence_to_capture:
 - Review/verification frontmatter and phase-completeness JSON.
 - Final `git status --short` with every remaining path classified.
 
-result: [pending]
+result: pass
+evidence: Uncached full tests, build, vet, make check, and all required cross-builds passed. Review is clean; verification is passed 4/4; GSD phase completeness returned complete=true with 8 plans and 8 summaries (evidence/21-*.log and 21-phase-completeness.json).
 
 ## Traceability
 
@@ -1291,13 +1308,12 @@ result: [pending]
 ## Summary
 
 total: 21
-passed: 0
+passed: 20
 issues: 0
-pending: 21
+pending: 0
 skipped: 0
-blocked: 0
+blocked: 1
 
 ## Gaps
 
 [none yet]
-
