@@ -103,53 +103,40 @@ func TestRuntimeCaptureUsesCompositionStoreAndVaultForEveryLocation(t *testing.T
 	}
 }
 
-func TestBuiltBinaryInstallInitializesAndMigratesProfileStores(t *testing.T) {
+// TestBuiltBinaryInstallMatchesDescriptorRuntimePlatformBoundary proves that the
+// platforms allowed to initialize storage can also serve descriptor-bound
+// runtime list/emission. Platforms without that boundary must reject install
+// before either store or bootstrap state is written.
+func TestBuiltBinaryInstallMatchesDescriptorRuntimePlatformBoundary(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")
 	}
-	if _, err := exec.LookPath("zsh"); err != nil {
-		t.Skip("zsh not installed")
-	}
 	binary := buildInstalledBinary(t)
-
-	locations := []struct {
-		name      string
-		configure func(*testing.T) (string, []string)
-	}{
-		{
-			name: "HOME fallback",
-			configure: func(t *testing.T) (string, []string) {
-				home := t.TempDir()
-				return filepath.Join(home, ".local", "share", "zsh-pro"), installedBinaryEnv(map[string]string{"HOME": home})
-			},
-		},
-		{
-			name: "XDG_DATA_HOME",
-			configure: func(t *testing.T) (string, []string) {
-				home := t.TempDir()
-				dataHome := t.TempDir()
-				return filepath.Join(dataHome, "zsh-pro"), installedBinaryEnv(map[string]string{"HOME": home, "XDG_DATA_HOME": dataHome})
-			},
-		},
-		{
-			name: "explicit ZSHPRO_HOME",
-			configure: func(t *testing.T) (string, []string) {
-				home := t.TempDir()
-				root := filepath.Join(t.TempDir(), "profiles")
-				return root, installedBinaryEnv(map[string]string{"HOME": home, "ZSHPRO_HOME": root})
-			},
-		},
+	supported := runtime.GOOS == "linux" || runtime.GOOS == "darwin"
+	if supported {
+		if _, err := exec.LookPath("zsh"); err != nil {
+			t.Skip("zsh not installed")
+		}
 	}
 
-	for _, location := range locations {
-		t.Run(location.name, func(t *testing.T) {
-			root, env := location.configure(t)
+	for _, route := range builtInstallRoutes() {
+		route := route
+		t.Run(route.name, func(t *testing.T) {
+			state := route.configure(t)
+			root, env := state.storeRoot, state.env
 
 			if out, err := runInstalledBinary(binary, env, "list"); err == nil {
 				t.Fatalf("list before install unexpectedly succeeded: %s", out)
 			}
 			if _, err := os.Lstat(root); !errors.Is(err, os.ErrNotExist) {
 				t.Fatalf("read-only list created profile storage at %s: %v", root, err)
+			}
+			if !supported {
+				if out, err := runInstalledBinary(binary, env, "install"); err == nil {
+					t.Fatalf("unsupported platform install unexpectedly succeeded: %s", out)
+				}
+				assertFreshInstallRouteRestored(t, state)
+				return
 			}
 
 			if out, err := runInstalledBinary(binary, env, "install"); err != nil {
