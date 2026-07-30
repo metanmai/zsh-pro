@@ -1,71 +1,57 @@
 ---
 phase: 05
-fixed_at: 2026-07-29T23:54:39Z
+fixed_at: 2026-07-30T00:42:19Z
 review_path: .planning/phases/05-runtime-loader-cli-bootstrap/05-REVIEW.md
-iteration: 1
-findings_in_scope: 4
-fixed: 4
+iteration: 2
+findings_in_scope: 2
+fixed: 2
 skipped: 0
 status: all_fixed
 ---
 
 # Phase 05: Code Review Fix Report
 
-**Fixed at:** 2026-07-29T23:54:39Z
+**Fixed at:** 2026-07-30T00:42:19Z
 **Source review:** `.planning/phases/05-runtime-loader-cli-bootstrap/05-REVIEW.md`
-**Iteration:** 1
+**Iteration:** 2
 
 **Summary:**
 
-- Findings in scope: 4
-- Fixed: 4
+- Findings in scope: 2
+- Fixed: 2
 - Skipped: 0
 
 ## Fixed Issues
 
-### CR-01: Failed profile switches leave a false active marker and an unrecoverable mixed shell
+### CR-01: Target preflight failures deactivate the known-good current profile
 
 **Status:** fixed: requires human verification
 **Files modified:** `core/shell/zsh/hook.go`, `core/shell/zsh/live_terminal_test.go`
-**Commit:** 1c3f003
-**Applied fix:** Clears lifecycle markers before reversal, retains target-specific cleanup only while active, and consumes a failed target's reverse before returning inactive. Native zsh coverage asserts environment, alias, function, option, PATH, marker, and generated-function cleanup through failed switch, recovery, and deactivation.
+**Commit:** 3c4db78
+**Applied fix:** Splits target validation from evaluation and captures/emits/validates B before clearing A's markers or invoking A's retained reverse. Native zsh regressions keep A's environment, alias, function, option, PATH, both markers, and retained reverse unchanged for a nonzero emitter, empty output, validator rejection, and a real helper staging/capture failure.
 
-### CR-02: Generated runtime helpers collide with user functions and retain resolved secrets
+### CR-02: Symlink-following staging validation leaves the checked root replaceable
 
-**Status:** fixed: requires human verification
-**Files modified:** `core/cli/emitter.go`, `core/cli/emitter_test.go`, `core/shell/provider.go`, `core/shell/zsh/emit.go`, `core/shell/zsh/hook.go`, `core/shell/zsh/hook_test.go`, `core/shell/zsh/invariant_test.go`, `core/shell/zsh/live_terminal_test.go`
-**Commit:** 23159ba
-**Applied fix:** Emits random internal apply/reverse names, rejects collisions before definition, keeps scalar support loader-owned, retains only the active reverse, and scrubs generated functions plus resolved-secret bodies after failure or deactivation. Native zsh tests preserve pre-existing user functions and inspect the live function table for secret retention.
-
-### CR-03: Runtime staging trusts writable ancestors during check-then-reopen
-
-**Status:** fixed: requires human verification
-**Files modified:** `core/shell/zsh/hook.go`, `core/shell/zsh/hook_test.go`, `core/shell/zsh/live_terminal_test.go`
-**Commit:** 708f99b
-**Applied fix:** Validates every lexical runtime-root ancestor with `zsh/stat`, rejects symlinks, untrusted owners, and non-sticky group/other-writable directories, then revalidates after securing the root. The live regression races root and stage replacement beneath a non-sticky `0777` ancestor and verifies emitted source is never evaluated.
-
-### WR-01: A reported install failure can still replace the active cached loader
-
-**Status:** fixed: requires human verification
-**Files modified:** `core/cli/install.go`, `core/cli/install_test.go`
-**Commit:** 22e3c57
-**Applied fix:** Prepares and fsyncs both final-target temporaries plus rollback copies before either rename; on loader or `.zshrc` promotion failure, restores prior targets and cache-directory mode. Tests cover dangling target resolution, a valid marker in an unwritable target directory, and a late post-prepare `.zshrc` promotion failure with loader rollback.
+**Status:** fixed
+**Files modified:** `core/cli/cli.go`, `core/cli/runtime.go`, `core/cli/runtime_openat_darwin.go`, `core/cli/runtime_openat_linux.go`, `core/cli/runtime_root_other.go`, `core/cli/runtime_root_unix.go`, `core/cli/runtime_test.go`, `core/cli/emitter_test.go`, `core/shell/zsh/hook.go`, `core/shell/zsh/hook_test.go`, `core/shell/zsh/live_terminal_test.go`
+**Commit:** cad4d49
+**Applied fix:** Replaces shell pathname staging with a private-pipe runtime helper. The helper walks every root component with descriptor-relative `openat` and `O_NOFOLLOW`, rejects final and intermediate symlinks plus non-sticky writable ancestors, and validates pipe-fed source without reopening a stage file. Native tests use the compiled helper to race an attacker-owned sticky-`/tmp` symlink, assert the emitter and attacker sink never receive the source, and preserve active A; direct tests retain non-sticky ancestor protection.
 
 ## Verification
 
-- `GOTOOLCHAIN=auto go test -count=1 ./core/shell/zsh -run 'TestLiveTerminal(FailedEvalLeavesTruthfulInactiveStateAndRecovers|RetainedSecretReverseSurvivesUnavailableBinary|StagingRejectsNonStickyWritableAncestorReplacement)$'` — passed
-- `GOTOOLCHAIN=auto go test -count=1 ./core/cli -run 'TestRuntimeEmitter(PreservesUserFunctionsAndScrubsResolvedSecrets|FailedSwitchScrubsResolvedSecretPayload|PayloadCollisionLeavesPreexistingFunctionUntouched)$|TestInstall(ZshrcPreparationFailurePreservesKnownGoodCache|RollsBackLoaderWhenPreparedZshrcCannotBePromoted)$'` — passed
+- Native zsh preflight, non-sticky ancestor, shared-TMPDIR, and real sticky-symlink-race regressions — passed
+- Runtime helper unit tests for safe sticky roots, final/intermediate symlinks, non-sticky ancestors, bounded emitters, and pipe validation — passed
+- `GOOS=darwin GOARCH=arm64 GOTOOLCHAIN=auto go test -c -o /tmp/zsh-pro-cli-darwin-test ./core/cli` — passed
 - `GOTOOLCHAIN=auto go test -count=1 ./...` — passed
 - `GOTOOLCHAIN=auto go vet ./...` — passed
 - `make check` — passed
 
 ## Remaining Manual Verification
 
-`hyperfine` is unavailable in this environment, so the source-path performance benchmark remains unverified.
+`hyperfine` remains unavailable in this environment, so the existing interactive startup benchmark is still a manual/CI verification item; it is unrelated to these two fixes.
 
 ---
 
-_Fixed: 2026-07-29T23:54:39Z_
+_Fixed: 2026-07-30T00:42:19Z_
 _Fixer: the agent (gsd-code-fixer)_
-_Iteration: 1_
-
+_Iteration: 2_
