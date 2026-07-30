@@ -479,12 +479,12 @@ _zp_switch() {
 }
 
 activate() {
-	local name="${1-}"
+	if (( $# != 1 )); then
+		_zp_runtime_error 2 "usage: activate <profile>"
+		return 0
+	fi
+	local name="$1"
 	{
-		if [[ -z "$name" ]]; then
-			_zp_runtime_error 2 "usage: activate <profile>"
-			return 0
-		fi
 		if _zp_switch "$name"; then _zp_runtime_ok; fi
 		return 0
 	} always {
@@ -493,20 +493,24 @@ activate() {
 }
 
 checkout() {
-  local name="${1-}"
-  {
-    if [[ -z "$name" ]]; then
-      _zp_runtime_error 2 "usage: checkout <profile>"
-      return 0
-    fi
-    if _zp_switch "$name"; then _zp_runtime_ok; fi
-    return 0
-  } always {
+	if (( $# != 1 )); then
+		_zp_runtime_error 2 "usage: checkout <profile>"
+		return 0
+	fi
+	local name="$1"
+	{
+		if _zp_switch "$name"; then _zp_runtime_ok; fi
+		return 0
+	} always {
     unset REPLY
   }
 }
 
 deactivate() {
+	if (( $# != 0 )); then
+		_zp_runtime_error 2 "usage: deactivate"
+		return 0
+	fi
 	local rc=1
 	{
 		if [[ "${ZP_RECOVERY_REVERSE_FN+x}" == x ]]; then
@@ -526,7 +530,11 @@ deactivate() {
 }
 
 list() {
-  local rc timeout="${ZP_RUNTIME_TIMEOUT_SECONDS:-5}" listing=''
+	if (( $# != 0 )); then
+		_zp_runtime_error 2 "usage: list"
+		return 0
+	fi
+	local rc timeout="${ZP_RUNTIME_TIMEOUT_SECONDS:-5}" listing=''
   {
     if _zp_run_bounded "$timeout" listing zsh-pro list; then
       print -rn -- "$listing"
@@ -547,7 +555,11 @@ list() {
 }
 
 status() {
-  if [[ "${ZP_ACTIVE_PROFILE+x}" == x ]]; then
+	if (( $# != 0 )); then
+		_zp_runtime_error 2 "usage: status"
+		return 0
+	fi
+	if [[ "${ZP_ACTIVE_PROFILE+x}" == x ]]; then
     print -r -- "$ZP_ACTIVE_PROFILE"
   else
     print -r -- main

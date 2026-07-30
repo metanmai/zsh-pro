@@ -637,6 +637,116 @@ done
 	}
 }
 
+// TestLiveTerminalPublicVerbArityFailsOpenBeforeRuntimeWork covers every
+// public sourced verb at its boundary. Invalid calls must never emit, capture,
+// reverse, or clear retained profile state, even when caller shell options make
+// ordinary nonzero returns fatal.
+func TestLiveTerminalPublicVerbArityFailsOpenBeforeRuntimeWork(t *testing.T) {
+	realZsh, err := exec.LookPath("zsh")
+	if err != nil {
+		t.Skip("zsh not installed")
+	}
+
+	for _, tc := range []struct {
+		name       string
+		invocation string
+		usage      string
+	}{
+		{name: "activate missing", invocation: "activate", usage: "usage: activate <profile>"},
+		{name: "activate surplus", invocation: "activate target accidental", usage: "usage: activate <profile>"},
+		{name: "checkout missing", invocation: "checkout", usage: "usage: checkout <profile>"},
+		{name: "checkout surplus", invocation: "checkout target accidental", usage: "usage: checkout <profile>"},
+		{name: "deactivate surplus", invocation: "deactivate accidental", usage: "usage: deactivate"},
+		{name: "list surplus", invocation: "list accidental", usage: "usage: list"},
+		{name: "status surplus", invocation: "status accidental", usage: "usage: status"},
+	} {
+		for _, option := range []struct {
+			name  string
+			setup string
+		}{
+			{name: "normal"},
+			{name: "NO_UNSET", setup: "setopt NO_UNSET"},
+			{name: "ERR_EXIT", setup: "setopt ERR_EXIT"},
+			{name: "ERR_RETURN", setup: "setopt ERR_RETURN"},
+			{name: "NO_UNSET_ERR_EXIT", setup: "setopt NO_UNSET ERR_EXIT"},
+			{name: "NO_UNSET_ERR_RETURN", setup: "setopt NO_UNSET ERR_RETURN"},
+		} {
+			t.Run(tc.name+"/"+option.name, func(t *testing.T) {
+				dir := t.TempDir()
+				loader := writeLiveLoader(t, dir)
+				emitSeen := filepath.Join(dir, "arity-emit-seen")
+				reverseSeen := filepath.Join(dir, "arity-reverse-seen")
+				writeLiveExecutable(t, filepath.Join(dir, "zsh-pro"), `#!/bin/sh
+case "$1:$2:$3" in
+  emit:apply:*)
+    : > "$ZP_ARGUMENT_EMIT_SEEN"
+    printf '%s\n' \
+      '__zp_argument_target_reverse() { unset ZP_ARGUMENT_TARGET; }' \
+      '__zp_argument_target_apply() { export ZP_ARGUMENT_TARGET=changed; }' \
+      '_zp_run_payload __zp_argument_target_apply __zp_argument_target_reverse'
+    ;;
+  list)
+    : > "$ZP_ARGUMENT_EMIT_SEEN"
+    printf '%s\n' main target
+    ;;
+  *) exit 64 ;;
+esac
+`)
+
+				body := `
+source "$1"
+typeset -g +x ZP_ACTIVE_PROFILE=keep
+export ZSHPRO_PROFILE=keep
+typeset -g ZP_LAST_GOOD_PROFILE=keep
+typeset -g ZP_BASE_PATH="$PATH"
+typeset -g ZP_ARGUMENT_SECRET=phase5-arity-secret
+typeset -g ZP_RUNTIME_TIMED_OUT=1
+typeset -g REPLY=phase5-arity-reply
+__zp_argument_reverse() {
+  print -r -- invoked > "$ZP_ARGUMENT_REVERSE_SEEN"
+  unset ZP_ARGUMENT_SECRET
+}
+typeset -g ZP_ACTIVE_REVERSE_FN=__zp_argument_reverse
+active_reverse_body="${functions[$ZP_ACTIVE_REVERSE_FN]}"
+` + option.setup + `
+` + tc.invocation + `
+call_rc=$?
+print -r -- SURVIVED
+[[ "$call_rc" -eq 0 ]] || exit 10
+[[ "$ZP_LAST_RUNTIME_STATUS" -eq 2 ]] || exit 11
+[[ "$ZP_LAST_RUNTIME_ERROR" == "` + tc.usage + `" ]] || exit 12
+[[ "$ZP_ACTIVE_PROFILE" == keep && "$ZSHPRO_PROFILE" == keep ]] || exit 13
+[[ "$ZP_LAST_GOOD_PROFILE" == keep && "$ZP_BASE_PATH" == "$PATH" ]] || exit 14
+[[ "$ZP_ACTIVE_REVERSE_FN" == __zp_argument_reverse ]] || exit 15
+[[ ${+functions[$ZP_ACTIVE_REVERSE_FN]} == 1 && "${functions[$ZP_ACTIVE_REVERSE_FN]}" == "$active_reverse_body" ]] || exit 16
+[[ "$ZP_ARGUMENT_SECRET" == phase5-arity-secret && -z "${ZP_ARGUMENT_TARGET+x}" ]] || exit 17
+[[ "$REPLY" == phase5-arity-reply && "$ZP_RUNTIME_TIMED_OUT" -eq 1 ]] || exit 18
+[[ ! -e "$ZP_ARGUMENT_EMIT_SEEN" && ! -e "$ZP_ARGUMENT_REVERSE_SEEN" ]] || exit 19
+`
+				cmd := exec.Command(realZsh, "-f", "-c", body, "zsh-pro-arity-test", loader)
+				cmd.Env = liveEnv(dir,
+					"PATH="+dir+":"+os.Getenv("PATH"),
+					"ZP_ARGUMENT_EMIT_SEEN="+emitSeen,
+					"ZP_ARGUMENT_REVERSE_SEEN="+reverseSeen,
+				)
+				out, err := cmd.CombinedOutput()
+				if err != nil {
+					t.Fatalf("%s under %s escaped its fail-open boundary: %v\n%s", tc.name, option.name, err, out)
+				}
+				wantOutput := "zsh-pro: " + tc.usage + "\nSURVIVED\n"
+				if got := string(out); got != wantOutput {
+					t.Fatalf("%s under %s output = %q, want %q", tc.name, option.name, got, wantOutput)
+				}
+				for _, path := range []string{emitSeen, reverseSeen} {
+					if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+						t.Fatalf("%s under %s mutated runtime state through %s: %v", tc.name, option.name, path, statErr)
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestLiveTerminalListUsesBoundedFailOpenBoundary(t *testing.T) {
 	realZsh, err := exec.LookPath("zsh")
 	if err != nil {
