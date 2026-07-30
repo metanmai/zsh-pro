@@ -192,6 +192,100 @@ alias zp_a_alias >/dev/null 2>&1 && exit 49
 	}
 }
 
+func TestLiveTerminalTargetPreflightFailuresPreserveActiveProfile(t *testing.T) {
+	realZsh, err := exec.LookPath("zsh")
+	if err != nil {
+		t.Skip("zsh not installed")
+	}
+
+	for _, tc := range []struct {
+		name           string
+		failure        string
+		badRuntimeRoot bool
+	}{
+		{name: "emitter nonzero", failure: "nonzero"},
+		{name: "emitter empty output", failure: "empty"},
+		{name: "validator rejection", failure: "invalid"},
+		{name: "staging failure", failure: "valid", badRuntimeRoot: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			loader := writeLiveLoader(t, dir)
+			shim := filepath.Join(dir, "zsh-pro")
+			const shimSource = `#!/bin/sh
+case "$1:$2:$3" in
+  emit:apply:B)
+    case "$ZP_PREFLIGHT_FAILURE" in
+      nonzero) exit 7 ;;
+      empty) exit 0 ;;
+      invalid) printf '%s\n' 'if then' ;;
+      valid) printf '%s\n' '__zp_deactivate_B() { unset ZP_B_ENV; }' '__zp_apply_B() { export ZP_B_ENV=1; }' '_zp_run_payload __zp_apply_B __zp_deactivate_B' ;;
+      *) exit 64 ;;
+    esac
+    ;;
+  *) exit 64 ;;
+esac
+`
+			if err := os.WriteFile(shim, []byte(shimSource), 0o700); err != nil {
+				t.Fatal(err)
+			}
+
+			runtimeRoot := liveRuntimeDir(dir)
+			if tc.badRuntimeRoot {
+				runtimeRoot = filepath.Join(dir, "not-a-runtime-directory")
+				if err := os.WriteFile(runtimeRoot, []byte("not a directory"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			const body = `
+source "$1"
+unsetopt extendedglob
+typeset -g ZP_BASE_PATH="$PATH"
+__zp_reverse_A() {
+  unset ZP_A_ENV
+  unalias zp_a_alias 2>/dev/null
+  unset -f zp_a_function
+  unsetopt extendedglob
+  path=(${(@s/:/)ZP_BASE_PATH})
+}
+__zp_apply_A() {
+  export ZP_A_ENV=present
+  alias zp_a_alias='print -r -- A'
+  functions[zp_a_function]='print -r -- A'
+  setopt extendedglob
+  path=(/zp-a/bin $path)
+}
+_zp_run_payload __zp_apply_A __zp_reverse_A || exit 10
+typeset -g +x ZP_ACTIVE_PROFILE=A
+export ZSHPRO_PROFILE=A
+before_path="$PATH"
+before_reverse="$ZP_ACTIVE_REVERSE_FN"
+before_reverse_body="${functions[$before_reverse]}"
+before_function_body="${functions[zp_a_function]}"
+
+activate B
+[[ "$ZP_LAST_RUNTIME_STATUS" -ne 0 ]] || exit 20
+[[ "$ZP_LAST_RUNTIME_ERROR" == *'shell state unchanged'* ]] || exit 21
+[[ "$ZP_A_ENV" == present && -z "${ZP_B_ENV+x}" ]] || exit 22
+alias zp_a_alias >/dev/null || exit 23
+[[ "${functions[zp_a_function]}" == "$before_function_body" ]] || exit 24
+[[ -o extendedglob && "$PATH" == "$before_path" ]] || exit 25
+[[ "$ZP_ACTIVE_PROFILE" == A && "$ZSHPRO_PROFILE" == A ]] || exit 26
+[[ "$ZP_ACTIVE_REVERSE_FN" == "$before_reverse" ]] || exit 27
+[[ ${+functions[$before_reverse]} == 1 && "${functions[$before_reverse]}" == "$before_reverse_body" ]] || exit 28
+`
+			cmd := exec.Command(realZsh, "-f", "-c", body, "zsh-pro-preflight-test", loader)
+			cmd.Env = liveEnvAt(runtimeRoot,
+				"PATH="+dir+":"+os.Getenv("PATH"),
+				"ZP_PREFLIGHT_FAILURE="+tc.failure,
+			)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("target preflight changed active A: %v\n%s", err, out)
+			}
+		})
+	}
+}
+
 func TestLiveTerminalRetainedSecretReverseSurvivesUnavailableBinary(t *testing.T) {
 	realZsh, err := exec.LookPath("zsh")
 	if err != nil {
@@ -834,8 +928,13 @@ while [[ ! -e "$ZP_ATTACKER_SEEN" && attempts -lt 100 ]]; do
   command sleep 0.01
   (( attempts += 1 ))
 done
-_zp_eval_block $'export ZP_SECRET_LIKE="emitted-secret-like-payload"\n:'
+source_block=$'export ZP_SECRET_LIKE="emitted-secret-like-payload"\n:'
+_zp_validate_block "$source_block"
 eval_rc=$?
+if (( eval_rc == 0 )); then
+  _zp_eval_block "$source_block"
+  eval_rc=$?
+fi
 : > "$ZP_ATTACKER_STOP"
 if wait "$attacker_pid"; then :; else :; fi
 restore_root

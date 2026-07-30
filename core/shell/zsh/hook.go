@@ -286,9 +286,9 @@ _zp_emit() {
   return 0
 }
 
-_zp_eval_block() {
+_zp_validate_block() {
   local block="$1" tmp='' rc=0 validator_rc=1 timeout="${ZP_RUNTIME_TIMEOUT_SECONDS:-5}"
-  local history_pushed=0 xtrace_was_on=0
+  local xtrace_was_on=0
   if [[ -z "$block" ]]; then
     _zp_runtime_error 1 "emitted empty shell source; shell state unchanged"
     return 1
@@ -323,6 +323,32 @@ _zp_eval_block() {
         rc=1
       fi
     fi
+  } always {
+    if [[ -n "$tmp" ]]; then
+      _zp_cleanup_private_temp "$tmp"
+    fi
+    if (( xtrace_was_on )); then
+      if setopt XTRACE 2>/dev/null; then :; fi
+    else
+      if setopt NOXTRACE 2>/dev/null; then :; fi
+    fi
+  }
+  return "$rc"
+}
+
+_zp_eval_block() {
+  local block="$1" rc=0 history_pushed=0 xtrace_was_on=0
+  if [[ -z "$block" ]]; then
+    _zp_runtime_error 1 "emitted empty shell source; shell state unchanged"
+    return 1
+  fi
+
+  {
+    if [[ -o xtrace ]]; then xtrace_was_on=1; fi
+    if setopt NOXTRACE 2>/dev/null; then :; else
+      _zp_runtime_error 1 "unable to protect emitted source from xtrace; shell state unchanged"
+      rc=1
+    fi
     if (( rc == 0 )); then
       if fc -p 2>/dev/null; then history_pushed=1; else
         _zp_runtime_error 1 "unable to protect shell history during switch; shell state unchanged"
@@ -336,9 +362,6 @@ _zp_eval_block() {
       fi
     fi
   } always {
-    if [[ -n "$tmp" ]]; then
-      _zp_cleanup_private_temp "$tmp"
-    fi
     if (( history_pushed )); then
       if fc -P 2>/dev/null; then :; fi
     fi
@@ -414,13 +437,32 @@ _zp_reverse_active_profile() {
 }
 
 _zp_switch() {
-  local name="$1" block
+  local name="$1" block active=0
   if _zp_has_known_active_profile "$name"; then
     if export ZSHPRO_PROFILE="$name"; then return 0; fi
     _zp_runtime_error 1 "unable to record active profile"
     return 1
   fi
   if [[ "${ZP_ACTIVE_PROFILE+x}" == x ]]; then
+    active=1
+    # Every successfully applied profile captures this before its apply
+    # payload runs. Refuse an inconsistent active state before preflight so a
+    # later transition can never consume A and then discover it cannot record
+    # its base PATH.
+    if [[ "${ZP_BASE_PATH+x}" != x ]]; then
+      _zp_runtime_error 1 "active profile state is incomplete; shell state unchanged"
+      return 1
+    fi
+  fi
+
+  # Target-side work is a pure preflight while the current profile is still
+  # intact. In particular, do not clear A's markers or consume its retained
+  # reverse until B was emitted, privately staged, and syntax-validated.
+  if ! _zp_emit apply "$name"; then return 1; fi
+  block="$REPLY"
+  if ! _zp_validate_block "$block"; then return 1; fi
+
+  if (( active )); then
     if ! _zp_reverse_active_profile; then return 1; fi
   elif [[ -n "${ZP_ACTIVE_REVERSE_FN-}" ]]; then
     # A stale retained reverse is not an active profile marker. Consume it
@@ -432,10 +474,6 @@ _zp_switch() {
     fi
   fi
   if ! _zp_prepare_eval_state; then return 1; fi
-  # The apply emitter returns the requested target only. The old target has
-  # already been reversed while the loader marker was deliberately inactive.
-  if ! _zp_emit apply "$name"; then return 1; fi
-  block="$REPLY"
   if ! _zp_eval_block "$block"; then return 1; fi
   if ! typeset -g +x ZP_ACTIVE_PROFILE="$name"; then
     _zp_runtime_error 1 "unable to record active profile"
