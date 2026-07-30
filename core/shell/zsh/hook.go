@@ -99,104 +99,12 @@ _zp_runtime_ok() {
   return 0
 }
 
-# _zp_private_chain_safe validates every lexical ancestor before runtime
-# staging reopens a path beneath it. A root-owned sticky directory such as
-# /tmp is safe for a victim-owned child; a non-sticky group/other-writable
-# ancestor is not, because another account can swap the root or its staging
-# directory between validation, write, validation, and read.
-_zp_private_chain_safe() {
-  local root="$1" require_private_root="${2:-0}" current="$1"
-  local -a owners modes
-  zmodload -F zsh/stat b:zstat 2>/dev/null || return 1
-  while :; do
-    owners=()
-    modes=()
-    zstat -L -A owners +uid -- "$current" 2>/dev/null || return 1
-    zstat -L -A modes +mode -- "$current" 2>/dev/null || return 1
-    (( ${#owners} == 1 && ${#modes} == 1 )) || return 1
-    # zstat mode values are decimal. zsh requires an explicit 8# prefix for
-    # octal arithmetic literals, rather than C-style leading-zero literals.
-    (( (modes[1] & 8#170000) == 8#40000 )) || return 1
-    if [[ "$current" == "$root" ]]; then
-      (( owners[1] == EUID )) || return 1
-      if (( require_private_root )) && (( (modes[1] & 8#77) != 0 )); then return 1; fi
-    else
-      (( owners[1] == EUID || owners[1] == 0 )) || return 1
-      if (( (modes[1] & 8#22) != 0 && (modes[1] & 8#1000) == 0 )); then return 1; fi
-    fi
-    [[ "$current" == / ]] && break
-    current="${current:h}"
-  done
-  return 0
-}
-
-# _zp_private_root resolves the installer-managed cache only when it is an
-# absolute owner-controlled directory beneath a non-swappable ancestor chain.
-# Explicit runtime verbs may repair an owner-owned mode, but sourcing this
-# loader never touches the filesystem.
-_zp_private_root() {
-  local root=''
-  if [[ "${ZSHPRO_HOME+x}" == x ]]; then
-    [[ -n "$ZSHPRO_HOME" ]] || return 1
-    root="$ZSHPRO_HOME"
-  else
-    [[ -n "${HOME-}" ]] || return 1
-    root="$HOME/.zsh-pro"
-  fi
-  [[ "$root" == /* ]] || return 1
-  _zp_private_chain_safe "$root" || return 1
-  if command chmod 700 -- "$root" >/dev/null 2>&1; then :; else return 1; fi
-  _zp_private_chain_safe "$root" 1 || return 1
-  REPLY="$root"
-  return 0
-}
-
-# _zp_private_temp creates one owner-controlled mode-0700 child for a single
-# staging file. The child is removed with the file, so later command output or
-# emitted source is never reopened through an untrusted directory.
-_zp_private_temp() {
-  local stem="$1" root='' stage='' candidate='' attempt=0
-  stem="${stem//[^A-Za-z0-9_-]/_}"
-  [[ -n "$stem" ]] || stem=zsh-pro-runtime
-  if ! _zp_private_root; then return 1; fi
-  root="$REPLY"
-  while (( attempt < 32 )); do
-    stage="$root/.runtime-${$}-${RANDOM}"
-    if ( umask 077; command mkdir -m 700 -- "$stage" ) 2>/dev/null; then
-      candidate="$stage/$stem"
-      if ( umask 077; set -C; : > "$candidate" ) 2>/dev/null &&
-        [[ -f "$candidate" && ! -L "$candidate" && -O "$candidate" ]] &&
-        command chmod 600 -- "$candidate" >/dev/null 2>&1; then
-        REPLY="$candidate"
-        return 0
-      fi
-      if command rm -f -- "$candidate" >/dev/null 2>&1; then :; fi
-      if command rmdir -- "$stage" >/dev/null 2>&1; then :; fi
-    fi
-    (( attempt += 1 ))
-  done
-  return 1
-}
-
-_zp_cleanup_private_temp() {
-  local tmp="$1" stage=''
-  [[ -n "$tmp" ]] || return 0
-  stage="${tmp:h}"
-  if [[ -e "$tmp" || -L "$tmp" ]]; then
-    if command rm -f -- "$tmp" >/dev/null 2>&1; then :; fi
-  fi
-  if [[ -d "$stage" && ! -L "$stage" && -O "$stage" ]]; then
-    if command rmdir -- "$stage" >/dev/null 2>&1; then :; fi
-  fi
-  return 0
-}
-
-# _zp_run_bounded captures a command's stdout while a paired watchdog owns its
-# finite deadline. It always reaps the command and watchdog and removes its
-# private capture file. The caller owns the user-facing diagnostic because it
-# knows whether the command was an emitter or a syntax validator.
+# _zp_run_bounded delegates command capture to the binary helper. The helper
+# keeps stdout on process-owned pipes and, before an emit, traverses the
+# configured runtime root by descriptor with O_NOFOLLOW. This loader therefore
+# never creates, reads, writes, chmods, or reopens a staging pathname itself.
 _zp_run_bounded() {
-  local timeout="$1" output='' child='' watchdog='' child_rc=1 watchdog_rc=0 result=1
+  local timeout="$1" code='' rc=1
   shift
   case "$timeout" in
     [1-9]|[1-9][0-9]) ;;
@@ -204,65 +112,19 @@ _zp_run_bounded() {
   esac
   REPLY=''
   if typeset -g ZP_RUNTIME_TIMED_OUT=0; then :; fi
-
-  {
-    if ! _zp_private_temp zsh-pro-run; then
-      result=1
-    else
-      output="$REPLY"
-      ( exec "$@" > "$output" ) &
-      child="$!"
-      (
-        local timer=''
-        trap 'if [[ -n "$timer" ]]; then command kill -TERM "$timer" 2>/dev/null || :; if wait "$timer"; then :; else :; fi; fi; exit 0' TERM
-        command sleep "$timeout" &
-        timer="$!"
-        if ! wait "$timer"; then exit 0; fi
-        if command kill -0 "$child" 2>/dev/null; then
-          command kill -TERM "$child" 2>/dev/null || :
-          command kill -KILL "$child" 2>/dev/null || :
-          exit 124
-        fi
-        exit 0
-      ) &
-      watchdog="$!"
-
-      if wait "$child"; then child_rc=0; else child_rc=$?; fi
-      child=''
-      if command kill -0 "$watchdog" 2>/dev/null; then
-        command kill -TERM "$watchdog" 2>/dev/null || :
-      fi
-      if wait "$watchdog"; then watchdog_rc=0; else watchdog_rc=$?; fi
-      watchdog=''
-
-      if [[ -r "$output" ]]; then
-        REPLY="$(<"$output"; print -rn -- $'\001')"
-        REPLY="${REPLY%$'\001'}"
-      else
-        REPLY=''
-      fi
-      if (( watchdog_rc == 124 )); then
-        if typeset -g ZP_RUNTIME_TIMED_OUT=1; then :; fi
-        result=124
-      else
-        result="$child_rc"
-      fi
-    fi
-  } always {
-    if [[ -n "$watchdog" ]]; then
-      if command kill -TERM "$watchdog" 2>/dev/null; then :; fi
-      if wait "$watchdog"; then :; else :; fi
-    fi
-    if [[ -n "$child" ]]; then
-      if command kill -TERM "$child" 2>/dev/null; then :; fi
-      if command kill -KILL "$child" 2>/dev/null; then :; fi
-      if wait "$child"; then :; else :; fi
-    fi
-    if [[ -n "$output" ]]; then
-      _zp_cleanup_private_temp "$output"
-    fi
-  }
-  return "$result"
+  if code="$(zsh-pro runtime capture "$timeout" -- "$@")"; then
+    REPLY="$code"
+    # Command substitution removes terminal newlines. Emit blocks remain
+    # parseable without one; list retains its ordinary line-oriented output.
+    [[ -z "$code" ]] || REPLY+=$'\n'
+    return 0
+  else
+    rc=$?
+  fi
+  if (( rc == 124 )); then
+    if typeset -g ZP_RUNTIME_TIMED_OUT=1; then :; fi
+  fi
+  return "$rc"
 }
 
 _zp_emit() {
@@ -287,7 +149,7 @@ _zp_emit() {
 }
 
 _zp_validate_block() {
-  local block="$1" tmp='' rc=0 validator_rc=1 timeout="${ZP_RUNTIME_TIMEOUT_SECONDS:-5}"
+  local block="$1" rc=0 validator_rc=1 timeout="${ZP_RUNTIME_TIMEOUT_SECONDS:-5}"
   local xtrace_was_on=0
   if [[ -z "$block" ]]; then
     _zp_runtime_error 1 "emitted empty shell source; shell state unchanged"
@@ -301,21 +163,13 @@ _zp_validate_block() {
       rc=1
     fi
     if (( rc == 0 )); then
-      if _zp_private_temp zsh-pro-eval; then tmp="$REPLY"; else
-        _zp_runtime_error 1 "unable to stage emitted shell source; shell state unchanged"
-        rc=1
-      fi
-    fi
-    if (( rc == 0 )); then
-      if ( umask 077; print -rn -- "$block" > "$tmp" ); then :; else
-        _zp_runtime_error 1 "unable to stage emitted shell source; shell state unchanged"
-        rc=1
-      fi
-    fi
-    if (( rc == 0 )); then
-      if _zp_run_bounded "$timeout" zsh -n "$tmp"; then :; else
+      # The validator receives the exact in-memory payload via stdin. It does
+      # not reopen a file below ZSHPRO_HOME, so a root replacement after the
+      # helper's descriptor check cannot substitute or disclose source.
+      if print -rn -- "$block" | zsh-pro runtime validate "$timeout"; then :; else
         validator_rc=$?
-        if (( ZP_RUNTIME_TIMED_OUT )); then
+        if (( validator_rc == 124 )); then
+          if typeset -g ZP_RUNTIME_TIMED_OUT=1; then :; fi
           _zp_runtime_error "$validator_rc" "emitted shell source validation timed out after ${timeout}s; shell state unchanged"
         else
           _zp_runtime_error "$validator_rc" "emitted shell source failed validation; shell state unchanged"
@@ -324,9 +178,6 @@ _zp_validate_block() {
       fi
     fi
   } always {
-    if [[ -n "$tmp" ]]; then
-      _zp_cleanup_private_temp "$tmp"
-    fi
     if (( xtrace_was_on )); then
       if setopt XTRACE 2>/dev/null; then :; fi
     else
@@ -457,7 +308,8 @@ _zp_switch() {
 
   # Target-side work is a pure preflight while the current profile is still
   # intact. In particular, do not clear A's markers or consume its retained
-  # reverse until B was emitted, privately staged, and syntax-validated.
+  # reverse until B was captured through the helper's private pipe and
+  # syntax-validated.
   if ! _zp_emit apply "$name"; then return 1; fi
   block="$REPLY"
   if ! _zp_validate_block "$block"; then return 1; fi

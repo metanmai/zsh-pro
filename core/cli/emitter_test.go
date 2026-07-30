@@ -403,11 +403,10 @@ __zp_apply_bad() { export ZP_FAILED_TARGET=1; return 9; }
 _zp_run_payload __zp_apply_bad __zp_deactivate_bad
 `)
 	shim := filepath.Join(dir, "zsh-pro")
-	if err := os.WriteFile(shim, []byte("#!/bin/sh\ncase \"$1:$2:$3\" in\nemit:apply:B) cat \"$ZP_APPLY_B\" ;;\n*) exit 64 ;;\nesac\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	writeEmitterRuntimeShim(t, shim, "#!/bin/sh\ncase \"$1:$2:$3\" in\nemit:apply:B) cat \"$ZP_APPLY_B\" ;;\n*) exit 64 ;;\nesac\n")
 	body := `
 source "$1"
+typeset -g ZP_BASE_PATH="$PATH"
 source "$2"
 typeset -g +x ZP_ACTIVE_PROFILE=secret
 export ZSHPRO_PROFILE=secret
@@ -506,9 +505,7 @@ case "$1:$2:$3" in
   *) exit 64 ;;
 esac
 `
-	if err := os.WriteFile(shim, []byte(shimSource), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	writeEmitterRuntimeShim(t, shim, shimSource)
 	validatorLog := filepath.Join(dir, "validator.log")
 	validator := filepath.Join(dir, "zsh")
 	validatorSource := "#!/bin/sh\nprintf . >> \"$ZP_VALIDATOR_LOG\"\nexec \"$ZP_REAL_ZSH\" \"$@\"\n"
@@ -647,6 +644,53 @@ func writeTransitionSource(t *testing.T, dir, name, source string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func writeEmitterRuntimeShim(t *testing.T, path, source string) {
+	t.Helper()
+	wrapped := `#!/bin/sh
+run_bounded() {
+  runtime_timeout="$1"
+  shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$runtime_timeout" "$@"
+    return $?
+  fi
+  "$@" &
+  runtime_child=$!
+  (
+    sleep "$runtime_timeout"
+    if kill -0 "$runtime_child" 2>/dev/null; then
+      kill -TERM "$runtime_child" 2>/dev/null || :
+      exit 124
+    fi
+  ) &
+  runtime_watchdog=$!
+  wait "$runtime_child"
+  runtime_child_rc=$?
+  if kill -0 "$runtime_watchdog" 2>/dev/null; then
+    kill -TERM "$runtime_watchdog" 2>/dev/null || :
+  fi
+  wait "$runtime_watchdog"
+  runtime_watchdog_rc=$?
+  if [ "$runtime_watchdog_rc" -eq 124 ]; then return 124; fi
+  return "$runtime_child_rc"
+}
+if [ "$1" = runtime ] && [ "$2" = capture ]; then
+  timeout="$3"
+  shift 4
+  run_bounded "$timeout" "$@"
+  exit $?
+fi
+if [ "$1" = runtime ] && [ "$2" = validate ]; then
+  timeout="$3"
+  run_bounded "$timeout" zsh -n
+  exit $?
+fi
+` + source
+	if err := os.WriteFile(path, []byte(wrapped), 0o700); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func transitionEnv(overrides ...string) []string {

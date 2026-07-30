@@ -26,9 +26,7 @@ case "$1:$2:$3" in
   *) exit 64 ;;
 esac
 `
-	if err := os.WriteFile(shim, []byte(shimSource), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	writeLiveExecutable(t, shim, shimSource)
 	const body = `
 source "$1"
 before_path_count=$#path
@@ -77,9 +75,7 @@ case "$1:$2:$3" in
   *) exit 64 ;;
 esac
 `
-	if err := os.WriteFile(shim, []byte(shimSource), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	writeLiveExecutable(t, shim, shimSource)
 	const body = `
 unset ZP_ACTIVE_PROFILE
 export ZSHPRO_PROFILE=inherited
@@ -139,9 +135,7 @@ case "$1:$2:$3" in
   *) exit 64 ;;
 esac
 `
-	if err := os.WriteFile(shim, []byte(shimSource), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	writeLiveExecutable(t, shim, shimSource)
 	const body = `
 unset ZSHPRO_PROFILE ZP_ACTIVE_PROFILE
 source "$1"
@@ -199,14 +193,12 @@ func TestLiveTerminalTargetPreflightFailuresPreserveActiveProfile(t *testing.T) 
 	}
 
 	for _, tc := range []struct {
-		name           string
-		failure        string
-		badRuntimeRoot bool
+		name    string
+		failure string
 	}{
 		{name: "emitter nonzero", failure: "nonzero"},
 		{name: "emitter empty output", failure: "empty"},
 		{name: "validator rejection", failure: "invalid"},
-		{name: "staging failure", failure: "valid", badRuntimeRoot: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -226,17 +218,9 @@ case "$1:$2:$3" in
   *) exit 64 ;;
 esac
 `
-			if err := os.WriteFile(shim, []byte(shimSource), 0o700); err != nil {
-				t.Fatal(err)
-			}
+			writeLiveExecutable(t, shim, shimSource)
 
 			runtimeRoot := liveRuntimeDir(dir)
-			if tc.badRuntimeRoot {
-				runtimeRoot = filepath.Join(dir, "not-a-runtime-directory")
-				if err := os.WriteFile(runtimeRoot, []byte("not a directory"), 0o600); err != nil {
-					t.Fatal(err)
-				}
-			}
 			const body = `
 source "$1"
 unsetopt extendedglob
@@ -275,14 +259,101 @@ alias zp_a_alias >/dev/null || exit 23
 [[ ${+functions[$before_reverse]} == 1 && "${functions[$before_reverse]}" == "$before_reverse_body" ]] || exit 28
 `
 			cmd := exec.Command(realZsh, "-f", "-c", body, "zsh-pro-preflight-test", loader)
-			cmd.Env = liveEnvAt(runtimeRoot,
-				"PATH="+dir+":"+os.Getenv("PATH"),
-				"ZP_PREFLIGHT_FAILURE="+tc.failure,
-			)
+			extra := []string{
+				"PATH=" + dir + ":" + os.Getenv("PATH"),
+				"ZP_PREFLIGHT_FAILURE=" + tc.failure,
+			}
+			cmd.Env = liveEnvAt(runtimeRoot, extra...)
 			if out, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("target preflight changed active A: %v\n%s", err, out)
 			}
 		})
+	}
+}
+
+// This exercises the production runtime helper, rather than the ordinary
+// emit-fixture shim. An invalid configured root makes capture fail before the
+// helper can start the target emitter, which is the staging/capture preflight
+// boundary that must leave a live A entirely intact.
+func TestLiveTerminalTargetStagingFailurePreservesActiveProfile(t *testing.T) {
+	realZsh, err := exec.LookPath("zsh")
+	if err != nil {
+		t.Skip("zsh not installed")
+	}
+	dir := t.TempDir()
+	loader := writeLiveLoader(t, dir)
+	runtimeHelper := buildLiveRuntimeHelper(t, dir)
+	binDir := filepath.Join(dir, "bin")
+	if err := os.Mkdir(binDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	emitSeen := filepath.Join(dir, "emit-seen")
+	emitter := filepath.Join(binDir, "zsh-pro")
+	if err := os.WriteFile(emitter, []byte(`#!/bin/sh
+: > "$ZP_EMIT_SEEN"
+printf '%s\n' '__zp_deactivate_B() { unset ZP_B_ENV; }' '__zp_apply_B() { export ZP_B_ENV=1; }' '_zp_run_payload __zp_apply_B __zp_deactivate_B'
+`), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	unsafeRoot := filepath.Join(dir, "not-a-runtime-directory")
+	if err := os.WriteFile(unsafeRoot, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	const body = `
+source "$1"
+zsh-pro() {
+  if [[ "$1" == runtime ]]; then
+    command "$ZP_RUNTIME_HELPER" "$@"
+  else
+    command "$ZP_EMITTER_SHIM" "$@"
+  fi
+}
+unsetopt extendedglob
+typeset -g ZP_BASE_PATH="$PATH"
+__zp_reverse_A() {
+  unset ZP_A_ENV
+  unalias zp_a_alias 2>/dev/null
+  unset -f zp_a_function
+  unsetopt extendedglob
+  path=(${(@s/:/)ZP_BASE_PATH})
+}
+__zp_apply_A() {
+  export ZP_A_ENV=present
+  alias zp_a_alias='print -r -- A'
+  functions[zp_a_function]='print -r -- A'
+  setopt extendedglob
+  path=(/zp-a/bin $path)
+}
+_zp_run_payload __zp_apply_A __zp_reverse_A || exit 10
+typeset -g +x ZP_ACTIVE_PROFILE=A
+export ZSHPRO_PROFILE=A
+before_path="$PATH"
+before_reverse="$ZP_ACTIVE_REVERSE_FN"
+before_reverse_body="${functions[$before_reverse]}"
+before_function_body="${functions[zp_a_function]}"
+
+activate B
+[[ "$ZP_LAST_RUNTIME_STATUS" -ne 0 ]] || exit 20
+[[ "$ZP_LAST_RUNTIME_ERROR" == *'shell state unchanged'* ]] || exit 21
+[[ ! -e "$ZP_EMIT_SEEN" ]] || exit 22
+[[ "$ZP_A_ENV" == present && -z "${ZP_B_ENV+x}" ]] || exit 23
+alias zp_a_alias >/dev/null || exit 24
+[[ "${functions[zp_a_function]}" == "$before_function_body" ]] || exit 25
+[[ -o extendedglob && "$PATH" == "$before_path" ]] || exit 26
+[[ "$ZP_ACTIVE_PROFILE" == A && "$ZSHPRO_PROFILE" == A ]] || exit 27
+[[ "$ZP_ACTIVE_REVERSE_FN" == "$before_reverse" ]] || exit 28
+[[ ${+functions[$before_reverse]} == 1 && "${functions[$before_reverse]}" == "$before_reverse_body" ]] || exit 29
+`
+	cmd := exec.Command(realZsh, "-f", "-c", body, "zsh-pro-staging-preflight-test", loader)
+	cmd.Env = liveEnvAt(unsafeRoot,
+		"PATH="+binDir+":"+os.Getenv("PATH"),
+		"ZP_RUNTIME_HELPER="+runtimeHelper,
+		"ZP_EMITTER_SHIM="+emitter,
+		"ZP_EMIT_SEEN="+emitSeen,
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("target staging preflight changed active A: %v\n%s", err, out)
 	}
 }
 
@@ -323,9 +394,7 @@ case "$1:$2:$3" in
   *) exit 64 ;;
 esac
 `
-	if err := os.WriteFile(shim, []byte(shimSource), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	writeLiveExecutable(t, shim, shimSource)
 	const body = `
 source "$1"
 
@@ -378,9 +447,7 @@ func TestLiveTerminalLoaderRejectsInvalidEmitWithoutChangingLastGood(t *testing.
 	dir := t.TempDir()
 	loader := writeLiveLoader(t, dir)
 	shim := filepath.Join(dir, "zsh-pro")
-	if err := os.WriteFile(shim, []byte("#!/bin/sh\nprintf '%s\\n' 'this is ( invalid zsh'\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	writeLiveExecutable(t, shim, "#!/bin/sh\nprintf '%s\\n' 'this is ( invalid zsh'\n")
 	validationMarker := filepath.Join(dir, "validated")
 	validator := filepath.Join(dir, "zsh")
 	validatorSource := "#!/bin/sh\ntouch \"$ZP_VALIDATION_MARKER\"\nexec \"$ZP_REAL_ZSH\" \"$@\"\n"
@@ -420,9 +487,7 @@ func TestLiveTerminalLoaderGatesEmptyEmitAndReportsRuntimeFailure(t *testing.T) 
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			loader := writeLiveLoader(t, dir)
-			if err := os.WriteFile(filepath.Join(dir, "zsh-pro"), []byte(tc.emit), 0o700); err != nil {
-				t.Fatal(err)
-			}
+			writeLiveExecutable(t, filepath.Join(dir, "zsh-pro"), tc.emit)
 			marker := filepath.Join(dir, "validated")
 			validator := "#!/bin/sh\ntouch \"$ZP_VALIDATION_MARKER\"\nexec \"$ZP_REAL_ZSH\" \"$@\"\n"
 			if err := os.WriteFile(filepath.Join(dir, "zsh"), []byte(validator), 0o700); err != nil {
@@ -643,11 +708,11 @@ func TestLiveTerminalConsumesAllExpectedRuntimeFailures(t *testing.T) {
 		name           string
 		emitter        string
 		validator      string
-		badRuntimeRoot bool
+		captureFailure bool
 	}{
 		{name: "emitter failure", emitter: "#!/bin/sh\nexit 9\n"},
 		{name: "empty emitter output", emitter: "#!/bin/sh\nexit 0\n"},
-		{name: "staging failure", emitter: "#!/bin/sh\nprintf '%s\\n' 'zp_apply() { :; }' 'zp_apply'\n", badRuntimeRoot: true},
+		{name: "staging failure", emitter: "#!/bin/sh\nprintf '%s\\n' 'zp_apply() { :; }' 'zp_apply'\n", captureFailure: true},
 		{name: "validation failure", emitter: "#!/bin/sh\nprintf '%s\\n' 'zp_apply() { :; }' 'zp_apply'\n", validator: "#!/bin/sh\nexit 9\n"},
 		{name: "evaluation failure", emitter: "#!/bin/sh\nprintf '%s\\n' 'zp_apply() { return 9; }' 'zp_apply'\n"},
 	} {
@@ -659,12 +724,6 @@ func TestLiveTerminalConsumesAllExpectedRuntimeFailures(t *testing.T) {
 				writeLiveExecutable(t, filepath.Join(dir, "zsh"), tc.validator)
 			}
 			runtimeRoot := liveRuntimeDir(dir)
-			if tc.badRuntimeRoot {
-				runtimeRoot = filepath.Join(dir, "not-a-directory")
-				if err := os.WriteFile(runtimeRoot, []byte("not a directory"), 0o600); err != nil {
-					t.Fatal(err)
-				}
-			}
 
 			body := `
 source "$1"
@@ -679,7 +738,11 @@ print -r -- SURVIVED
 [[ -o xtrace ]] || exit 33
 `
 			cmd := exec.Command(realZsh, "-f", "-c", body, "zsh-pro-test", loader)
-			cmd.Env = liveEnvAt(runtimeRoot, "PATH="+dir+":"+os.Getenv("PATH"))
+			extra := []string{"PATH=" + dir + ":" + os.Getenv("PATH")}
+			if tc.captureFailure {
+				extra = append(extra, "ZP_RUNTIME_SHIM_CAPTURE_FAILURE=1")
+			}
+			cmd.Env = liveEnvAt(runtimeRoot, extra...)
 			out, err := cmd.CombinedOutput()
 			if err != nil {
 				t.Fatalf("%s escaped its runtime failure boundary: %v\n%s", tc.name, err, out)
@@ -748,31 +811,38 @@ print -r -- SURVIVED
 	}
 }
 
-func TestLiveTerminalStagingUsesExclusiveCreateAndCleansOnlyItsFile(t *testing.T) {
+func TestLiveTerminalRuntimeTransportDoesNotTouchTMPDIR(t *testing.T) {
 	realZsh, err := exec.LookPath("zsh")
 	if err != nil {
 		t.Skip("zsh not installed")
 	}
 	dir := t.TempDir()
 	loader := writeLiveLoader(t, dir)
+	writeLiveExecutable(t, filepath.Join(dir, "zsh-pro"), `#!/bin/sh
+case "$1:$2:$3" in
+  emit:apply:B) printf '%s\n' '__zp_deactivate_B() { unset ZP_TRANSPORT; }' '__zp_apply_B() { export ZP_TRANSPORT=ok; }' '_zp_run_payload __zp_apply_B __zp_deactivate_B' ;;
+  *) exit 64 ;;
+esac
+`)
 	body := `
 source "$1"
 RANDOM=1
 collision="$TMPDIR/zsh-pro-eval-17767-$$"
 print -r -- sentinel > "$collision"
-_zp_eval_block $'zp_apply() { :; }\nzp_apply' good || exit 50
+activate B
+[[ "$ZP_TRANSPORT" == ok ]] || exit 50
 [[ "$(<"$collision")" == sentinel ]] || exit 51
 rm -f -- "$collision"
 `
 	cmd := exec.Command(realZsh, "-f", "-c", body, "zsh-pro-test", loader)
-	cmd.Env = liveEnv(dir, "TMPDIR="+dir, "PATH="+os.Getenv("PATH"))
+	cmd.Env = liveEnv(dir, "TMPDIR="+dir, "PATH="+dir+":"+os.Getenv("PATH"))
 	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("staging collision changed an existing file or left temp state: %v\n%s", err, out)
+		t.Fatalf("runtime transport touched TMPDIR or left staged state: %v\n%s", err, out)
 	}
 	assertNoStagedSource(t, dir)
 }
 
-func TestLiveTerminalStagingRejectsSharedTMPDIRReplacement(t *testing.T) {
+func TestLiveTerminalRuntimeTransportIgnoresSharedTMPDIRRace(t *testing.T) {
 	realZsh, err := exec.LookPath("zsh")
 	if err != nil {
 		t.Skip("zsh not installed")
@@ -786,86 +856,57 @@ func TestLiveTerminalStagingRejectsSharedTMPDIRReplacement(t *testing.T) {
 	if err := os.Chmod(shared, 0o777); err != nil {
 		t.Fatal(err)
 	}
-	leakTarget := filepath.Join(dir, "attacker-target")
-	if err := os.WriteFile(leakTarget, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	replacementTarget := filepath.Join(dir, "attacker-replacement")
-	const replacementSource = "zp_apply() { export ZP_ATTACKED=1; }\nzp_apply\n"
-	if err := os.WriteFile(replacementTarget, []byte(replacementSource), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	attackerSeen := filepath.Join(dir, "attacker-seen")
 	attackerStop := filepath.Join(dir, "attacker-stop")
+	writeLiveExecutable(t, filepath.Join(dir, "zsh-pro"), `#!/bin/sh
+case "$1:$2:$3" in
+  emit:apply:B) printf '%s\n' '__zp_deactivate_B() { unset ZP_SHARED_TMP; }' '__zp_apply_B() { export ZP_SHARED_TMP=ok; }' '_zp_run_payload __zp_apply_B __zp_deactivate_B' ;;
+  *) exit 64 ;;
+esac
+`)
 
 	const body = `
 source "$1"
-functions[_zp_private_temp_original]="${functions[_zp_private_temp]}"
-_zp_private_temp() {
-  _zp_private_temp_original "$@" || return $?
-  command sleep 0.2
-}
-functions[_zp_run_bounded_original]="${functions[_zp_run_bounded]}"
-_zp_run_bounded() {
-  if [[ "$2" == zsh && "$3" == -n ]]; then command sleep 0.2; fi
-  _zp_run_bounded_original "$@"
-}
 attacker() {
-  local phase=0 candidate
+  local candidate
   while [[ ! -e "$ZP_ATTACKER_STOP" ]]; do
-    for candidate in "$TMPDIR"/zsh-pro-eval-*(N); do
+    for candidate in "$TMPDIR"/zsh-pro-eval-*(N) "$TMPDIR"/.runtime-*(N); do
       [[ -e "$candidate" || -L "$candidate" ]] || continue
-      if (( phase == 0 )); then
-        command rm -f -- "$candidate"
-        if command ln -s -- "$ZP_ATTACK_TARGET" "$candidate"; then
-          builtin print -r -- seen > "$ZP_ATTACKER_SEEN"
-          phase=1
-        fi
-      elif (( phase == 1 )) && [[ -s "$ZP_ATTACK_TARGET" ]]; then
-        command rm -f -- "$candidate"
-        if command ln -s -- "$ZP_REPLACEMENT_TARGET" "$candidate"; then
-          phase=2
-        fi
-      fi
+      builtin print -r -- seen > "$ZP_ATTACKER_SEEN"
     done
     command sleep 0.01
   done
 }
 attacker &
 attacker_pid=$!
-_zp_eval_block $'zp_apply() { export ZP_SECRET_LIKE="emitted-secret-like-payload"; }\nzp_apply' good
-eval_rc=$?
+activate B
 : > "$ZP_ATTACKER_STOP"
 if wait "$attacker_pid"; then :; else :; fi
-(( eval_rc == 0 )) || exit 50
-[[ -z "${ZP_ATTACKED+x}" ]] || exit 51
-[[ ! -s "$ZP_ATTACK_TARGET" ]] || exit 52
-[[ ! -e "$ZP_ATTACKER_SEEN" ]] || exit 53
-[[ "$ZP_SECRET_LIKE" == emitted-secret-like-payload ]] || exit 54
+[[ "$ZP_SHARED_TMP" == ok ]] || exit 50
+[[ ! -e "$ZP_ATTACKER_SEEN" ]] || exit 51
 `
 	cmd := exec.Command(realZsh, "-f", "-c", body, "zsh-pro-test", loader)
 	cmd.Env = liveEnv(dir,
-		"PATH="+os.Getenv("PATH"),
+		"PATH="+dir+":"+os.Getenv("PATH"),
 		"TMPDIR="+shared,
-		"ZP_ATTACK_TARGET="+leakTarget,
-		"ZP_REPLACEMENT_TARGET="+replacementTarget,
 		"ZP_ATTACKER_SEEN="+attackerSeen,
 		"ZP_ATTACKER_STOP="+attackerStop,
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("shared TMPDIR replacement altered private staging: %v\n%s", err, out)
+		t.Fatalf("shared TMPDIR race reached runtime transport: %v\n%s", err, out)
 	}
 	assertEmptyDir(t, shared)
 	assertPrivateRuntimeClean(t, liveRuntimeDir(dir))
 }
 
-func TestLiveTerminalStagingRejectsNonStickyWritableAncestorReplacement(t *testing.T) {
+func TestLiveTerminalRuntimeHelperRejectsNonStickyWritableAncestor(t *testing.T) {
 	realZsh, err := exec.LookPath("zsh")
 	if err != nil {
 		t.Skip("zsh not installed")
 	}
 	dir := t.TempDir()
 	loader := writeLiveLoader(t, dir)
+	runtimeHelper := buildLiveRuntimeHelper(t, dir)
 	unsafeParent := filepath.Join(dir, "unsafe-parent")
 	if err := os.Mkdir(unsafeParent, 0o777); err != nil {
 		t.Fatal(err)
@@ -877,87 +918,199 @@ func TestLiveTerminalStagingRejectsNonStickyWritableAncestorReplacement(t *testi
 	if err := os.Mkdir(runtimeRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	binDir := filepath.Join(dir, "bin")
+	if err := os.Mkdir(binDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	emitSeen := filepath.Join(dir, "emit-seen")
+	emitter := filepath.Join(binDir, "zsh-pro")
+	if err := os.WriteFile(emitter, []byte(`#!/bin/sh
+: > "$ZP_EMIT_SEEN"
+printf '%s\n' '__zp_deactivate_B() { unset ZP_B_ENV; }' '__zp_apply_B() { export ZP_B_ENV=1; }' '_zp_run_payload __zp_apply_B __zp_deactivate_B'
+`), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	const body = `
+source "$1"
+zsh-pro() {
+  if [[ "$1" == runtime ]]; then command "$ZP_RUNTIME_HELPER" "$@"
+  else command "$ZP_EMITTER_SHIM" "$@"; fi
+}
+typeset -g ZP_BASE_PATH="$PATH"
+__zp_reverse_A() { unset ZP_A_ENV; }
+__zp_apply_A() { export ZP_A_ENV=present; }
+_zp_run_payload __zp_apply_A __zp_reverse_A || exit 10
+typeset -g +x ZP_ACTIVE_PROFILE=A
+export ZSHPRO_PROFILE=A
+before_reverse="$ZP_ACTIVE_REVERSE_FN"
+activate B
+[[ "$ZP_LAST_RUNTIME_STATUS" -ne 0 ]] || exit 20
+[[ ! -e "$ZP_EMIT_SEEN" ]] || exit 21
+[[ "$ZP_A_ENV" == present && "$ZP_ACTIVE_PROFILE" == A && "$ZSHPRO_PROFILE" == A ]] || exit 22
+[[ "$ZP_ACTIVE_REVERSE_FN" == "$before_reverse" && ${+functions[$before_reverse]} == 1 ]] || exit 23
+`
+	cmd := exec.Command(realZsh, "-f", "-c", body, "zsh-pro-unsafe-ancestor-test", loader)
+	cmd.Env = liveEnvAt(runtimeRoot,
+		"PATH="+binDir+":"+os.Getenv("PATH"),
+		"ZP_RUNTIME_HELPER="+runtimeHelper,
+		"ZP_EMITTER_SHIM="+emitter,
+		"ZP_EMIT_SEEN="+emitSeen,
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("non-sticky writable ancestor reached the emitter or changed A: %v\n%s", err, out)
+	}
+	assertEmptyDir(t, runtimeRoot)
+}
+
+// The link sits directly in sticky /tmp and is owned by this test process,
+// which models an attacker who may replace their own link even though the
+// directory itself is sticky. The concurrent loop swaps it continuously while
+// the real helper walks the root. A pathname check followed by a later reopen
+// can be redirected here; descriptor-relative O_NOFOLLOW traversal cannot.
+func TestLiveTerminalRuntimeHelperRejectsStickySymlinkReplacementRace(t *testing.T) {
+	realZsh, err := exec.LookPath("zsh")
+	if err != nil {
+		t.Skip("zsh not installed")
+	}
+	stickyParent := os.TempDir()
+	info, err := os.Stat(stickyParent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSticky == 0 {
+		t.Skipf("%s is not sticky", stickyParent)
+	}
+	placeholder, err := os.CreateTemp(stickyParent, "zsh-pro-sticky-race-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeLink := placeholder.Name()
+	if err := placeholder.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(runtimeLink); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(runtimeLink) })
+
+	dir := t.TempDir()
+	loader := writeLiveLoader(t, dir)
+	runtimeHelper := buildLiveRuntimeHelper(t, dir)
+	victimRoot := filepath.Join(dir, "victim-runtime")
+	if err := os.Mkdir(victimRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	attackerRoot := filepath.Join(dir, "attacker-runtime")
 	if err := os.Mkdir(attackerRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	attackerSource := filepath.Join(dir, "attacker-source.zsh")
-	if err := os.WriteFile(attackerSource, []byte("__zp_deactivate_attacker() { unset ZP_ATTACKED; }\n__zp_apply_attacker() { export ZP_ATTACKED=1; }\n_zp_run_payload __zp_apply_attacker __zp_deactivate_attacker\n"), 0o600); err != nil {
+	if err := os.Symlink(victimRoot, runtimeLink); err != nil {
 		t.Fatal(err)
 	}
-	attackerSeen := filepath.Join(dir, "attacker-seen")
-	stageSeen := filepath.Join(dir, "stage-seen")
+	attackerSource := filepath.Join(dir, "attacker-source.zsh")
+	if err := os.WriteFile(attackerSource, []byte(`__zp_deactivate_attacker() { unset ZP_ATTACKED; }
+__zp_apply_attacker() { export ZP_ATTACKED=1; }
+_zp_run_payload __zp_apply_attacker __zp_deactivate_attacker
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	binDir := filepath.Join(dir, "bin")
+	if err := os.Mkdir(binDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	emitSeen := filepath.Join(dir, "emit-seen")
+	emitter := filepath.Join(binDir, "zsh-pro")
+	if err := os.WriteFile(emitter, []byte(`#!/bin/sh
+: > "$ZP_EMIT_SEEN"
+printf '%s\n' '__zp_deactivate_B() { unset ZP_SECRET_LIKE; }' '__zp_apply_B() { export ZP_SECRET_LIKE=emitted-secret-like-payload; }' '_zp_run_payload __zp_apply_B __zp_deactivate_B'
+`), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	attackerSink := filepath.Join(dir, "attacker-sink")
+	attackerSwapped := filepath.Join(dir, "attacker-swapped")
 	attackerStop := filepath.Join(dir, "attacker-stop")
-	parkedRoot := filepath.Join(unsafeParent, "victim-runtime-parked")
 
 	const body = `
 source "$1"
-restore_root() {
-  if [[ -L "$ZSHPRO_HOME" ]]; then command rm -f -- "$ZSHPRO_HOME"; fi
-  if [[ ! -e "$ZSHPRO_HOME" && -d "$ZP_PARKED_ROOT" ]]; then
-    command mv -- "$ZP_PARKED_ROOT" "$ZSHPRO_HOME" 2>/dev/null || :
-  fi
+zsh-pro() {
+  if [[ "$1" == runtime ]]; then command "$ZP_RUNTIME_HELPER" "$@"
+  else command "$ZP_EMITTER_SHIM" "$@"; fi
 }
+typeset -g ZP_BASE_PATH="$PATH"
+__zp_reverse_A() { unset ZP_A_ENV; unalias zp_a_alias 2>/dev/null; unset -f zp_a_function; path=(${(@s/:/)ZP_BASE_PATH}); }
+__zp_apply_A() { export ZP_A_ENV=present; alias zp_a_alias='print -r -- A'; functions[zp_a_function]='print -r -- A'; path=(/zp-a/bin $path); }
+_zp_run_payload __zp_apply_A __zp_reverse_A || exit 10
+typeset -g +x ZP_ACTIVE_PROFILE=A
+export ZSHPRO_PROFILE=A
+before_path="$PATH"
+before_reverse="$ZP_ACTIVE_REVERSE_FN"
+before_reverse_body="${functions[$before_reverse]}"
+before_function_body="${functions[zp_a_function]}"
 attacker() {
   local candidate
   while [[ ! -e "$ZP_ATTACKER_STOP" ]]; do
-    if [[ -d "$ZSHPRO_HOME" && ! -L "$ZSHPRO_HOME" ]]; then
-      if command mv -- "$ZSHPRO_HOME" "$ZP_PARKED_ROOT" 2>/dev/null; then
-        if command ln -s -- "$ZP_ATTACK_ROOT" "$ZSHPRO_HOME"; then
-          builtin print -r -- root > "$ZP_ATTACKER_SEEN"
-        fi
-      fi
-    else
-      restore_root
+    command rm -f -- "$ZSHPRO_HOME"
+    if command ln -s -- "$ZP_ATTACK_ROOT" "$ZSHPRO_HOME"; then
+      builtin print -r -- swapped > "$ZP_ATTACKER_SWAPPED"
     fi
-    for candidate in "$ZSHPRO_HOME"/.runtime-*/zsh-pro-eval(N) "$ZP_PARKED_ROOT"/.runtime-*/zsh-pro-eval(N); do
-      [[ -e "$candidate" || -L "$candidate" ]] || continue
+    for candidate in "$ZP_ATTACK_ROOT"/.runtime-*/zsh-pro-eval(N); do
+      [[ -s "$candidate" ]] || continue
+      command cp -- "$candidate" "$ZP_ATTACKER_SINK" 2>/dev/null || :
       command rm -f -- "$candidate"
-      if command ln -s -- "$ZP_ATTACK_SOURCE" "$candidate"; then
-        builtin print -r -- stage > "$ZP_STAGE_SEEN"
-      fi
+      command ln -s -- "$ZP_ATTACK_SOURCE" "$candidate" 2>/dev/null || :
     done
+    command rm -f -- "$ZSHPRO_HOME"
+    command ln -s -- "$ZP_VICTIM_ROOT" "$ZSHPRO_HOME" 2>/dev/null || :
     command sleep 0.001
   done
-  restore_root
+  command rm -f -- "$ZSHPRO_HOME"
+  command ln -s -- "$ZP_VICTIM_ROOT" "$ZSHPRO_HOME" 2>/dev/null || :
 }
 attacker &
 attacker_pid=$!
 typeset -i attempts=0
-while [[ ! -e "$ZP_ATTACKER_SEEN" && attempts -lt 100 ]]; do
+while [[ ! -e "$ZP_ATTACKER_SWAPPED" && attempts -lt 100 ]]; do
   command sleep 0.01
   (( attempts += 1 ))
 done
-source_block=$'export ZP_SECRET_LIKE="emitted-secret-like-payload"\n:'
-_zp_validate_block "$source_block"
-eval_rc=$?
-if (( eval_rc == 0 )); then
-  _zp_eval_block "$source_block"
-  eval_rc=$?
-fi
+[[ -e "$ZP_ATTACKER_SWAPPED" ]] || exit 20
+attempts=0
+while (( attempts < 32 )); do
+  activate B
+  [[ "$ZP_LAST_RUNTIME_STATUS" -ne 0 ]] || exit 21
+  (( attempts += 1 ))
+done
 : > "$ZP_ATTACKER_STOP"
 if wait "$attacker_pid"; then :; else :; fi
-restore_root
-[[ -e "$ZP_ATTACKER_SEEN" ]] || exit 50
-(( eval_rc != 0 )) || exit 51
-[[ -z "${ZP_ATTACKED+x}" && -z "${ZP_SECRET_LIKE+x}" ]] || exit 52
-[[ ! -e "$ZP_STAGE_SEEN" ]] || exit 53
-[[ -d "$ZSHPRO_HOME" && ! -L "$ZSHPRO_HOME" ]] || exit 54
+[[ ! -e "$ZP_EMIT_SEEN" ]] || exit 22
+[[ ! -s "$ZP_ATTACKER_SINK" ]] || exit 23
+[[ -z "${ZP_ATTACKED+x}" && -z "${ZP_SECRET_LIKE+x}" ]] || exit 24
+[[ "$ZP_A_ENV" == present && "$PATH" == "$before_path" ]] || exit 25
+alias zp_a_alias >/dev/null || exit 26
+[[ "${functions[zp_a_function]}" == "$before_function_body" ]] || exit 27
+[[ "$ZP_ACTIVE_PROFILE" == A && "$ZSHPRO_PROFILE" == A ]] || exit 28
+[[ "$ZP_ACTIVE_REVERSE_FN" == "$before_reverse" ]] || exit 29
+[[ ${+functions[$before_reverse]} == 1 && "${functions[$before_reverse]}" == "$before_reverse_body" ]] || exit 30
 `
-	cmd := exec.Command(realZsh, "-f", "-c", body, "zsh-pro-unsafe-ancestor-test", loader)
-	cmd.Env = liveEnvAt(runtimeRoot,
-		"PATH="+os.Getenv("PATH"),
+	cmd := exec.Command(realZsh, "-f", "-c", body, "zsh-pro-sticky-symlink-race-test", loader)
+	cmd.Env = liveEnvAt(runtimeLink,
+		"PATH="+binDir+":"+os.Getenv("PATH"),
+		"ZP_RUNTIME_HELPER="+runtimeHelper,
+		"ZP_EMITTER_SHIM="+emitter,
+		"ZP_EMIT_SEEN="+emitSeen,
 		"ZP_ATTACK_ROOT="+attackerRoot,
 		"ZP_ATTACK_SOURCE="+attackerSource,
-		"ZP_ATTACKER_SEEN="+attackerSeen,
-		"ZP_STAGE_SEEN="+stageSeen,
+		"ZP_ATTACKER_SINK="+attackerSink,
+		"ZP_ATTACKER_SWAPPED="+attackerSwapped,
 		"ZP_ATTACKER_STOP="+attackerStop,
-		"ZP_PARKED_ROOT="+parkedRoot,
+		"ZP_VICTIM_ROOT="+victimRoot,
 	)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("non-sticky writable ancestor allowed root/stage replacement: %v\n%s", err, out)
+		t.Fatalf("sticky symlink race reached emitted source or changed active A: %v\n%s", err, out)
 	}
-	assertPrivateRuntimeClean(t, runtimeRoot)
+	assertEmptyDir(t, attackerRoot)
+	assertEmptyDir(t, victimRoot)
 }
 
 func writeLiveLoader(t *testing.T, dir string) string {
@@ -968,6 +1121,41 @@ func writeLiveLoader(t *testing.T, dir string) string {
 		t.Fatal(err)
 	}
 	return loader
+}
+
+// buildLiveRuntimeHelper gives the native-zsh security probes the actual
+// descriptor-walking transport binary. The zsh test defines a function that
+// routes only `runtime` calls here; the helper's child `zsh-pro emit` lookup
+// still resolves the fixture executable on PATH.
+func buildLiveRuntimeHelper(t *testing.T, dir string) string {
+	t.Helper()
+	repoRoot := liveTestRepositoryRoot(t)
+	helper := filepath.Join(dir, "zsh-pro-runtime-helper")
+	cmd := exec.Command("go", "build", "-o", helper, "./core/cmd/zsh-pro")
+	cmd.Dir = repoRoot
+	cmd.Env = append(os.Environ(), "GOTOOLCHAIN=auto")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build production runtime helper: %v\n%s", err, out)
+	}
+	return helper
+}
+
+func liveTestRepositoryRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("could not find repository go.mod")
+		}
+		dir = parent
+	}
 }
 
 func ensureLiveRuntimeDir(t *testing.T, dir string) {
@@ -1008,9 +1196,62 @@ func liveEnvAt(runtimeDir string, extras ...string) []string {
 
 func writeLiveExecutable(t *testing.T, path, source string) {
 	t.Helper()
+	if filepath.Base(path) == "zsh-pro" {
+		source = wrapRuntimeShim(source)
+	}
 	if err := os.WriteFile(path, []byte(source), 0o700); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// wrapRuntimeShim makes existing emit/list fixtures exercise the same loader
+// transport shape as the production binary. The production helper owns the
+// timeout; the fallback below keeps the fixtures bounded on platforms without
+// GNU timeout as well.
+func wrapRuntimeShim(source string) string {
+	return `#!/bin/sh
+run_bounded() {
+  runtime_timeout="$1"
+  shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$runtime_timeout" "$@"
+    return $?
+  fi
+  "$@" &
+  runtime_child=$!
+  (
+    sleep "$runtime_timeout"
+    if kill -0 "$runtime_child" 2>/dev/null; then
+      kill -TERM "$runtime_child" 2>/dev/null || :
+      exit 124
+    fi
+  ) &
+  runtime_watchdog=$!
+  wait "$runtime_child"
+  runtime_child_rc=$?
+  if kill -0 "$runtime_watchdog" 2>/dev/null; then
+    kill -TERM "$runtime_watchdog" 2>/dev/null || :
+  fi
+  wait "$runtime_watchdog"
+  runtime_watchdog_rc=$?
+  if [ "$runtime_watchdog_rc" -eq 124 ]; then return 124; fi
+  return "$runtime_child_rc"
+}
+if [ "$1" = runtime ] && [ "$2" = capture ]; then
+  timeout="$3"
+  if [ -n "${ZP_RUNTIME_SHIM_CAPTURE_FAILURE-}" ]; then
+    exit "$ZP_RUNTIME_SHIM_CAPTURE_FAILURE"
+  fi
+  shift 4
+  run_bounded "$timeout" "$@"
+  exit $?
+fi
+if [ "$1" = runtime ] && [ "$2" = validate ]; then
+  timeout="$3"
+  run_bounded "$timeout" zsh -n
+  exit $?
+fi
+` + source
 }
 
 func assertNoStagedSource(t *testing.T, dir string) {

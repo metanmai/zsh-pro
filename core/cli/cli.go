@@ -71,6 +71,8 @@ func (c *CLI) Run(args []string, stdout, stderr io.Writer) int {
 		return c.runStatus(stdout, stderr)
 	case "emit":
 		return c.runEmit(args[1:], stdout, stderr)
+	case "runtime":
+		return c.runRuntime(args[1:], stdout, stderr)
 	default:
 		_, _ = fmt.Fprintf(stderr, "zsh-pro: unknown command %q\n", args[0])
 		return int(model.ExitUsageErr)

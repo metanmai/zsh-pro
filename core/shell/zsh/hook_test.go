@@ -49,13 +49,18 @@ func TestHookScriptStartPathIsZeroSubprocessAndNonSpeculative(t *testing.T) {
 func TestHookScriptRuntimeStagingNeverUsesTMPDIR(t *testing.T) {
 	script := (Provider{}).HookScript()
 	if strings.Contains(script, "TMPDIR") {
-		t.Fatal("runtime staging must stay beneath the zsh-pro private cache root, not TMPDIR")
+		t.Fatal("runtime capture must not depend on a shared temporary directory")
 	}
 	if !strings.Contains(script, "_zp_run_bounded") {
 		t.Fatal("loader must expose the shared bounded runtime boundary")
 	}
-	if !strings.Contains(script, "_zp_private_chain_safe") || !strings.Contains(script, "zstat -L") {
-		t.Fatal("runtime staging must validate each private-root ancestor without following symlinks")
+	if strings.Contains(script, "zstat -L") || strings.Contains(script, "_zp_private_temp") || strings.Contains(script, "_zp_private_chain_safe") {
+		t.Fatal("loader must not use shell pathname staging or a symlink-following proof")
+	}
+	for _, want := range []string{"zsh-pro runtime capture", "zsh-pro runtime validate"} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("loader missing descriptor-backed runtime helper %q", want)
+		}
 	}
 }
 
