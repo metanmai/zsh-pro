@@ -561,6 +561,82 @@ print -r -- SURVIVED
 	}
 }
 
+func TestLiveTerminalNoArgumentVerbsFailOpenUnderNoUnset(t *testing.T) {
+	realZsh, err := exec.LookPath("zsh")
+	if err != nil {
+		t.Skip("zsh not installed")
+	}
+
+	for _, verb := range []string{"activate", "checkout"} {
+		for _, option := range []struct {
+			name  string
+			setup string
+		}{
+			{name: "NO_UNSET", setup: "setopt NO_UNSET"},
+			{name: "NO_UNSET_ERR_EXIT", setup: "setopt NO_UNSET ERR_EXIT"},
+			{name: "NO_UNSET_ERR_RETURN", setup: "setopt NO_UNSET ERR_RETURN"},
+		} {
+			t.Run(verb+"/"+option.name, func(t *testing.T) {
+				dir := t.TempDir()
+				loader := writeLiveLoader(t, dir)
+				emitSeen := filepath.Join(dir, "no-argument-emit-seen")
+				writeLiveExecutable(t, filepath.Join(dir, "zsh-pro"), `#!/bin/sh
+: > "$ZP_NO_ARGUMENT_EMIT_SEEN"
+printf '%s\n' \
+  '__zp_no_argument_reverse() { unset ZP_NO_ARGUMENT_SECRET; }' \
+  '__zp_no_argument_apply() { export ZP_NO_ARGUMENT_SECRET=phase5-no-argument-secret; }' \
+  '_zp_run_payload __zp_no_argument_apply __zp_no_argument_reverse'
+`)
+
+				body := `
+source "$1"
+unset ZP_ACTIVE_PROFILE ZSHPRO_PROFILE ZP_ACTIVE_REVERSE_FN ZP_RECOVERY_REVERSE_FN ZP_LAST_GOOD_PROFILE ZP_BASE_PATH ZP_NO_ARGUMENT_SECRET REPLY
+` + option.setup + `
+` + verb + `
+print -r -- SURVIVED
+[[ "$ZP_LAST_RUNTIME_STATUS" -eq 2 ]] || exit 10
+[[ "$ZP_LAST_RUNTIME_ERROR" == "usage: ` + verb + ` <profile>" ]] || exit 11
+[[ -z "${ZP_ACTIVE_PROFILE+x}" ]] || exit 12
+[[ -z "${ZSHPRO_PROFILE+x}" ]] || exit 13
+[[ -z "${ZP_ACTIVE_REVERSE_FN+x}" ]] || exit 14
+[[ -z "${ZP_RECOVERY_REVERSE_FN+x}" ]] || exit 15
+[[ -z "${ZP_LAST_GOOD_PROFILE+x}" ]] || exit 16
+[[ -z "${ZP_BASE_PATH+x}" ]] || exit 17
+[[ "$ZP_RUNTIME_TIMED_OUT" -eq 0 ]] || exit 18
+[[ -z "${ZP_NO_ARGUMENT_SECRET+x}" ]] || exit 19
+[[ -z "${REPLY+x}" ]] || exit 20
+for function_name in ${(k)functions}; do
+  [[ "${functions[$function_name]}" != *phase5-no-argument-secret* ]] || exit 21
+done
+`
+				cmd := exec.Command(realZsh, "-f", "-c", body, "zsh-pro-no-argument-test", loader)
+				cmd.Env = liveEnv(dir,
+					"PATH="+dir+":"+os.Getenv("PATH"),
+					"ZP_NO_ARGUMENT_EMIT_SEEN="+emitSeen,
+				)
+				out, err := cmd.CombinedOutput()
+				if err != nil {
+					t.Fatalf("%s without an argument under %s escaped its fail-open boundary: %v\n%s", verb, option.name, err, out)
+				}
+				if !strings.Contains(string(out), "SURVIVED") {
+					t.Fatalf("%s without an argument under %s did not reach the next command:\n%s", verb, option.name, out)
+				}
+				if !strings.Contains(string(out), "zsh-pro: usage: "+verb+" <profile>") {
+					t.Fatalf("%s without an argument under %s omitted its usage diagnostic:\n%s", verb, option.name, out)
+				}
+				if strings.Contains(string(out), "phase5-no-argument-secret") {
+					t.Fatalf("%s without an argument under %s disclosed a secret:\n%s", verb, option.name, out)
+				}
+				if _, err := os.Stat(emitSeen); err == nil {
+					t.Fatalf("%s without an argument under %s invoked the emitter", verb, option.name)
+				} else if !os.IsNotExist(err) {
+					t.Fatalf("stat no-argument emitter marker: %v", err)
+				}
+			})
+		}
+	}
+}
+
 func TestLiveTerminalListUsesBoundedFailOpenBoundary(t *testing.T) {
 	realZsh, err := exec.LookPath("zsh")
 	if err != nil {

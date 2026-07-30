@@ -479,7 +479,7 @@ _zp_switch() {
 }
 
 activate() {
-	local name="$1"
+	local name="${1-}"
 	{
 		if [[ -z "$name" ]]; then
 			_zp_runtime_error 2 "usage: activate <profile>"
@@ -493,7 +493,7 @@ activate() {
 }
 
 checkout() {
-  local name="$1"
+  local name="${1-}"
   {
     if [[ -z "$name" ]]; then
       _zp_runtime_error 2 "usage: checkout <profile>"
