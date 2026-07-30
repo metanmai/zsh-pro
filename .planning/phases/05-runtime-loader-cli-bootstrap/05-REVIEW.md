@@ -1,12 +1,13 @@
 ---
 phase: 05-runtime-loader-cli-bootstrap
-reviewed: 2026-07-29T23:38:00Z
+reviewed: 2026-07-30T00:00:13Z
 reviewer_model: gpt-5.6-sol
 depth: deep
-files_reviewed: 21
+files_reviewed: 22
 files_reviewed_list:
   - core/shell/zsh/hook.go
   - core/shell/zsh/hook_test.go
+  - core/shell/zsh/invariant_test.go
   - core/shell/zsh/live_terminal_test.go
   - core/shell/zsh/emit.go
   - core/shell/provider.go
@@ -27,188 +28,139 @@ files_reviewed_list:
   - core/store/store.go
   - scripts/perf-hyperfine.sh
 findings:
-  critical: 3
-  warning: 1
+  critical: 2
+  warning: 0
   info: 0
-  total: 4
+  total: 2
 status: issues_found
 ---
 
 # Phase 05: Code Review Report
 
-**Reviewed:** 2026-07-29T23:38:00Z
+**Reviewed:** 2026-07-30T00:00:13Z
 **Depth:** deep
-**Files Reviewed:** 21
+**Files Reviewed:** 22
 **Status:** issues_found
 
 ## Summary
 
-Phase 5 is not ready to ship. The 05-06 through 05-08 repairs close the prior
-typed-nil, malformed-installer, bounded-list, sentinel-collision, target-only
-emission, and resolver-loss findings, and the full repository gate passes.
-However, direct sourced-zsh probes expose three remaining blockers:
+Phase 05 is still not ready to ship. The four repair commits close the specific
+runtime-evaluation cleanup, generated-function lifetime, ordinary late installer
+promotion, and non-sticky writable-directory cases covered by their new tests.
+The focused tests pass. Independent call-chain review and native-zsh probing
+nevertheless found two remaining security/correctness blockers:
 
-1. a failed A-to-B apply leaves the shell in a mixed state while the authoritative
-   marker still claims A is active;
-2. generated apply/reverse helper functions overwrite user functions and persist
-   after deactivation, including resolved secret literals; and
-3. private staging trusts a path beneath an unchecked writable ancestor, so its
-   check-then-reopen sequence remains raceable by another user controlling that
-   ancestor.
+1. `_zp_switch` destroys the current profile before target emission and syntax
+   validation succeed, so an ordinary missing target or failed binary reports
+   "shell state unchanged" after actually deactivating the current profile; and
+2. the staging ancestor check uses `zstat -L`, which follows symlinks. An
+   attacker-owned link in a sticky shared ancestor can therefore pass validation
+   based on its victim-owned target and then be replaced before the later
+   pathname-based operations.
 
-The installer also still changes the cached loader before discovering ordinary
-write failures at the `.zshrc` target, so an install that reports failure can
-nevertheless change the loader used by an existing bootstrap.
+The generated function names are collision-resistant, the apply function is
+scrubbed, only the active reverse is retained, failure/deactivation consume it,
+and the reviewed collision fixtures preserve pre-existing functions. The
+installer now prepares both targets and successfully rolls back the loader in
+the tested late `.zshrc` promotion failure.
 
-Verification run against the reviewed tree:
+`hyperfine` remains absent. The structural zero-subprocess gate is present, but
+the stated interactive startup measurement remains a manual/CI verification
+item; tool absence is not a source defect.
 
-- `GOTOOLCHAIN=auto go test -count=1 ./core/cli ./core/shell/zsh ./core/perf` — PASS
-- `GOTOOLCHAIN=auto go vet ./...` — PASS
-- `make check` — PASS
-- direct native-zsh failed-transition probe — reproduced mixed state:
-  `marker=A exported=A A=unset B=1 runtime=9`
-- the same probe confirmed both generated functions remain defined:
-  `functions=1:1`
+Focused verification:
+
+- repaired runtime/function/staging tests — PASS
+- repaired emitter/installer transaction tests — PASS
+- native-zsh active-A then failed-B-emitter probe — reproduced:
+  `before active=A value=present`; then
+  `after active=unset exported=unset value=unset status=7` while the diagnostic
+  said `shell state unchanged`
+- repository gates supplied independently for this integrated checkout:
+  build, uncached tests, vet, and `make check` — PASS
 
 ## Narrative Findings (AI reviewer)
 
 ## Critical Issues
 
-### CR-01: Failed profile switches leave a false active marker and an unrecoverable mixed shell
+### CR-01: Target preflight failures deactivate the known-good current profile
 
 **Classification:** BLOCKER
 
-**Files:** `core/shell/zsh/hook.go:298-322`,
-`core/shell/zsh/live_terminal_test.go:117-153`
+**Files:** `core/shell/zsh/hook.go:423-439`,
+`core/shell/zsh/hook.go:275-283`
 
-**Issue:** `_zp_switch` prepends the currently retained `zp_deactivate` to the
-new target payload and evaluates the concatenated block. If the old reverse
-succeeds but the new `zp_apply` later fails, `_zp_eval_block` returns an error
-and `_zp_switch` deliberately leaves `ZP_ACTIVE_PROFILE` and
-`ZSHPRO_PROFILE` unchanged. That marker no longer describes reality: the old
-profile has already been removed, the target may be partially applied, and the
-target payload has already replaced `zp_deactivate`.
+**Issue:** `_zp_switch` calls `_zp_reverse_active_profile` before `_zp_emit`
+and before `_zp_eval_block` performs `zsh -n` validation. Consequently any
+ordinary target-side preflight failure—missing profile, unavailable/failing
+binary, empty emitter output, staging failure, or invalid generated
+syntax—removes the current profile and clears both active markers even though no
+target source has executed. `_zp_emit` then emits the explicitly false
+diagnostic `shell state unchanged`.
 
-This is not only cosmetic. A subsequent `activate A` takes the same-profile fast
-path at lines 300-303 and does not restore A, so the user cannot recover by
-activating the profile that `status` says is active. The existing
-`TestLiveTerminalFailedEvalKeepsActivationMarkerAndProfile` asserts only the
-two marker strings and therefore locks in the inconsistency without checking
-the actual old/target shell state or the retained reverse identity.
+This is distinct from the repaired partial-runtime-evaluation case. Once target
+apply has begun, truthful inactive state plus target-specific reverse cleanup is
+appropriate. Before target execution begins, however, the known-good current
+state is still recoverable and must not be destroyed merely to discover that
+the target cannot be emitted or parsed.
 
-The direct probe activated A, then evaluated a B payload whose apply function
-set `B_PART=1` and returned 9. The observed state was:
-`marker=A exported=A A=unset B=1 runtime=9`.
+Reproduction with the real cached loader and a fake `zsh-pro` emitter:
 
-**Required corrective action:** Make lifecycle state follow the last completed
-transition, not the requested transition. Before executing the old reverse,
-clear/transition the active marker so a failed target apply cannot claim the
-old profile is live. On failure, invoke the target-specific reverse when it was
-successfully defined to remove partial target state, and leave the shell
-truthfully inactive unless the old apply can actually be replayed. Remove the
-same-profile shortcut when state is not known-good. Extend the live test to
-assert A-owned and B-owned env, alias, function, option, and PATH state after
-the failure and after the next recovery command.
+```text
+activate A
+before active=A value=present status=0
+activate B  # emitter exits 7
+zsh-pro: emit apply failed; shell state unchanged
+after active=unset exported=unset value=unset status=7
+```
 
-### CR-02: Runtime helper functions persist, overwrite user state, and retain resolved secrets
+**Required corrective action:** Split target preparation from transition
+execution. Capture and syntax-validate the target payload while A is still
+active. Only after that succeeds should the loader clear markers, run A's
+retained reverse, define/run the already-validated B payload, and apply the
+existing partial-apply cleanup rules. Preserve A on every failure before the
+first state-changing operation. Add native-zsh tests for emitter nonzero, empty
+output, validator rejection, and staging failure while A is active; each must
+assert A-owned env/alias/function/option/PATH, markers, and retained reverse are
+unchanged.
 
-**Classification:** BLOCKER
-
-**Files:** `core/cli/emitter.go:88-98`, `core/shell/zsh/emit.go:137-162`,
-`core/shell/zsh/hook.go:310-315`, `core/shell/zsh/hook.go:345-352`
-
-**Issue:** Every apply payload globally defines `zp_apply`,
-`zp_deactivate`, `zp_capture_scalar`, and `zp_restore_scalar`. The loader calls
-these functions but never unsets them or restores pre-existing functions after
-a successful apply, switch, failure, or deactivate. This violates zero-residue
-behavior and silently destroys any user functions with those names.
-
-It is also a credential-disclosure bug. `resolveSecretRefs` converts a
-`SecretRef` into a literal runtime value before emission. That literal is
-embedded in `zp_apply` and in the retained `zp_deactivate` comparison source.
-Even after `deactivate` removes the environment variable and clears the profile
-marker, both function bodies remain readable through zsh's `functions` table
-or `functions zp_apply zp_deactivate`. The private staging-file cleanup therefore
-does not remove the secret from the live shell.
-
-The direct native-zsh probe confirmed `${+functions[zp_apply]}` and
-`${+functions[zp_deactivate]}` both remain 1 after transition evaluation; code
-inspection confirms production secret literals occupy those same bodies.
-
-**Required corrective action:** Do not use persistent generic global functions
-as the transport. Generate collision-resistant internal function names, capture
-and restore any pre-existing definitions, unset the one-shot apply function and
-scalar helpers immediately after evaluation, and unset/scrub the retained
-reverse immediately after it runs. Only the current target reverse may remain
-while a profile is active. Failure cleanup must remove newly defined functions
-without destroying the prior retained reverse. Add a real secret-profile live
-test that inspects the `functions` table/source after deactivate and asserts the
-secret and all generated helper definitions are absent, plus a fixture with
-pre-existing functions of the current generic names.
-
-### CR-03: The private staging directory remains replaceable through a writable ancestor
+### CR-02: Symlink-following staging validation leaves the checked root replaceable
 
 **Classification:** BLOCKER
 
-**File:** `core/shell/zsh/hook.go:73-117`, `core/shell/zsh/hook.go:146-181`,
-`core/shell/zsh/hook.go:242-255`
+**Files:** `core/shell/zsh/hook.go:107-129`,
+`core/shell/zsh/hook.go:137-170`,
+`core/shell/zsh/hook_test.go:57-59`
 
-**Issue:** `_zp_private_root` validates only the final `ZSHPRO_HOME` directory
-with `-d`, `! -L`, and `-O`, then returns its pathname. It does not validate the
-ownership/mode of any ancestor and does not retain a directory descriptor.
-`_zp_private_temp` and both consumers subsequently reopen descendants by path.
+**Issue:** `_zp_private_chain_safe` uses `zstat -L` for every path component.
+In zsh, `-L` dereferences symbolic links; it does not perform the promised
+no-follow check. The structural test compounds the error by requiring the
+literal `zstat -L` while claiming that this validates ancestors "without
+following symlinks."
 
-If `ZSHPRO_HOME` is an absolute victim-owned directory beneath a non-sticky
-attacker-writable parent, another user who controls the parent can rename the
-validated root and replace it with a symlink after line 87. The attacker can
-then rename/replace the per-operation child after its line 106 checks. Later
-redirection at line 151 or line 248 and the read at line 176 follow the
-replacement path. This recreates the disclosure/source-substitution boundary
-that 05-07 intended to close; emitted source can contain resolved credentials
-and is subsequently evaluated.
+The non-sticky-directory regression therefore covers only one replacement
+mechanism. With `ZSHPRO_HOME=/tmp/victim-runtime`, an attacker can own the
+`victim-runtime` symlink in root-owned sticky `/tmp` and initially point it at a
+victim-owned mode-0700 directory. The dereferenced uid/mode checks pass.
+Because sticky-bit rules protect the link's owner rather than the dereferenced
+target's owner, the attacker may replace their own link after validation.
+Subsequent `chmod`, `mkdir`, redirection, validation, and read operations reopen
+the pathname and can be redirected to attacker-controlled content. Emitted
+source may contain resolved credentials and is later evaluated, so this remains
+a disclosure/source-substitution boundary.
 
-The existing shared-`TMPDIR` regression does not exercise this case because it
-places the runtime root in a trusted test directory and attacks a path that the
-new implementation no longer uses.
-
-**Required corrective action:** Resolve staging to a runtime location whose
-entire ancestor chain is not writable by another user, and fail closed when the
-configured root is beneath an unsafe ancestor. Prefer an OS-created per-user
-runtime directory and descriptor-relative/no-follow operations; if shell-only
-implementation cannot hold safe descriptors, move staging and bounded command
-capture into a small binary subcommand that uses `openat`/`O_NOFOLLOW`-style
-semantics. Add a multi-user or permission-model regression with a victim-owned
-root under a mode-0777 non-sticky parent and race root/stage replacement between
-validation, write, validation, and read.
-
-## Warnings
-
-### WR-01: A reported install failure can still replace the active cached loader
-
-**Classification:** WARNING
-
-**File:** `core/cli/install.go:35-63`
-
-**Issue:** The malformed-marker transaction ordering is fixed: `.zshrc` is read
-and its replacement is prepared before cache mutation. But the code does not
-resolve or prove the `.zshrc` write target is replaceable before promoting the
-loader. `writeValidatedLoader` renames the cache at line 58; only afterward does
-`atomicWrite` resolve the `.zshrc` symlink/target, create its sibling temporary
-file, and rename it. A dangling symlink, unwritable target directory, or
-late path-resolution error therefore returns a failed install after changing
-the cache. If a prior bootstrap is already present, the changed loader becomes
-active on the next shell start despite the failure report.
-
-**Required corrective action:** Prepare both target writes before promoting
-either: resolve both final targets, validate the loader candidate, and create/
-fsync both sibling temporary files first. Then promote in an explicitly
-documented order with rollback of the first rename if the second fails, or
-define a recoverable transaction journal. Add a valid-marker fixture whose
-`.zshrc` target cannot be replaced and assert the existing loader bytes remain
-unchanged when install returns an error.
+**Required corrective action:** Reject every symlink component using no-follow
+metadata (and validate the link object, not only its target), including the
+configured root. Do not encode `zstat -L` as evidence of no-follow behavior.
+Because separate pathname checks remain inherently raceable, prefer moving
+staging/capture to a binary helper using descriptor-relative operations and
+`O_NOFOLLOW`/`openat`-style traversal. At minimum, add a real permission-model
+regression with an attacker-owned symlink in a sticky shared ancestor and race
+replacement after each validation boundary; assert no attacker source is read
+or evaluated and no secret-bearing bytes reach the attacker path.
 
 ---
 
-_Reviewed: 2026-07-29T23:38:00Z_
+_Reviewed: 2026-07-30T00:00:13Z_
 _Reviewer: the agent (gsd-code-reviewer; gpt-5.6-sol)_
 _Depth: deep_
