@@ -126,6 +126,113 @@ print -r -- RETRIED
 	}
 }
 
+func TestLiveTerminalFailedTargetRecoveryBlocksSwitchAndRetries(t *testing.T) {
+	realZsh, err := exec.LookPath("zsh")
+	if err != nil {
+		t.Skip("zsh not installed")
+	}
+
+	const secret = "phase5-failed-target-secret"
+	for _, mode := range []struct {
+		name  string
+		setup string
+	}{
+		{name: "normal", setup: "unsetopt ERR_EXIT ERR_RETURN"},
+		{name: "ERR_EXIT", setup: "setopt ERR_EXIT"},
+		{name: "ERR_RETURN", setup: "setopt ERR_RETURN"},
+	} {
+		t.Run(mode.name, func(t *testing.T) {
+			dir := t.TempDir()
+			loader := writeLiveLoader(t, dir)
+			bPayload := filepath.Join(dir, "b.zsh")
+			if err := os.WriteFile(bPayload, []byte(`
+__zp_reverse_B() {
+  [[ "${ZP_RECOVERY_REPAIR-}" == 1 ]] || return 74
+  [[ "${ZP_RECOVERY_SECRET-}" == phase5-failed-target-secret ]] || return 75
+  unset ZP_RECOVERY_SECRET
+}
+__zp_apply_B() {
+  export ZP_RECOVERY_SECRET=phase5-failed-target-secret
+  return 73
+}
+_zp_run_payload __zp_apply_B __zp_reverse_B
+`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cPayload := filepath.Join(dir, "c.zsh")
+			if err := os.WriteFile(cPayload, []byte(`
+__zp_reverse_C() { unset ZP_RECOVERY_C; }
+__zp_apply_C() { export ZP_RECOVERY_C=active; }
+_zp_run_payload __zp_apply_C __zp_reverse_C
+`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			emitLog := filepath.Join(dir, "c-emitted")
+			writeLiveExecutable(t, filepath.Join(dir, "zsh-pro"), `#!/bin/sh
+case "$1:$2:$3" in
+  emit:apply:B) cat "$ZP_RECOVERY_B_PAYLOAD" ;;
+  emit:apply:C) : > "$ZP_RECOVERY_C_EMIT_LOG"; cat "$ZP_RECOVERY_C_PAYLOAD" ;;
+  *) exit 64 ;;
+esac
+`)
+
+			body := fmt.Sprintf(`
+source "$1"
+%s
+activate B
+print -r -- SURVIVED
+[[ "$ZP_LAST_RUNTIME_STATUS" -eq 74 ]] || exit 10
+[[ "$ZP_LAST_RUNTIME_ERROR" == *'recovery is retained'* ]] || exit 11
+[[ "$ZP_LAST_RUNTIME_ERROR" != *phase5-failed-target-secret* ]] || exit 12
+recovery="${ZP_RECOVERY_REVERSE_FN-}"
+[[ -n "$recovery" && ${+functions[$recovery]} == 1 ]] || exit 13
+[[ "${functions[$recovery]}" == *phase5-failed-target-secret* ]] || exit 14
+[[ "$ZP_RECOVERY_SECRET" == phase5-failed-target-secret ]] || exit 15
+[[ -z "${ZP_ACTIVE_PROFILE+x}" && -z "${ZSHPRO_PROFILE+x}" && -z "${ZP_ACTIVE_REVERSE_FN+x}" ]] || exit 16
+
+activate C
+print -r -- BLOCKED
+[[ "$ZP_LAST_RUNTIME_STATUS" -ne 0 ]] || exit 20
+[[ "$ZP_LAST_RUNTIME_ERROR" == *'target cleanup is pending'* ]] || exit 21
+[[ ! -e "$ZP_RECOVERY_C_EMIT_LOG" ]] || exit 22
+[[ "$ZP_RECOVERY_REVERSE_FN" == "$recovery" && ${+functions[$recovery]} == 1 ]] || exit 23
+[[ "$ZP_RECOVERY_SECRET" == phase5-failed-target-secret ]] || exit 24
+
+export ZP_RECOVERY_REPAIR=1
+deactivate
+print -r -- RETRIED
+[[ "$ZP_LAST_RUNTIME_STATUS" -eq 0 ]] || exit 30
+[[ -z "${ZP_RECOVERY_REVERSE_FN+x}" && ${+functions[$recovery]} == 0 ]] || exit 31
+[[ -z "${ZP_RECOVERY_SECRET+x}" ]] || exit 32
+
+activate C
+[[ "$ZP_RECOVERY_C" == active && -n "${ZP_ACTIVE_REVERSE_FN-}" ]] || exit 40
+deactivate
+[[ -z "${ZP_RECOVERY_C+x}" && -z "${ZP_ACTIVE_PROFILE+x}" && -z "${ZSHPRO_PROFILE+x}" && -z "${ZP_ACTIVE_REVERSE_FN+x}" ]] || exit 41
+`, mode.setup)
+			cmd := exec.Command(realZsh, "-f", "-c", body, "zsh-pro-failed-target-recovery-test", loader)
+			cmd.Env = liveEnv(dir,
+				"PATH="+dir+":"+os.Getenv("PATH"),
+				"ZP_RECOVERY_B_PAYLOAD="+bPayload,
+				"ZP_RECOVERY_C_PAYLOAD="+cPayload,
+				"ZP_RECOVERY_C_EMIT_LOG="+emitLog,
+			)
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("failed target recovery under %s: %v\n%s", mode.name, err, out)
+			}
+			if strings.Contains(string(out), secret) {
+				t.Fatalf("failed target recovery disclosed resolved secret under %s:\n%s", mode.name, out)
+			}
+			for _, want := range []string{"SURVIVED", "BLOCKED", "RETRIED"} {
+				if !strings.Contains(string(out), want) {
+					t.Fatalf("failed target recovery under %s did not reach %q:\n%s", mode.name, want, out)
+				}
+			}
+		})
+	}
+}
+
 func TestLiveTerminalPartialRetainedReverseKeepsRecoveryState(t *testing.T) {
 	realZsh, err := exec.LookPath("zsh")
 	if err != nil {

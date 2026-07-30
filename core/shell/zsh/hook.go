@@ -262,7 +262,11 @@ _zp_eval_block() {
     if (( rc == 0 )); then
       if eval "$block"; then :; else
         rc=$?
-        _zp_runtime_error "$rc" "switch failed at runtime; shell may be partially changed; run checkout ${ZP_LAST_GOOD_PROFILE:-main}"
+        if [[ "${ZP_RECOVERY_REVERSE_FN+x}" == x ]]; then
+          _zp_runtime_error "$rc" "target apply cleanup failed; recovery is retained; run deactivate before another activation"
+        else
+          _zp_runtime_error "$rc" "switch failed at runtime; shell may be partially changed; run checkout ${ZP_LAST_GOOD_PROFILE:-main}"
+        fi
       fi
     fi
   } always {
@@ -302,27 +306,80 @@ _zp_run_retained_reverse() {
   return "$rc"
 }
 
+_zp_recover_failed_target() {
+  local reverse="${ZP_RECOVERY_REVERSE_FN-}" rc=1
+  if [[ -z "$reverse" || ${+functions[$reverse]} != 1 ]]; then return 1; fi
+  # Do not run a successful reverse unless its recovery marker can be removed
+  # immediately afterwards. Otherwise a consumed function could leave a stale
+  # pointer that prevents a future cleanup retry.
+  if [[ "${ZP_ACTIVE_REVERSE_FN-}" == "$reverse" ]]; then
+    if ! _zp_preflight_undo_slots ZP_ACTIVE_REVERSE_FN ZP_RECOVERY_REVERSE_FN; then return 1; fi
+  elif ! _zp_preflight_undo_slots ZP_RECOVERY_REVERSE_FN; then
+    return 1
+  fi
+  if _zp_run_transient_reverse_payload "$reverse"; then
+    if [[ "${ZP_ACTIVE_REVERSE_FN-}" == "$reverse" ]]; then
+      if unset ZP_ACTIVE_REVERSE_FN; then :; else return $?; fi
+    fi
+    if [[ "${ZP_RECOVERY_REVERSE_FN-}" == "$reverse" ]]; then
+      if unset ZP_RECOVERY_REVERSE_FN; then return 0; else return $?; fi
+    fi
+    return 1
+  else
+    rc=$?
+  fi
+  return "$rc"
+}
+
 _zp_run_payload() {
-  local apply="$1" reverse="$2" rc=1
+  local apply="$1" reverse="$2" apply_rc=1 cleanup_rc=1
   if [[ -z "$apply" || -z "$reverse" || ${+functions[$apply]} != 1 || ${+functions[$reverse]} != 1 ]]; then
+    unset -f "$apply" "$reverse" 2>/dev/null || :
+    return 1
+  fi
+  # A failed target can leave a partially applied shell plus its secret-bearing
+  # reverse. Refuse all new payloads until deactivate has successfully retried
+  # that compensation; do not let a later profile layer on top of it.
+  if [[ "${ZP_RECOVERY_REVERSE_FN+x}" == x ]]; then
+    unset -f "$apply" "$reverse" 2>/dev/null || :
+    return 1
+  fi
+  # Both retained pointers are loader-owned state. Validate their mutability
+  # before apply changes the current terminal, so a readonly marker cannot
+  # turn a failed compensation into an untracked reverse function.
+  if ! _zp_preflight_undo_slots ZP_ACTIVE_REVERSE_FN ZP_RECOVERY_REVERSE_FN; then
+    unset -f "$apply" "$reverse" 2>/dev/null || :
+    return 1
+  fi
+  # Install the recovery pointer before invoking apply. Any later failure can
+  # therefore retain the reverse even if the target changed the terminal first.
+  if ! typeset -g ZP_RECOVERY_REVERSE_FN="$reverse"; then
     unset -f "$apply" "$reverse" 2>/dev/null || :
     return 1
   fi
   if "$apply"; then
     if typeset -g ZP_ACTIVE_REVERSE_FN="$reverse"; then
-      unset -f "$apply" 2>/dev/null || :
-      return 0
+      if unset ZP_RECOVERY_REVERSE_FN; then
+        unset -f "$apply" 2>/dev/null || :
+        return 0
+      fi
     fi
-    rc=1
+    apply_rc=1
   else
-    rc=$?
+    apply_rc=$?
   fi
-  # Apply may have changed part of the target before returning non-zero. Its
-  # own reverse is defined before apply runs and must be consumed immediately.
-  if _zp_run_transient_reverse_payload "$reverse"; then :; else :; fi
+  # Apply may have changed part of the target before returning non-zero. Keep
+  # its reverse under a dedicated recovery marker until compensation succeeds.
+  # If compensation fails, the function (and any resolved secret in its source)
+  # remains reachable for a later public deactivate retry.
+  if _zp_recover_failed_target; then
+    cleanup_rc=0
+  else
+    cleanup_rc=$?
+  fi
   unset -f "$apply" 2>/dev/null || :
-  unset ZP_ACTIVE_REVERSE_FN
-  return "$rc"
+  if (( cleanup_rc != 0 )); then return "$cleanup_rc"; fi
+  return "$apply_rc"
 }
 
 _zp_has_known_active_profile() {
@@ -360,6 +417,10 @@ _zp_reverse_active_profile() {
 _zp_switch() {
   local name="$1" block='' active=0
   {
+    if [[ "${ZP_RECOVERY_REVERSE_FN+x}" == x ]]; then
+      _zp_runtime_error 1 "target cleanup is pending; run deactivate before activating another profile"
+      return 1
+    fi
     if _zp_has_known_active_profile "$name"; then
       if export ZSHPRO_PROFILE="$name"; then return 0; fi
       _zp_runtime_error 1 "unable to record active profile"
@@ -446,7 +507,15 @@ checkout() {
 }
 
 deactivate() {
+	local rc=1
 	{
+		if [[ "${ZP_RECOVERY_REVERSE_FN+x}" == x ]]; then
+			if _zp_recover_failed_target; then :; else
+				rc=$?
+				_zp_runtime_error "$rc" "target apply cleanup failed; recovery is retained; repair the terminal state and run deactivate again"
+				return 0
+			fi
+		fi
 		if [[ "${ZP_ACTIVE_PROFILE+x}" != x ]]; then _zp_runtime_ok; return 0; fi
 		if ! _zp_prepare_eval_state; then return 0; fi
 		if _zp_reverse_active_profile; then _zp_runtime_ok; fi
