@@ -653,8 +653,10 @@ func TestLiveTerminalPublicVerbArityFailsOpenBeforeRuntimeWork(t *testing.T) {
 		usage      string
 	}{
 		{name: "activate missing", invocation: "activate", usage: "usage: activate <profile>"},
+		{name: "activate empty", invocation: "activate ''", usage: "usage: activate <profile>"},
 		{name: "activate surplus", invocation: "activate target accidental", usage: "usage: activate <profile>"},
 		{name: "checkout missing", invocation: "checkout", usage: "usage: checkout <profile>"},
+		{name: "checkout empty", invocation: "checkout ''", usage: "usage: checkout <profile>"},
 		{name: "checkout surplus", invocation: "checkout target accidental", usage: "usage: checkout <profile>"},
 		{name: "deactivate surplus", invocation: "deactivate accidental", usage: "usage: deactivate"},
 		{name: "list surplus", invocation: "list accidental", usage: "usage: list"},

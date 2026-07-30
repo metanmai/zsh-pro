@@ -479,7 +479,7 @@ _zp_switch() {
 }
 
 activate() {
-	if (( $# != 1 )); then
+	if (( $# != 1 )) || [[ -z "$1" ]]; then
 		_zp_runtime_error 2 "usage: activate <profile>"
 		return 0
 	fi
@@ -493,7 +493,7 @@ activate() {
 }
 
 checkout() {
-	if (( $# != 1 )); then
+	if (( $# != 1 )) || [[ -z "$1" ]]; then
 		_zp_runtime_error 2 "usage: checkout <profile>"
 		return 0
 	fi
