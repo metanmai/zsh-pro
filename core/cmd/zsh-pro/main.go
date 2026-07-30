@@ -6,7 +6,6 @@ package main
 
 import (
 	"os"
-	"path/filepath"
 
 	"zsh-pro/core/cli"
 	"zsh-pro/core/shell/zsh"
@@ -14,6 +13,10 @@ import (
 )
 
 func main() {
+	os.Exit(newCLI().Run(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+func newCLI() *cli.CLI {
 	// The concrete zsh provider is the engine's Parser/Classifier/Introspector AND the
 	// shell.Regenerator the store uses to derive profile.zsh (D-03).
 	// It also supplies the shell.Emitter seam for Phase 5's runtime loader.
@@ -24,17 +27,19 @@ func main() {
 	// git-ignored 0600 vault fallback — never nil) as the secret backend, over the D-04
 	// store dir. The store package itself never imports core/shell/zsh; the concrete
 	// drivers are injected only here.
-	dir := storeDir()
-	kc := store.NewOSKeychainDriver(dir)
-	s, err := store.New(dir, provider, kc)
 	// The CLI verbs that consume the store (checkout/create/list/status) arrive in
 	// Phase 5; the store is constructed + injectable now but not yet driven by a verb.
-	// An init error (e.g. git absent) simply means profile storage is unavailable — it
-	// must NOT crash the existing read-only `analyze` path, so it is intentionally
-	// non-fatal here and surfaces when a store-backed verb is wired in Phase 5.
+	// A store-root or init error (e.g. an invalid environment or absent git) simply
+	// means profile storage is unavailable — it must NOT crash the existing read-only
+	// `analyze` path, so it is intentionally non-fatal here and surfaces when a
+	// store-backed verb is wired in Phase 5.
 	var cliStore cli.Store
-	if err == nil {
-		cliStore = s
+	var kc store.KeychainDriver
+	if dir, err := cli.StoreRoot(); err == nil {
+		kc = store.NewOSKeychainDriver(dir)
+		if s, err := store.New(dir, provider, kc); err == nil {
+			cliStore = s
+		}
 	}
 	// Runtime secret dereference remains behind the narrow CLI resolver seam;
 	// the existing concrete driver is created once here and never exposes a
@@ -48,18 +53,5 @@ func main() {
 		return boundStore, boundStore.RuntimeSecretResolver(), nil
 	})
 
-	os.Exit(cli.New(provider, cliStore, emitter).Run(os.Args[1:], os.Stdout, os.Stderr))
-}
-
-// storeDir resolves the bare-repo location per D-04: $ZSHPRO_HOME if set, else
-// $XDG_DATA_HOME/zsh-pro, else ~/.local/share/zsh-pro. It is a pure env read — no
-// directory is created here (Init owns creation, idempotently).
-func storeDir() string {
-	if home := os.Getenv("ZSHPRO_HOME"); home != "" {
-		return home
-	}
-	if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" {
-		return filepath.Join(xdg, "zsh-pro")
-	}
-	return filepath.Join(os.Getenv("HOME"), ".local", "share", "zsh-pro")
+	return cli.New(provider, cliStore, emitter)
 }

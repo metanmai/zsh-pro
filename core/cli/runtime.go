@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"time"
 )
@@ -46,11 +45,12 @@ func (c *CLI) runRuntime(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-// runRuntimeCapture executes only the loader's emit/list request. For emit it
-// authenticates ZSHPRO_HOME once and constructs a descriptor-bound store in
-// this process; it never launches a second composition root that can reopen the
-// original pathname. Its stdout stays in memory until the request succeeds, so
-// no emitted source is written beneath an attacker-replaceable path.
+// runRuntimeCapture executes only the loader's emit/list request. It
+// authenticates the resolved profile-store root once and constructs a
+// descriptor-bound store in this process; it never launches a second
+// composition root that can reopen the original pathname. Its stdout stays in
+// memory until the request succeeds, so no emitted source is written beneath an
+// attacker-replaceable path.
 func (c *CLI) runRuntimeCapture(args []string, stdout, stderr io.Writer) int {
 	if len(args) < 4 || args[1] != "--" {
 		return runtimeFail(stderr, 2, "usage: zsh-pro runtime capture <seconds> -- zsh-pro <emit|list> ...")
@@ -63,43 +63,32 @@ func (c *CLI) runRuntimeCapture(args []string, stdout, stderr io.Writer) int {
 	if len(childArgs) < 2 || childArgs[0] != "zsh-pro" {
 		return runtimeFail(stderr, 2, "runtime capture only permits zsh-pro emit or list")
 	}
-	var root *RuntimeRoot
 	switch childArgs[1] {
 	case "emit":
 		if len(childArgs) != 4 || (childArgs[2] != "apply" && childArgs[2] != "deactivate") || childArgs[3] == "" {
 			return runtimeFail(stderr, 2, "runtime capture requires zsh-pro emit <apply|deactivate> <profile>")
 		}
-		rootPath, err := runtimeRoot()
-		if err != nil {
-			return runtimeFail(stderr, 1, err.Error())
-		}
-		// Before the emitter starts, secureRuntimeRoot walks every component
-		// by descriptor with O_NOFOLLOW and leaves the terminal descriptors
-		// open. The emission below must consume these exact objects rather than
-		// root, whose spelling may be replaced after this check.
-		root, err = secureRuntimeRoot(rootPath)
-		if err != nil {
-			return runtimeFail(stderr, 1, "runtime staging root is unsafe")
-		}
-		defer func() { _ = root.Close() }()
-		runtimeRootValidated(root)
 	case "list":
 		if len(childArgs) != 2 {
 			return runtimeFail(stderr, 2, "runtime capture requires zsh-pro list without arguments")
 		}
-		rootPath, err := runtimeRoot()
-		if err != nil {
-			return runtimeFail(stderr, 1, err.Error())
-		}
-		root, err = secureRuntimeRoot(rootPath)
-		if err != nil {
-			return runtimeFail(stderr, 1, "runtime staging root is unsafe")
-		}
-		defer func() { _ = root.Close() }()
-		runtimeRootValidated(root)
 	default:
 		return runtimeFail(stderr, 2, "runtime capture only permits zsh-pro emit or list")
 	}
+	rootPath, err := StoreRoot()
+	if err != nil {
+		return runtimeFail(stderr, 1, err.Error())
+	}
+	// Before the emitter starts, secureRuntimeRoot walks every component by
+	// descriptor with O_NOFOLLOW and leaves the terminal descriptors open. The
+	// emission below must consume these exact objects rather than root, whose
+	// spelling may be replaced after this check.
+	root, err := secureRuntimeRoot(rootPath)
+	if err != nil {
+		return runtimeFail(stderr, 1, "runtime store root is unsafe")
+	}
+	defer func() { _ = root.Close() }()
+	runtimeRootValidated(root)
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -167,20 +156,6 @@ func parseRuntimeTimeout(raw string) (time.Duration, error) {
 		return 0, fmt.Errorf("runtime timeout must be an integer from %d to %d seconds", runtimeTimeoutMinSeconds, runtimeTimeoutMaxSeconds)
 	}
 	return time.Duration(seconds) * time.Second, nil
-}
-
-func runtimeRoot() (string, error) {
-	if root, ok := os.LookupEnv("ZSHPRO_HOME"); ok {
-		if root == "" || !filepath.IsAbs(root) {
-			return "", errors.New("runtime staging requires an absolute non-empty ZSHPRO_HOME")
-		}
-		return root, nil
-	}
-	home, ok := os.LookupEnv("HOME")
-	if !ok || home == "" || !filepath.IsAbs(home) {
-		return "", errors.New("runtime staging requires an absolute non-empty HOME")
-	}
-	return filepath.Join(home, ".zsh-pro"), nil
 }
 
 func validateRuntimeSource(ctx context.Context, source io.Reader) error {
