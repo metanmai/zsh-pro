@@ -496,7 +496,7 @@ func TestResidueStoreRoundTripLegacy(t *testing.T) {
 	apply, deactivate := emitPipelineListPlan(t, provider, manifest)
 	run := runSnapshotMutation(t,
 		"HOME=/runtime-home\nPATH=/base\nFPATH=/fbase\nEXTRA=/runtime-extra\n",
-		apply+"\nzp_apply\n"+deactivate+"\nzp_deactivate\nunset -f zp_apply zp_deactivate zp_capture_scalar zp_restore_scalar\n",
+		apply+"\nzp_apply\n"+deactivate+"\nzp_deactivate\nunset -f zp_apply zp_deactivate zp_capture_scalar zp_preflight_undo_slots zp_preflight_restore_scalar zp_restore_scalar zp_commit_restore_scalar zp_commit_undo_slots\n",
 	)
 	if diff := snapshotDifference(run.before, run.after); diff != "" {
 		t.Fatalf("persisted mixed list residue: %s", diff)
@@ -565,7 +565,7 @@ func TestResiduePersistedRejectedStructuralNoop(t *testing.T) {
 		"unset ZP__integer_before",
 		deactivate,
 		"zp_deactivate",
-		"unset -f zp_apply zp_deactivate zp_capture_scalar zp_restore_scalar",
+		"unset -f zp_apply zp_deactivate zp_capture_scalar zp_preflight_undo_slots zp_preflight_restore_scalar zp_restore_scalar zp_commit_restore_scalar zp_commit_undo_slots",
 	}, "\n")
 	run := runSnapshotMutation(t, setup, mutation)
 	if diff := snapshotDifference(run.before, run.noop); diff != "" {
@@ -614,7 +614,7 @@ func TestResiduePersistedSourceShapeNoop(t *testing.T) {
 	}, "\n") + "\n"
 	mutation := strings.Join([]string{
 		apply, "zp_apply", deactivate, "zp_deactivate",
-		"unset -f zp_apply zp_deactivate zp_capture_scalar zp_restore_scalar",
+		"unset -f zp_apply zp_deactivate zp_capture_scalar zp_preflight_undo_slots zp_preflight_restore_scalar zp_restore_scalar zp_commit_restore_scalar zp_commit_undo_slots",
 	}, "\n")
 	run := runSnapshotMutation(t, setup, mutation)
 	if diff := snapshotDifference(run.before, run.noop); diff != "" {

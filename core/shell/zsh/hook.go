@@ -61,21 +61,56 @@ _zp_capture_scalar() {
   fi
 }
 
-_zp_restore_scalar() {
+_zp_preflight_undo_slots() {
+  local slot
+  for slot in "$@"; do
+    if [[ -n "$slot" && "${(P)+slot}" == 1 && "${parameters[$slot]}" == *readonly* ]]; then
+      return 1
+    fi
+  done
+  return 0
+}
+
+_zp_preflight_restore_scalar() {
   local var="$1" applied="$2" original_slot="$3" presence_slot="$4" export_slot="$5" applied_slot="${6-}"
-  # Standalone emitted plans retain an applied-value slot so they can detect
-  # user edits. Static runtime payloads already retain that literal in their
-  # one active reverse function and omit the duplicate global slot; dynamic
-  # runtime payloads pass a sixth argument to retain their evaluated value.
+  # Static runtime payloads keep their expected value in the retained reverse;
+  # dynamic payloads pass the evaluated value through a short-lived slot.
   if [[ -n "$applied_slot" && "${(P)+applied_slot}" == 1 ]]; then applied="${(P)applied_slot}"; fi
-  if [[ "${(P)+var}" == 1 && "${(P)var}" == "$applied" ]]; then
-    if [[ "${(P)presence_slot}" == 1 ]]; then
-      typeset -g "$var=${(P)original_slot}"
-      if [[ "${(P)export_slot}" == 1 ]]; then export "$var"; else typeset +x "$var"; fi
-    else unset "$var"; fi
+  # Commit clears these slots even when a user has changed the target since
+  # activation, so validate them before returning for drift.
+  _zp_preflight_undo_slots "$original_slot" "$presence_slot" "$export_slot" "$applied_slot" || return $?
+  if [[ "${(P)+var}" != 1 || "${(P)var}" != "$applied" ]]; then return 0; fi
+  if [[ "${parameters[$var]}" == *readonly* ]]; then return 1; fi
+  if [[ "${(P)+presence_slot}" != 1 ]]; then return 1; fi
+  if [[ "${(P)presence_slot}" == 1 && ( "${(P)+original_slot}" != 1 || "${(P)+export_slot}" != 1 ) ]]; then
+    return 1
   fi
-  unset "$original_slot" "$presence_slot" "$export_slot"
-  [[ -z "$applied_slot" ]] || unset "$applied_slot"
+  return 0
+}
+
+_zp_restore_scalar() {
+  local var="$1" applied="$2" original_slot="$3" presence_slot="$4" export_slot="$5" applied_slot="${6-}" rc=0
+  if [[ -n "$applied_slot" && "${(P)+applied_slot}" == 1 ]]; then applied="${(P)applied_slot}"; fi
+  if [[ "${(P)+var}" != 1 || "${(P)var}" != "$applied" ]]; then return 0; fi
+  if [[ "${(P)presence_slot}" == 1 ]]; then
+    if typeset -g "$var=${(P)original_slot}"; then :; else return $?; fi
+    if [[ "${(P)export_slot}" == 1 ]]; then export "$var"; else typeset +x "$var"; fi
+    rc=$?
+    if (( rc != 0 )); then return "$rc"; fi
+  elif unset "$var"; then :; else return $?; fi
+  return 0
+}
+
+_zp_commit_restore_scalar() {
+  local original_slot="$1" presence_slot="$2" export_slot="$3" applied_slot="${4-}"
+  if [[ -n "$applied_slot" ]]; then
+    if unset "$original_slot" "$presence_slot" "$export_slot" "$applied_slot"; then return 0; else return $?; fi
+  fi
+  if unset "$original_slot" "$presence_slot" "$export_slot"; then return 0; else return $?; fi
+}
+
+_zp_commit_undo_slots() {
+  if unset "$@"; then return 0; else return $?; fi
 }
 
 _zp_prepare_eval_state() {
@@ -246,15 +281,25 @@ _zp_eval_block() {
 _zp_run_transient_reverse_payload() {
   local reverse="$1" rc=1
   if [[ -z "$reverse" || ${+functions[$reverse]} != 1 ]]; then return 1; fi
-  if "$reverse"; then rc=0; else rc=$?; fi
-  unset -f "$reverse" 2>/dev/null || :
+  if "$reverse"; then
+    if unset -f "$reverse" 2>/dev/null; then return 0; else return $?; fi
+  else
+    rc=$?
+  fi
   return "$rc"
 }
 
 _zp_run_retained_reverse() {
-  local reverse="$1"
-  unset ZP_ACTIVE_REVERSE_FN
-  _zp_run_transient_reverse_payload "$reverse"
+  local reverse="$1" rc=1
+  if _zp_run_transient_reverse_payload "$reverse"; then
+    if [[ "${ZP_ACTIVE_REVERSE_FN-}" == "$reverse" ]]; then
+      if unset ZP_ACTIVE_REVERSE_FN; then return 0; else return $?; fi
+    fi
+    return 0
+  else
+    rc=$?
+  fi
+  return "$rc"
 }
 
 _zp_run_payload() {
@@ -288,19 +333,26 @@ _zp_has_known_active_profile() {
 
 _zp_reverse_active_profile() {
   local reverse="${ZP_ACTIVE_REVERSE_FN-}" rc=1
-  # Clear both public and authoritative markers before invoking the retained
-  # reverse. A reverse can fail, but it must never leave the old marker behind
-  # after it has begun changing the shell.
-  if unset ZP_ACTIVE_PROFILE ZSHPRO_PROFILE; then :; else
-    _zp_runtime_error 1 "unable to clear active profile before reversal"
-    return 1
-  fi
   if [[ -z "$reverse" || ${+functions[$reverse]} != 1 ]]; then
-    unset ZP_ACTIVE_REVERSE_FN
     _zp_runtime_error 1 "active profile reverse is unavailable; shell state may be partially changed"
     return 1
   fi
-  if _zp_run_retained_reverse "$reverse"; then return 0; else rc=$?; fi
+  # A retained reverse only commits its own undo cleanup after every generated
+  # operation succeeds. Check the three loader-owned commit markers before
+  # invoking it as well, so a readonly marker cannot turn a successful reverse
+  # into an unrecoverable half-commit.
+  if ! _zp_preflight_undo_slots ZP_ACTIVE_PROFILE ZSHPRO_PROFILE ZP_ACTIVE_REVERSE_FN; then
+    _zp_runtime_error 1 "active profile markers cannot be cleared; shell state unchanged"
+    return 1
+  fi
+  if _zp_run_retained_reverse "$reverse"; then
+    if unset ZP_ACTIVE_PROFILE ZSHPRO_PROFILE; then return 0; else
+      _zp_runtime_error 1 "unable to clear active profile after reversal"
+      return 1
+    fi
+  else
+    rc=$?
+  fi
   _zp_runtime_error "$rc" "active profile reversal failed; shell state may be partially changed"
   return "$rc"
 }
