@@ -1,8 +1,8 @@
 ---
 phase: 05
-fixed_at: 2026-07-30T04:01:02Z
+fixed_at: 2026-07-30T04:43:27Z
 review_path: .planning/phases/05-runtime-loader-cli-bootstrap/05-REVIEW.md
-iteration: 8
+iteration: 9
 findings_in_scope: 1
 fixed: 1
 skipped: 0
@@ -11,9 +11,9 @@ status: all_fixed
 
 # Phase 05: Code Review Fix Report
 
-**Fixed at:** 2026-07-30T04:01:02Z
+**Fixed at:** 2026-07-30T04:43:27Z
 **Source review:** `.planning/phases/05-runtime-loader-cli-bootstrap/05-REVIEW.md`
-**Iteration:** 8
+**Iteration:** 9
 
 **Summary:**
 
@@ -23,24 +23,24 @@ status: all_fixed
 
 ## Fixed Issues
 
-### CR-01: [BLOCKER] Missing verb arguments abort `NO_UNSET` shells before fail-open handling
+### CR-01: [BLOCKER] Cached-loader installation follows symlinks and mutates unrelated targets
 
 **Status:** fixed
-**Files modified:** `core/shell/zsh/hook.go`, `core/shell/zsh/live_terminal_test.go`
-**Commit:** `0cbbe8b`
-**Applied fix:** `activate` and `checkout` now use the safe optional positional expansion `${1-}`, so a no-argument call reaches the existing usage diagnostic and zero-return fail-open boundary under `NO_UNSET`. Native-zsh regressions cover both verbs under `NO_UNSET`, `NO_UNSET ERR_EXIT`, and `NO_UNSET ERR_RETURN`; every case proves the following command runs, reports status 2 and the usage diagnostic, preserves empty active/reverse/marker state, avoids emitting payload, and leaves no secret-bearing state.
+**Files modified:** `core/cli/cache_directory.go`, `core/cli/cache_directory_unix.go`, `core/cli/cache_directory_other.go`, `core/cli/cache_syscalls_linux.go`, `core/cli/cache_syscalls_darwin.go`, `core/cli/install.go`, `core/cli/install_test.go`, `core/cmd/zsh-pro/main_test.go`
+**Commit:** `87b92af`
+**Applied fix:** Replaced the cache's path-based `Stat`/`Chmod`/symlink-resolution flow with descriptor-relative, `O_NOFOLLOW` traversal and writes on Linux and Darwin. Every cache-root component must be a real directory; an existing loader must be a regular non-symlink before the cache becomes writable. Candidate/rollback files are created, validated, promoted, restored, and removed relative to retained descriptors. The installer now validates the exact staged descriptor via `/dev/fd/3`; the user-owned `.zshrc` resolver remains deliberately symlink-compatible. Unsupported platforms reject cache installation before mutation. Rollback also checks inode/device identity before removing a newly created cache directory.
 
 ## Verification
 
-- Targeted native-zsh regression: `GOTOOLCHAIN=auto go test -count=1 ./core/shell/zsh -run '^TestLiveTerminalNoArgumentVerbsFailOpenUnderNoUnset$' -v` — passed all six cases.
-- Full shell-package regression suite: `GOTOOLCHAIN=auto go test -count=1 ./core/shell/zsh -v` — passed, including successful zero-residue switching, retained-reverse recovery, secret scrubbing, runtime transport, timeout, and prior `ERR_EXIT`/`ERR_RETURN` probes.
-- Direct built-binary `zsh -f` probes for both verbs and all three option combinations — passed; each printed the usage diagnostic followed by `SURVIVED` with the expected status and clean state checks.
-- `GOTOOLCHAIN=auto go test -count=1 ./...` — passed.
-- `GOTOOLCHAIN=auto go vet ./...` and `GOTOOLCHAIN=auto go build ./...` — passed.
-- `make check` — passed (`gofmt` check, vet, `golangci-lint` with 0 issues, and all tests).
+- Direct cache regressions: `GOTOOLCHAIN=auto go test -count=1 -run 'TestInstallRejectsSymlinkedCachePathsWithoutMutation|TestCacheRollbackRefusesToRemoveAReplacedDirectory' -v ./core/cli` — passed root/loader symlinks for default and explicit caches, a symlinked ancestor, a non-directory ancestor, and substituted-directory rollback protection.
+- Built-binary regressions: `GOTOOLCHAIN=auto go test -count=1 -run TestBuiltBinaryInstallRejectsSymlinkedCacheTargetsWithoutMutation -v ./core/cmd/zsh-pro` — passed HOME, XDG, and explicit-root reproductions. Each failure retained the symlink, target bytes/modes, `.zshrc`, and the relevant store/cache tree.
+- Native zsh smoke: built binary `install`, then `zsh -f` source under `NO_UNSET ERR_EXIT ERR_RETURN` — passed and exposed `checkout`, `activate`, and `deactivate` from the cached loader.
+- Full native suite: `GOTOOLCHAIN=auto go test -count=1 ./...` — passed, including native zsh tests.
+- Static and project gates: `GOTOOLCHAIN=auto go vet ./...` and `make check` — passed; `golangci-lint` reported 0 issues.
+- Cross-build checks: Darwin arm64 build plus `core/cli` test compilation, Linux arm64 build, and Windows amd64 build/test compilation — passed. Windows uses the fail-closed cache implementation.
 
 ---
 
-_Fixed: 2026-07-30T04:01:02Z_
+_Fixed: 2026-07-30T04:43:27Z_
 _Fixer: the agent (gsd-code-fixer)_
-_Iteration: 8_
+_Iteration: 9_
