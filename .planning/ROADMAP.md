@@ -38,7 +38,7 @@ Previous-milestone phases are archived. Full detail in [milestones/](milestones/
 - [x] **Phase 2: IR + Partial Evaluation** - Build the regenerable `model.Profile` from parsed blocks, tag each entry declarative/imperative and static/dynamic, and regenerate behavior-equivalent per-category `.zsh` (completed 2026-06-26)
 - [x] **Phase 3: Git-Backed Store** - Store the IR as a git repo (via the `git` binary) where each branch is a profile; create/list/switch profiles tracked per-terminal, with detected secrets excluded by default (completed 2026-06-27)
 - [x] **Phase 4: Manifest Builder + Emit** - Turn a profile into a reversible `Manifest` (record-and-reverse with a drift guard; PATH as a delta vs captured base) and emit the apply/deactivate zsh code from the one place zsh syntax lives (completed 2026-07-27)
-- [ ] **Phase 5: Runtime Loader + CLI + Bootstrap** - Wire the live terminal via a sourced emit-and-source loader and the `checkout`/`activate`/`deactivate`/`list`/`status` verbs, bootstrapped by an idempotent `.zshrc` block that is fail-open and fast
+- [x] **Phase 5: Runtime Loader + CLI + Bootstrap** - Wire the live terminal via a sourced emit-and-source loader and the `checkout`/`activate`/`deactivate`/`list`/`status` verbs, bootstrapped by an idempotent `.zshrc` block that is fail-open and fast (completed 2026-07-30)
 - [ ] **Phase 6: Ingest End-to-End** - Polish the on-ramp: parse a real `~/.zshrc` → classify → partial-eval → regenerate → commit to the baseline branch, against the final IR shape
 
 ## Phase Details
@@ -219,9 +219,14 @@ Plans:
   3. A broken, missing, or slow `zsh-pro` never locks the user out: the stub guards sourcing (`command -v`, `[[ -r ]]`), generated manifests are `zsh -n`-validated with a last-good fallback, and `ZSHPRO_DISABLE=1` fully no-ops the loader.
   4. The hot path adds only a small, file-sourced startup cost — zero subprocesses (no `git`, no binary, no `$(...)`) on shell start — verified within budget via `hyperfine 'zsh -i -c exit'`.
 
-**Plans**: 5/5 plans executed
+**Plans**: 8/8 plans executed
 
 Plans:
+
+- [x] 05-06-PLAN.md
+- [x] 05-07-PLAN.md
+- [x] 05-08-PLAN.md
+
 **Wave 1**
 
 - [x] 05-01-PLAN.md
@@ -271,7 +276,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 | 2. IR + Partial Evaluation | 3/3 | Complete   | 2026-06-26 |
 | 3. Git-Backed Store | 3/3 | Complete   | 2026-06-27 |
 | 4. Manifest Builder + Emit | 19/19 | Complete    | 2026-07-27 |
-| 5. Runtime Loader + CLI + Bootstrap | 5/5 | In Progress|  |
+| 5. Runtime Loader + CLI + Bootstrap | 8/8 | Complete    | 2026-07-30 |
 | 6. Ingest End-to-End | 0/2 | Not started | - |
 
 ## Requirement Coverage
