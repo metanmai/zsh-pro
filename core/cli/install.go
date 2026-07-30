@@ -70,49 +70,49 @@ func runInstallWithStoreInitialization(provider shell.Hooker, initializeStore St
 		return installTransactionError("prepare rollback for "+paths.zshrcPath, err, rollbackStoreInitialization(storeInitialization))
 	}
 
-	runtimeState, err := secureRuntimeDirectory(paths.runtimeDir)
+	cacheState, err := secureCacheDirectory(paths.runtimeDir)
 	if err != nil {
 		rcWrite.discard()
 		rcRollback.discard()
 		return installTransactionError("create runtime directory", err, rollbackStoreInitialization(storeInitialization))
 	}
-	loader := filepath.Join(paths.runtimeDir, "loader.zsh")
+	defer func() { _ = cacheState.close() }()
 	loaderScript := "# zsh-pro cached loader version " + buildinfo.Version + "\n" + provider.HookScript()
-	loaderWrite, err := prepareValidatedLoader(loader, []byte(loaderScript))
+	loaderRollback, err := cacheState.prepareLoaderRollback()
 	if err != nil {
 		rcWrite.discard()
 		rcRollback.discard()
-		rollbackErr := rollbackRuntimeAndStore(runtimeState, storeInitialization)
-		return installTransactionError("install cached loader", err, rollbackErr)
-	}
-	loaderRollback, err := prepareWriteRollback(loaderWrite.target)
-	if err != nil {
-		loaderWrite.discard()
-		rcWrite.discard()
-		rcRollback.discard()
-		rollbackErr := rollbackRuntimeAndStore(runtimeState, storeInitialization)
+		rollbackErr := rollbackRuntimeAndStore(cacheState, storeInitialization)
 		return installTransactionError("prepare loader rollback", err, rollbackErr)
+	}
+	loaderWrite, err := cacheState.prepareValidatedLoader([]byte(loaderScript))
+	if err != nil {
+		loaderRollback.discard()
+		rcWrite.discard()
+		rcRollback.discard()
+		rollbackErr := rollbackRuntimeAndStore(cacheState, storeInitialization)
+		return installTransactionError("install cached loader", err, rollbackErr)
 	}
 
 	if err := loaderWrite.promote(); err != nil {
-		rollbackErr := rollbackPromoted(&loaderWrite, &loaderRollback)
+		rollbackErr := rollbackPromotedCache(&loaderWrite, &loaderRollback)
 		loaderWrite.discard()
 		loaderRollback.discard()
 		rcWrite.discard()
 		rcRollback.discard()
-		rollbackErr = errors.Join(rollbackErr, rollbackRuntimeAndStore(runtimeState, storeInitialization))
+		rollbackErr = errors.Join(rollbackErr, rollbackRuntimeAndStore(cacheState, storeInitialization))
 		return installTransactionError("install cached loader", err, rollbackErr)
 	}
 	if err := rcWrite.promote(); err != nil {
 		rollbackErr := errors.Join(
 			rollbackPromoted(&rcWrite, &rcRollback),
-			rollbackPromoted(&loaderWrite, &loaderRollback),
+			rollbackPromotedCache(&loaderWrite, &loaderRollback),
 		)
 		rcWrite.discard()
 		rcRollback.discard()
 		loaderWrite.discard()
 		loaderRollback.discard()
-		rollbackErr = errors.Join(rollbackErr, rollbackRuntimeAndStore(runtimeState, storeInitialization))
+		rollbackErr = errors.Join(rollbackErr, rollbackRuntimeAndStore(cacheState, storeInitialization))
 		return installTransactionError("write "+paths.zshrcPath, err, rollbackErr)
 	}
 
@@ -133,8 +133,8 @@ func rollbackStoreInitialization(initialization StoreInitialization) error {
 // explicit ZSHPRO_HOME made the store root and runtime directory the same newly
 // created path, remove the store first; a successful store rollback owns and
 // removes the shared directory without ever deleting pre-existing data.
-func rollbackRuntimeAndStore(runtime runtimeDirectoryState, initialization StoreInitialization) error {
-	if initialization.CreatedPath != "" && filepath.Clean(initialization.CreatedPath) == filepath.Clean(runtime.path) {
+func rollbackRuntimeAndStore(cache *cacheDirectoryState, initialization StoreInitialization) error {
+	if cache != nil && initialization.CreatedPath != "" && filepath.Clean(initialization.CreatedPath) == filepath.Clean(cache.path) {
 		storeErr := rollbackStoreInitialization(initialization)
 		if storeErr == nil {
 			// The created store owned the shared root, so its successful rollback
@@ -142,9 +142,12 @@ func rollbackRuntimeAndStore(runtime runtimeDirectoryState, initialization Store
 			// would turn a complete restoration into a spurious ENOENT error.
 			return nil
 		}
-		return errors.Join(storeErr, runtime.rollback())
+		return errors.Join(storeErr, cache.rollback())
 	}
-	return errors.Join(runtime.rollback(), rollbackStoreInitialization(initialization))
+	if cache == nil {
+		return rollbackStoreInitialization(initialization)
+	}
+	return errors.Join(cache.rollback(), rollbackStoreInitialization(initialization))
 }
 
 func (c *CLI) runInstall(stdout, stderr io.Writer) int {
@@ -292,24 +295,6 @@ func prepareAtomicWrite(path string, content []byte, defaultMode os.FileMode) (p
 	return prepareWriteTarget(target, content, mode)
 }
 
-// prepareValidatedLoader prepares a mode-0600 loader replacement only after
-// validating the exact temporary bytes that would be promoted.
-func prepareValidatedLoader(path string, content []byte) (preparedWrite, error) {
-	target, err := resolveWriteTarget(path)
-	if err != nil {
-		return preparedWrite{}, err
-	}
-	prepared, err := prepareWriteTarget(target, content, 0o600)
-	if err != nil {
-		return preparedWrite{}, err
-	}
-	if err := validateZsh(prepared.temp); err != nil {
-		prepared.discard()
-		return preparedWrite{}, err
-	}
-	return prepared, nil
-}
-
 func prepareWriteTarget(target string, content []byte, mode os.FileMode) (preparedWrite, error) {
 	temp, err := writeTemp(target, content, mode)
 	if err != nil {
@@ -401,48 +386,6 @@ func rollbackPromoted(write *preparedWrite, rollback *writeRollback) error {
 	return rollback.restore()
 }
 
-type runtimeDirectoryState struct {
-	path    string
-	existed bool
-	mode    os.FileMode
-}
-
-func secureRuntimeDirectory(path string) (runtimeDirectoryState, error) {
-	state := runtimeDirectoryState{path: path}
-	info, err := os.Stat(path)
-	if err == nil {
-		if !info.IsDir() {
-			return state, fmt.Errorf("%s is not a directory", path)
-		}
-		state.existed = true
-		state.mode = info.Mode().Perm()
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return state, err
-	}
-	if err := os.MkdirAll(path, 0o700); err != nil {
-		return state, err
-	}
-	if err := os.Chmod(path, 0o700); err != nil {
-		if state.existed {
-			_ = os.Chmod(path, state.mode)
-		} else {
-			_ = os.Remove(path)
-		}
-		return state, err
-	}
-	return state, nil
-}
-
-func (s runtimeDirectoryState) rollback() error {
-	if s.existed {
-		return os.Chmod(s.path, s.mode)
-	}
-	if err := os.Remove(s.path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	return nil
-}
-
 func installTransactionError(operation string, cause, rollbackErr error) error {
 	if rollbackErr == nil {
 		return fmt.Errorf("%s: %w", operation, cause)
@@ -507,14 +450,25 @@ func syncDirectory(dir string) error {
 	return d.Sync()
 }
 
-func validateZsh(path string) error {
+// validateZsh parses the exact staged loader descriptor through /dev/fd/3.
+// The candidate spelling is only a positional argument to zsh; its parser
+// never opens that path, so a pathname replacement cannot change the bytes
+// validated before promotion.
+func validateZsh(source *os.File, candidatePath string) error {
 	zsh, err := exec.LookPath("zsh")
 	if err != nil {
 		return fmt.Errorf("find zsh for loader validation: %w", err)
 	}
+	if source == nil {
+		return errors.New("validated loader descriptor is unavailable")
+	}
+	if _, err := source.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("rewind loader validation source: %w", err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), validationTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, zsh, "-n", path)
+	cmd := exec.CommandContext(ctx, zsh, "-n", "/dev/fd/3", candidatePath)
+	cmd.ExtraFiles = []*os.File{source}
 	if out, err := cmd.CombinedOutput(); err != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return errors.New("zsh -n validation timed out")

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -534,6 +535,237 @@ func TestInstallCacheFailureDoesNotTouchZshrc(t *testing.T) {
 	}
 	if !bytes.Equal(before, after) {
 		t.Fatal("zshrc changed after cached-loader failure")
+	}
+}
+
+// TestInstallRejectsSymlinkedCachePathsWithoutMutation keeps the user-selected
+// .zshrc compatibility policy separate from generated-cache policy. The cache
+// must reject a symlink before it chmods, writes, or stages under its target.
+func TestInstallRejectsSymlinkedCachePathsWithoutMutation(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("descriptor-authenticated cached-loader install is unsupported on this platform")
+	}
+
+	for _, root := range []struct {
+		name     string
+		cacheDir func(string) string
+	}{
+		{
+			name: "default HOME cache",
+			cacheDir: func(home string) string {
+				return filepath.Join(home, ".zsh-pro")
+			},
+		},
+		{
+			name: "explicit cache root",
+			cacheDir: func(home string) string {
+				return filepath.Join(home, "explicit-cache")
+			},
+		},
+	} {
+		root := root
+		t.Run("symlinked root "+root.name, func(t *testing.T) {
+			home := t.TempDir()
+			setInstallHome(t, home)
+			cacheDir := root.cacheDir(home)
+			if cacheDir != filepath.Join(home, ".zsh-pro") {
+				t.Setenv("ZSHPRO_HOME", cacheDir)
+			}
+			beforeRC := []byte("export KEEP_CACHE_ROOT=1\n")
+			rc := filepath.Join(home, ".zshrc")
+			if err := os.WriteFile(rc, beforeRC, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			victim := t.TempDir()
+			if err := os.Chmod(victim, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			sentinel := filepath.Join(victim, "unrelated.txt")
+			beforeSentinel := []byte("do not modify this directory\n")
+			if err := os.WriteFile(sentinel, beforeSentinel, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(victim, cacheDir); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := runInstall(zsh.Provider{}); err == nil {
+				t.Fatal("install accepted a symlinked cached-loader directory")
+			}
+			assertInstallSymlink(t, cacheDir, victim)
+			assertInstallBytesAndMode(t, sentinel, beforeSentinel, 0o644)
+			info, err := os.Stat(victim)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if info.Mode().Perm() != 0o755 {
+				t.Fatalf("unrelated directory mode = %v, want 0755", info.Mode().Perm())
+			}
+			if _, err := os.Lstat(filepath.Join(victim, cacheLoaderName)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("install created a cached loader in the symlink target: %v", err)
+			}
+			assertInstallBytesAndMode(t, rc, beforeRC, 0o600)
+		})
+
+		t.Run("symlinked loader "+root.name, func(t *testing.T) {
+			home := t.TempDir()
+			setInstallHome(t, home)
+			cacheDir := root.cacheDir(home)
+			if cacheDir != filepath.Join(home, ".zsh-pro") {
+				t.Setenv("ZSHPRO_HOME", cacheDir)
+			}
+			if err := os.Mkdir(cacheDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(cacheDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			beforeRC := []byte("export KEEP_CACHE_FILE=1\n")
+			rc := filepath.Join(home, ".zshrc")
+			if err := os.WriteFile(rc, beforeRC, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			victim := filepath.Join(t.TempDir(), "unrelated-loader.zsh")
+			beforeVictim := []byte("DO NOT OVERWRITE\n")
+			if err := os.WriteFile(victim, beforeVictim, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			loader := filepath.Join(cacheDir, cacheLoaderName)
+			if err := os.Symlink(victim, loader); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := runInstall(zsh.Provider{}); err == nil {
+				t.Fatal("install accepted a symlinked cached loader")
+			}
+			assertInstallSymlink(t, loader, victim)
+			assertInstallBytesAndMode(t, victim, beforeVictim, 0o644)
+			assertInstallBytesAndMode(t, rc, beforeRC, 0o600)
+			if info, err := os.Stat(cacheDir); err != nil || info.Mode().Perm() != 0o755 {
+				t.Fatalf("loader-symlink rejection changed cache directory mode: %v, err=%v", info, err)
+			}
+			entries, err := os.ReadDir(cacheDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != 1 || entries[0].Name() != cacheLoaderName {
+				t.Fatalf("symlink rejection left cache staging behind: %v", entries)
+			}
+		})
+	}
+
+	t.Run("symlinked cache ancestor", func(t *testing.T) {
+		home := t.TempDir()
+		setInstallHome(t, home)
+		victim := t.TempDir()
+		if err := os.Chmod(victim, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		ancestor := filepath.Join(home, "cache-ancestor")
+		if err := os.Symlink(victim, ancestor); err != nil {
+			t.Fatal(err)
+		}
+		cacheDir := filepath.Join(ancestor, "generated-cache")
+		t.Setenv("ZSHPRO_HOME", cacheDir)
+		rc := filepath.Join(home, ".zshrc")
+		beforeRC := []byte("export KEEP_CACHE_ANCESTOR=1\n")
+		if err := os.WriteFile(rc, beforeRC, 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := runInstall(zsh.Provider{}); err == nil {
+			t.Fatal("install accepted a symlinked cached-loader ancestor")
+		}
+		assertInstallSymlink(t, ancestor, victim)
+		if _, err := os.Lstat(filepath.Join(victim, "generated-cache")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("install created a cache through the symlinked ancestor: %v", err)
+		}
+		info, err := os.Stat(victim)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0o755 {
+			t.Fatalf("symlinked-ancestor victim mode = %v, want 0755", info.Mode().Perm())
+		}
+		assertInstallBytesAndMode(t, rc, beforeRC, 0o600)
+	})
+
+	t.Run("non-directory cache ancestor", func(t *testing.T) {
+		home := t.TempDir()
+		setInstallHome(t, home)
+		ancestor := filepath.Join(home, "cache-ancestor-file")
+		beforeAncestor := []byte("not a cache directory\n")
+		if err := os.WriteFile(ancestor, beforeAncestor, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("ZSHPRO_HOME", filepath.Join(ancestor, "generated-cache"))
+		rc := filepath.Join(home, ".zshrc")
+		beforeRC := []byte("export KEEP_CACHE_FILE_ANCESTOR=1\n")
+		if err := os.WriteFile(rc, beforeRC, 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := runInstall(zsh.Provider{}); err == nil {
+			t.Fatal("install accepted a non-directory cached-loader ancestor")
+		}
+		assertInstallBytesAndMode(t, ancestor, beforeAncestor, 0o644)
+		assertInstallBytesAndMode(t, rc, beforeRC, 0o600)
+	})
+}
+
+func TestCacheRollbackRefusesToRemoveAReplacedDirectory(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("descriptor-authenticated cached-loader install is unsupported on this platform")
+	}
+	home := t.TempDir()
+	cacheDir := filepath.Join(home, "cache")
+	state, err := secureCacheDirectory(cacheDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = state.close() }()
+
+	moved := filepath.Join(home, "original-cache")
+	if err := os.Rename(cacheDir, moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(cacheDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.rollback(); err == nil {
+		t.Fatal("rollback removed or accepted a replacement cache directory")
+	}
+	if info, err := os.Stat(cacheDir); err != nil || !info.IsDir() || info.Mode().Perm() != 0o755 {
+		t.Fatalf("replacement cache directory changed: %v, err=%v", info, err)
+	}
+	if info, err := os.Stat(moved); err != nil || !info.IsDir() {
+		t.Fatalf("original cache directory changed: %v, err=%v", info, err)
+	}
+}
+
+func assertInstallSymlink(t *testing.T, path, wantTarget string) {
+	t.Helper()
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("%s is no longer a symlink: %v, err=%v", path, info, err)
+	}
+	if got, err := os.Readlink(path); err != nil || got != wantTarget {
+		t.Fatalf("symlink %s target = %q, err=%v; want %q", path, got, err, wantTarget)
+	}
+}
+
+func assertInstallBytesAndMode(t *testing.T, path string, want []byte, mode os.FileMode) {
+	t.Helper()
+	got, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("%s bytes = %q, err=%v; want %q", path, got, err, want)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != mode {
+		t.Fatalf("%s mode = %v, want %v", path, info.Mode().Perm(), mode)
 	}
 }
 

@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -304,7 +306,7 @@ func TestBuiltBinaryInstallRollsBackStoreOnPromotionFailures(t *testing.T) {
 	binary := buildInstalledBinary(t)
 
 	t.Run("first loader promotion", func(t *testing.T) {
-		binDir := writeValidationShim(t, gitPath, "#!/bin/sh\nexec /bin/rm \"$2\"\n")
+		binDir := writeValidationShim(t, gitPath, "#!/bin/sh\nexec /bin/rm \"$3\"\n")
 		for _, route := range builtInstallRoutes() {
 			route := route
 			t.Run(route.name, func(t *testing.T) {
@@ -357,6 +359,116 @@ func TestBuiltBinaryInstallRollsBackStoreOnPromotionFailures(t *testing.T) {
 			})
 		}
 	})
+}
+
+// TestBuiltBinaryInstallRejectsSymlinkedCacheTargetsWithoutMutation exercises
+// the released command rather than its package seam. The generated cache has a
+// stricter policy than a user-selected .zshrc: a symlinked root or loader must
+// fail before it can redirect a chmod, cache write, store initialization, or
+// bootstrap replacement to unrelated data.
+func TestBuiltBinaryInstallRejectsSymlinkedCacheTargetsWithoutMutation(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("descriptor-authenticated cached-loader installation is unsupported on this platform")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	binary := buildInstalledBinary(t)
+
+	for _, route := range builtInstallRoutes() {
+		route := route
+		t.Run("symlinked cache root/"+route.name, func(t *testing.T) {
+			state := route.configure(t)
+			rc := filepath.Join(state.home, ".zshrc")
+			beforeRC := []byte("export KEEP_ROOT_SYMLINK=1\n")
+			if err := os.WriteFile(rc, beforeRC, 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			victim := t.TempDir()
+			if err := os.Chmod(victim, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			sentinel := filepath.Join(victim, "unrelated.txt")
+			beforeSentinel := []byte("do not alter this unrelated directory\n")
+			if err := os.WriteFile(sentinel, beforeSentinel, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			beforeVictimTree := snapshotBuiltTree(t, victim)
+			if err := os.Symlink(victim, state.runtimeRoot); err != nil {
+				t.Fatal(err)
+			}
+
+			if out, err := runInstalledBinary(binary, state.env, "install"); err == nil {
+				t.Fatalf("install accepted a symlinked cache root: %s", out)
+			} else {
+				assertNoRollbackFailure(t, out)
+			}
+			assertBuiltSymlink(t, state.runtimeRoot, victim)
+			assertBuiltBytesAndMode(t, sentinel, beforeSentinel, 0o644)
+			assertBuiltTree(t, victim, beforeVictimTree)
+			assertBuiltBytesAndMode(t, rc, beforeRC, 0o600)
+			if state.storeRoot != state.runtimeRoot {
+				assertFreshBuiltStoreAbsent(t, state)
+			}
+		})
+	}
+
+	for _, route := range builtInstallRoutes() {
+		route := route
+		t.Run("symlinked cached loader/"+route.name, func(t *testing.T) {
+			state := route.configure(t)
+			rc := filepath.Join(state.home, ".zshrc")
+			beforeRC := []byte("export KEEP_LOADER_SYMLINK=1\n")
+			if err := os.WriteFile(rc, beforeRC, 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			sharedCacheAndStore := state.storeRoot == state.runtimeRoot
+			var beforeMain string
+			if sharedCacheAndStore {
+				initializeBuiltInstallStore(t, state)
+				beforeMain = gitRef(t, state.storeRoot, "refs/heads/main")
+			} else {
+				if err := os.Mkdir(state.runtimeRoot, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				// A non-private pre-existing cache makes this test prove that a
+				// rejected loader does not even transiently repair its mode.
+				if err := os.Chmod(state.runtimeRoot, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			victim := filepath.Join(t.TempDir(), "unrelated-loader.zsh")
+			beforeVictim := []byte("DO NOT OVERWRITE THIS FILE\n")
+			if err := os.WriteFile(victim, beforeVictim, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			loader := filepath.Join(state.runtimeRoot, "loader.zsh")
+			if err := os.Symlink(victim, loader); err != nil {
+				t.Fatal(err)
+			}
+			beforeCacheTree := snapshotBuiltTree(t, state.runtimeRoot)
+
+			if out, err := runInstalledBinary(binary, state.env, "install"); err == nil {
+				t.Fatalf("install accepted a symlinked cached loader: %s", out)
+			} else {
+				assertNoRollbackFailure(t, out)
+			}
+			assertBuiltSymlink(t, loader, victim)
+			assertBuiltBytesAndMode(t, victim, beforeVictim, 0o644)
+			assertBuiltBytesAndMode(t, rc, beforeRC, 0o600)
+			assertBuiltTree(t, state.runtimeRoot, beforeCacheTree)
+			if !sharedCacheAndStore {
+				assertFreshBuiltStoreAbsent(t, state)
+				return
+			}
+			if got := gitRef(t, state.storeRoot, "refs/heads/main"); got != beforeMain {
+				t.Fatalf("symlink rejection changed explicit store main: got %s, want %s", got, beforeMain)
+			}
+		})
+	}
 }
 
 type builtInstallRoute struct {
@@ -429,6 +541,12 @@ func assertFreshProfileStoreAbsent(t *testing.T, state builtInstallState) {
 	assertPathsAbsent(t, paths)
 }
 
+func assertFreshBuiltStoreAbsent(t *testing.T, state builtInstallState) {
+	t.Helper()
+	paths := append([]string{state.storeRoot}, state.newParents...)
+	assertPathsAbsent(t, paths)
+}
+
 func assertPathsAbsent(t *testing.T, paths []string) {
 	t.Helper()
 	seen := make(map[string]bool, len(paths))
@@ -447,6 +565,114 @@ func assertNoRollbackFailure(t *testing.T, output string) {
 	t.Helper()
 	if strings.Contains(output, "rollback failed") {
 		t.Fatalf("install restored the filesystem but reported a rollback failure:\n%s", output)
+	}
+}
+
+func initializeBuiltInstallStore(t *testing.T, state builtInstallState) {
+	t.Helper()
+	provider := zsh.Provider{}
+	s, err := store.New(state.storeRoot, provider, store.NewOSKeychainDriver(state.storeRoot))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertBuiltSymlink(t *testing.T, path, wantTarget string) {
+	t.Helper()
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("%s is no longer a symlink: %v, err=%v", path, info, err)
+	}
+	if got, err := os.Readlink(path); err != nil || got != wantTarget {
+		t.Fatalf("symlink %s target = %q, err=%v; want %q", path, got, err, wantTarget)
+	}
+}
+
+func assertBuiltBytesAndMode(t *testing.T, path string, want []byte, mode os.FileMode) {
+	t.Helper()
+	got, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("%s bytes = %q, err=%v; want %q", path, got, err, want)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != mode {
+		t.Fatalf("%s mode = %v, want %v", path, info.Mode().Perm(), mode)
+	}
+}
+
+type builtTreeEntry struct {
+	mode   fs.FileMode
+	digest [sha256.Size]byte
+	link   string
+}
+
+func snapshotBuiltTree(t *testing.T, root string) map[string]builtTreeEntry {
+	t.Helper()
+	info, err := os.Lstat(root)
+	if err != nil {
+		t.Fatalf("stat snapshot root %s: %v", root, err)
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("snapshot root %s is not a real directory: %v", root, info.Mode())
+	}
+	tree := make(map[string]builtTreeEntry)
+	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		recorded := builtTreeEntry{mode: info.Mode()}
+		switch {
+		case info.Mode().IsRegular():
+			content, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			recorded.digest = sha256.Sum256(content)
+		case info.Mode()&os.ModeSymlink != 0:
+			link, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			recorded.link = link
+		case info.IsDir():
+			// Directories are represented by their exact mode; WalkDir does not
+			// recurse through a symlink.
+		default:
+			return errors.New("snapshot encountered an unsupported filesystem entry")
+		}
+		tree[rel] = recorded
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("snapshot %s: %v", root, err)
+	}
+	return tree
+}
+
+func assertBuiltTree(t *testing.T, root string, want map[string]builtTreeEntry) {
+	t.Helper()
+	got := snapshotBuiltTree(t, root)
+	if len(got) != len(want) {
+		t.Fatalf("tree %s entry count = %d, want %d", root, len(got), len(want))
+	}
+	for path, expected := range want {
+		if actual, ok := got[path]; !ok || actual != expected {
+			t.Fatalf("tree %s entry %q = %#v, present=%t; want %#v", root, path, actual, ok, expected)
+		}
 	}
 }
 
