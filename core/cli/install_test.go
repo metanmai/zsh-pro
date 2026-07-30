@@ -2,6 +2,8 @@ package cli
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -95,6 +97,32 @@ func TestInstallIdempotentPreservesUserContent(t *testing.T) {
 	}
 	if !strings.Contains(string(second), "export EDITOR=nvim") || !strings.Contains(string(second), "alias ll='ls -l'") {
 		t.Fatal("installer did not preserve user content")
+	}
+}
+
+func TestInstallStoreInitializationFailureDoesNotMutateBootstrap(t *testing.T) {
+	home := t.TempDir()
+	setInstallHome(t, home)
+	rc := filepath.Join(home, ".zshrc")
+	before := []byte("export KEEP_ME=1\n")
+	if err := os.WriteFile(rc, before, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	initErr := errors.New("profile store fixture unavailable")
+	err := runInstallWithStoreInitialization(zsh.Provider{}, func(context.Context) error { return initErr })
+	if !errors.Is(err, initErr) {
+		t.Fatalf("install error = %v, want wrapped initialization error", err)
+	}
+	after, err := os.ReadFile(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatalf("store initialization failure changed .zshrc:\n got: %q\nwant: %q", after, before)
+	}
+	if _, err := os.Lstat(filepath.Join(home, ".zsh-pro")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("store initialization failure created loader cache: %v", err)
 	}
 }
 

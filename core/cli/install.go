@@ -33,6 +33,14 @@ type installPaths struct {
 // never points at an unavailable loader; if the second promotion fails, the
 // prepared original loader is atomically restored.
 func runInstall(provider shell.Hooker) error {
+	return runInstallWithStoreInitialization(provider, nil)
+}
+
+// runInstallWithStoreInitialization validates the user-owned bootstrap first,
+// then initializes the profile store before preparing or promoting either
+// bootstrap artifact. A failed store initialization therefore cannot leave an
+// installed loader or .zshrc block behind.
+func runInstallWithStoreInitialization(provider shell.Hooker, initializeStore StoreInitializer) error {
 	paths, err := resolveInstallPaths()
 	if err != nil {
 		return err
@@ -44,6 +52,11 @@ func runInstall(provider shell.Hooker) error {
 	next, err := replaceManagedBlock(current, renderInstallBlock())
 	if err != nil {
 		return err
+	}
+	if initializeStore != nil {
+		if err := initializeStore(context.Background()); err != nil {
+			return fmt.Errorf("initialize profile store: %w", err)
+		}
 	}
 	rcWrite, err := prepareAtomicWrite(paths.zshrcPath, next, 0o644)
 	if err != nil {
@@ -111,7 +124,7 @@ func (c *CLI) runInstall(stdout, stderr io.Writer) int {
 	if code != 0 {
 		return code
 	}
-	if err := runInstall(provider); err != nil {
+	if err := runInstallWithStoreInitialization(provider, c.storeInitializer); err != nil {
 		return c.fail(stdout, stderr, false, err.Error())
 	}
 	_, _ = fmt.Fprintln(stdout, "zsh-pro: installed")

@@ -14,3 +14,8 @@ type Store interface {
 	Checkout(ctx context.Context, name string) error
 	Read(ctx context.Context, branch string) (model.Profile, error)
 }
+
+// StoreInitializer bootstraps or safely migrates the persistent profile store
+// during an explicit install. It is deliberately separate from Store so that
+// ordinary read-only CLI verbs cannot create or mutate profile storage.
+type StoreInitializer func(ctx context.Context) error

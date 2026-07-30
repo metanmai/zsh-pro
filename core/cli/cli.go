@@ -24,13 +24,25 @@ import (
 
 // CLI wires flags and I/O to the engine for a given shell Provider.
 type CLI struct {
-	provider shell.Provider
-	store    Store
-	emitter  Emitter
+	provider         shell.Provider
+	store            Store
+	emitter          Emitter
+	storeInitializer StoreInitializer
 }
 
 // New returns a CLI bound to a Provider.
 func New(p shell.Provider, s Store, e Emitter) *CLI {
+	return newCLI(p, s, e, nil)
+}
+
+// NewWithStoreInitializer returns a CLI whose explicit install command may
+// bootstrap profile storage. Read-only commands deliberately do not invoke the
+// initializer.
+func NewWithStoreInitializer(p shell.Provider, s Store, e Emitter, initializer StoreInitializer) *CLI {
+	return newCLI(p, s, e, initializer)
+}
+
+func newCLI(p shell.Provider, s Store, e Emitter, initializer StoreInitializer) *CLI {
 	if isNilLike(p) {
 		p = nil
 	}
@@ -40,7 +52,7 @@ func New(p shell.Provider, s Store, e Emitter) *CLI {
 	if isNilLike(e) {
 		e = NotReadyEmitter()
 	}
-	return &CLI{provider: p, store: s, emitter: e}
+	return &CLI{provider: p, store: s, emitter: e, storeInitializer: initializer}
 }
 
 // Run executes a command. Exit codes: 0 clean, 1 runtime error, 2 usage,

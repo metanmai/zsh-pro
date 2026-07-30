@@ -5,6 +5,7 @@
 package main
 
 import (
+	"context"
 	"os"
 
 	"zsh-pro/core/cli"
@@ -53,5 +54,16 @@ func newCLI() *cli.CLI {
 		return boundStore, boundStore.RuntimeSecretResolver(), nil
 	})
 
-	return cli.New(provider, cliStore, emitter)
+	return cli.NewWithStoreInitializer(provider, cliStore, emitter, func(ctx context.Context) error {
+		dir, err := cli.StoreRoot()
+		if err != nil {
+			return err
+		}
+		keychain := store.NewOSKeychainDriver(dir)
+		initialized, err := store.New(dir, provider, keychain)
+		if err != nil {
+			return err
+		}
+		return initialized.Init(ctx)
+	})
 }
