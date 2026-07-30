@@ -12,12 +12,19 @@ type Op interface{ activationOp() }
 
 type RestoreScalar struct {
 	Name, Applied string
-	Original      *string
+	// Dynamic preserves whether Applied is evaluated at activation time. The
+	// runtime renderer needs this to retain an actual applied-value slot only
+	// when a literal comparison cannot safely represent that evaluated value.
+	Dynamic  bool
+	Original *string
 }
 
 func (RestoreScalar) activationOp() {}
 
-type UnsetScalar struct{ Name, Applied string }
+type UnsetScalar struct {
+	Name, Applied string
+	Dynamic       bool
+}
 
 func (UnsetScalar) activationOp() {}
 

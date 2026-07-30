@@ -62,15 +62,20 @@ _zp_capture_scalar() {
 }
 
 _zp_restore_scalar() {
-  local var="$1" applied="$2" original_slot="$3" presence_slot="$4" export_slot="$5" applied_slot="$6"
-  if [[ "${(P)+applied_slot}" == 1 ]]; then applied="${(P)applied_slot}"; fi
+  local var="$1" applied="$2" original_slot="$3" presence_slot="$4" export_slot="$5" applied_slot="${6-}"
+  # Standalone emitted plans retain an applied-value slot so they can detect
+  # user edits. Static runtime payloads already retain that literal in their
+  # one active reverse function and omit the duplicate global slot; dynamic
+  # runtime payloads pass a sixth argument to retain their evaluated value.
+  if [[ -n "$applied_slot" && "${(P)+applied_slot}" == 1 ]]; then applied="${(P)applied_slot}"; fi
   if [[ "${(P)+var}" == 1 && "${(P)var}" == "$applied" ]]; then
     if [[ "${(P)presence_slot}" == 1 ]]; then
       typeset -g "$var=${(P)original_slot}"
       if [[ "${(P)export_slot}" == 1 ]]; then export "$var"; else typeset +x "$var"; fi
     else unset "$var"; fi
   fi
-  unset "$original_slot" "$presence_slot" "$export_slot" "$applied_slot"
+  unset "$original_slot" "$presence_slot" "$export_slot"
+  [[ -z "$applied_slot" ]] || unset "$applied_slot"
 }
 
 _zp_prepare_eval_state() {
@@ -104,48 +109,61 @@ _zp_runtime_ok() {
 # configured runtime root by descriptor with O_NOFOLLOW. This loader therefore
 # never creates, reads, writes, chmods, or reopens a staging pathname itself.
 _zp_run_bounded() {
-  local timeout="$1" code='' rc=1
-  shift
-  case "$timeout" in
-    [1-9]|[1-9][0-9]) ;;
-    *) timeout=5 ;;
-  esac
-  REPLY=''
-  if typeset -g ZP_RUNTIME_TIMED_OUT=0; then :; fi
-  if code="$(zsh-pro runtime capture "$timeout" -- "$@")"; then
-    REPLY="$code"
-    # Command substitution removes terminal newlines. Emit blocks remain
-    # parseable without one; list retains its ordinary line-oriented output.
-    [[ -z "$code" ]] || REPLY+=$'\n'
-    return 0
-  else
-    rc=$?
-  fi
-  if (( rc == 124 )); then
-    if typeset -g ZP_RUNTIME_TIMED_OUT=1; then :; fi
-  fi
+  local timeout="$1" result_name="$2" captured='' rc=1
+  shift 2
+  # zsh local parameters are dynamically scoped. Assign through the caller's
+  # local result slot instead of the process-global REPLY, which would retain
+  # emitted source (including a resolved secret) after this function returns.
+  : ${(P)result_name::=}
+  {
+    case "$timeout" in
+      [1-9]|[1-9][0-9]) ;;
+      *) timeout=5 ;;
+    esac
+    if typeset -g ZP_RUNTIME_TIMED_OUT=0; then :; fi
+    if captured="$(zsh-pro runtime capture "$timeout" -- "$@")"; then
+      # Command substitution removes terminal newlines. Emit blocks remain
+      # parseable without one; list retains its ordinary line-oriented output.
+      [[ -z "$captured" ]] || captured+=$'\n'
+      if : ${(P)result_name::=$captured}; then rc=0; else rc=1; fi
+    else
+      rc=$?
+    fi
+    if (( rc == 124 )); then
+      if typeset -g ZP_RUNTIME_TIMED_OUT=1; then :; fi
+    fi
+  } always {
+    captured=''
+    unset REPLY
+  }
   return "$rc"
 }
 
 _zp_emit() {
-  local mode="$1" name="$2" code rc timeout="${ZP_RUNTIME_TIMEOUT_SECONDS:-5}"
-  if _zp_run_bounded "$timeout" zsh-pro emit "$mode" "$name"; then
-    code="$REPLY"
-  else
-    rc=$?
-    if (( ZP_RUNTIME_TIMED_OUT )); then
-      _zp_runtime_error "$rc" "emit $mode timed out after ${timeout}s; shell state unchanged"
+  local mode="$1" name="$2" result_name="$3" emitted='' rc=1 timeout="${ZP_RUNTIME_TIMEOUT_SECONDS:-5}"
+  : ${(P)result_name::=}
+  {
+    if _zp_run_bounded "$timeout" emitted zsh-pro emit "$mode" "$name"; then
+      if [[ -z "$emitted" ]]; then
+        _zp_runtime_error 1 "emit $mode produced empty source; shell state unchanged"
+      elif : ${(P)result_name::=$emitted}; then
+        rc=0
+      else
+        _zp_runtime_error 1 "unable to retain emitted source; shell state unchanged"
+      fi
     else
-      _zp_runtime_error "$rc" "emit $mode failed; shell state unchanged"
+      rc=$?
+      if (( ZP_RUNTIME_TIMED_OUT )); then
+        _zp_runtime_error "$rc" "emit $mode timed out after ${timeout}s; shell state unchanged"
+      else
+        _zp_runtime_error "$rc" "emit $mode failed; shell state unchanged"
+      fi
     fi
-    return 1
-  fi
-  if [[ -z "$code" ]]; then
-    _zp_runtime_error 1 "emit $mode produced empty source; shell state unchanged"
-    return 1
-  fi
-  REPLY="$code"
-  return 0
+  } always {
+    emitted=''
+    unset REPLY
+  }
+  return "$rc"
 }
 
 _zp_validate_block() {
@@ -288,101 +306,122 @@ _zp_reverse_active_profile() {
 }
 
 _zp_switch() {
-  local name="$1" block active=0
-  if _zp_has_known_active_profile "$name"; then
-    if export ZSHPRO_PROFILE="$name"; then return 0; fi
-    _zp_runtime_error 1 "unable to record active profile"
-    return 1
-  fi
-  if [[ "${ZP_ACTIVE_PROFILE+x}" == x ]]; then
-    active=1
-    # Every successfully applied profile captures this before its apply
-    # payload runs. Refuse an inconsistent active state before preflight so a
-    # later transition can never consume A and then discover it cannot record
-    # its base PATH.
-    if [[ "${ZP_BASE_PATH+x}" != x ]]; then
-      _zp_runtime_error 1 "active profile state is incomplete; shell state unchanged"
+  local name="$1" block='' active=0
+  {
+    if _zp_has_known_active_profile "$name"; then
+      if export ZSHPRO_PROFILE="$name"; then return 0; fi
+      _zp_runtime_error 1 "unable to record active profile"
       return 1
     fi
-  fi
+    if [[ "${ZP_ACTIVE_PROFILE+x}" == x ]]; then
+      active=1
+      # Every successfully applied profile captures this before its apply
+      # payload runs. Refuse an inconsistent active state before preflight so a
+      # later transition can never consume A and then discover it cannot record
+      # its base PATH.
+      if [[ "${ZP_BASE_PATH+x}" != x ]]; then
+        _zp_runtime_error 1 "active profile state is incomplete; shell state unchanged"
+        return 1
+      fi
+    fi
 
-  # Target-side work is a pure preflight while the current profile is still
-  # intact. In particular, do not clear A's markers or consume its retained
-  # reverse until B was captured through the helper's private pipe and
-  # syntax-validated.
-  if ! _zp_emit apply "$name"; then return 1; fi
-  block="$REPLY"
-  if ! _zp_validate_block "$block"; then return 1; fi
+    # Target-side work is a pure preflight while the current profile is still
+    # intact. In particular, do not clear A's markers or consume its retained
+    # reverse until B was captured through the helper's private pipe and
+    # syntax-validated.
+    if ! _zp_emit apply "$name" block; then return 1; fi
+    if ! _zp_validate_block "$block"; then return 1; fi
 
-  if (( active )); then
-    if ! _zp_reverse_active_profile; then return 1; fi
-  elif [[ -n "${ZP_ACTIVE_REVERSE_FN-}" ]]; then
-    # A stale retained reverse is not an active profile marker. Consume it
-    # before a new payload so resolved values cannot survive an interrupted
-    # marker update.
-    if ! _zp_run_retained_reverse "$ZP_ACTIVE_REVERSE_FN"; then
-      _zp_runtime_error 1 "stale profile reverse failed; shell state may be partially changed"
+    if (( active )); then
+      if ! _zp_reverse_active_profile; then return 1; fi
+    elif [[ -n "${ZP_ACTIVE_REVERSE_FN-}" ]]; then
+      # A stale retained reverse is not an active profile marker. Consume it
+      # before a new payload so resolved values cannot survive an interrupted
+      # marker update.
+      if ! _zp_run_retained_reverse "$ZP_ACTIVE_REVERSE_FN"; then
+        _zp_runtime_error 1 "stale profile reverse failed; shell state may be partially changed"
+        return 1
+      fi
+    fi
+    if ! _zp_prepare_eval_state; then return 1; fi
+    if ! _zp_eval_block "$block"; then return 1; fi
+    if ! typeset -g +x ZP_ACTIVE_PROFILE="$name"; then
+      _zp_runtime_error 1 "unable to record active profile"
+      if _zp_run_retained_reverse "${ZP_ACTIVE_REVERSE_FN-}"; then :; else :; fi
       return 1
     fi
-  fi
-  if ! _zp_prepare_eval_state; then return 1; fi
-  if ! _zp_eval_block "$block"; then return 1; fi
-  if ! typeset -g +x ZP_ACTIVE_PROFILE="$name"; then
-    _zp_runtime_error 1 "unable to record active profile"
-    if _zp_run_retained_reverse "${ZP_ACTIVE_REVERSE_FN-}"; then :; else :; fi
-    return 1
-  fi
-  if ! export ZSHPRO_PROFILE="$name"; then
-    _zp_runtime_error 1 "unable to record active profile"
+    if ! export ZSHPRO_PROFILE="$name"; then
+      _zp_runtime_error 1 "unable to record active profile"
+      if _zp_reverse_active_profile; then :; else :; fi
+      return 1
+    fi
+    if typeset -g ZP_LAST_GOOD_PROFILE="$name"; then return 0; fi
+    _zp_runtime_error 1 "unable to record last good profile"
     if _zp_reverse_active_profile; then :; else :; fi
     return 1
-  fi
-  if typeset -g ZP_LAST_GOOD_PROFILE="$name"; then return 0; fi
-  _zp_runtime_error 1 "unable to record last good profile"
-  if _zp_reverse_active_profile; then :; else :; fi
-  return 1
+  } always {
+    block=''
+    unset REPLY
+  }
 }
 
 activate() {
 	local name="$1"
-	if [[ -z "$name" ]]; then
-		_zp_runtime_error 2 "usage: activate <profile>"
+	{
+		if [[ -z "$name" ]]; then
+			_zp_runtime_error 2 "usage: activate <profile>"
+			return 0
+		fi
+		if _zp_switch "$name"; then _zp_runtime_ok; fi
 		return 0
-	fi
-	if _zp_switch "$name"; then _zp_runtime_ok; fi
-	return 0
+	} always {
+		unset REPLY
+	}
 }
 
 checkout() {
   local name="$1"
-  if [[ -z "$name" ]]; then
-    _zp_runtime_error 2 "usage: checkout <profile>"
+  {
+    if [[ -z "$name" ]]; then
+      _zp_runtime_error 2 "usage: checkout <profile>"
+      return 0
+    fi
+    if _zp_switch "$name"; then _zp_runtime_ok; fi
     return 0
-  fi
-  if _zp_switch "$name"; then _zp_runtime_ok; fi
-  return 0
+  } always {
+    unset REPLY
+  }
 }
 
 deactivate() {
-	if [[ "${ZP_ACTIVE_PROFILE+x}" != x ]]; then _zp_runtime_ok; return 0; fi
-	if ! _zp_prepare_eval_state; then return 0; fi
-	if _zp_reverse_active_profile; then _zp_runtime_ok; fi
-	return 0
+	{
+		if [[ "${ZP_ACTIVE_PROFILE+x}" != x ]]; then _zp_runtime_ok; return 0; fi
+		if ! _zp_prepare_eval_state; then return 0; fi
+		if _zp_reverse_active_profile; then _zp_runtime_ok; fi
+		return 0
+	} always {
+		unset REPLY
+	}
 }
 
 list() {
-  local rc timeout="${ZP_RUNTIME_TIMEOUT_SECONDS:-5}"
-  if _zp_run_bounded "$timeout" zsh-pro list; then
-    print -rn -- "$REPLY"
-    _zp_runtime_ok
-  else
-    rc=$?
-    if (( ZP_RUNTIME_TIMED_OUT )); then
-      _zp_runtime_error "$rc" "list timed out after ${timeout}s"
+  local rc timeout="${ZP_RUNTIME_TIMEOUT_SECONDS:-5}" listing=''
+  {
+    if _zp_run_bounded "$timeout" listing zsh-pro list; then
+      print -rn -- "$listing"
+      _zp_runtime_ok
     else
-      _zp_runtime_error "$rc" "list failed"
+      rc=$?
+      if (( ZP_RUNTIME_TIMED_OUT )); then
+        _zp_runtime_error "$rc" "list timed out after ${timeout}s"
+      else
+        _zp_runtime_error "$rc" "list failed"
+      fi
     fi
-  fi
+  } always {
+    listing=''
+    unset REPLY
+  }
   return 0
 }
 

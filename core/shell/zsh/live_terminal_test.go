@@ -842,6 +842,143 @@ rm -f -- "$collision"
 	assertNoStagedSource(t, dir)
 }
 
+// TestLiveTerminalRuntimeTransportScrubsResolvedSource exercises the loader's
+// real dynamic-local transport boundary. Each payload includes the same secret
+// fixture, so a leaked REPLY, scalar bookkeeping slot, or obsolete generated
+// function is observable even after a failure path returns control to the
+// interactive shell. The one retained active reverse is deliberately allowed
+// while a profile is active, then verified removed by switch/deactivate.
+func TestLiveTerminalRuntimeTransportScrubsResolvedSource(t *testing.T) {
+	realZsh, err := exec.LookPath("zsh")
+	if err != nil {
+		t.Skip("zsh not installed")
+	}
+	dir := t.TempDir()
+	loader := writeLiveLoader(t, dir)
+	writeLiveExecutable(t, filepath.Join(dir, "zsh-pro"), `#!/bin/sh
+case "$1:$2:$3" in
+  emit:apply:secret)
+    printf '%s\n' \
+      "__zp_deactivate_secret() { unset ZP_TRANSPORT_SECRET; }" \
+      "__zp_apply_secret() { export ZP_TRANSPORT_SECRET='phase5-runtime-transport-secret'; }" \
+      "_zp_run_payload __zp_apply_secret __zp_deactivate_secret"
+    ;;
+  emit:apply:next)
+    printf '%s\n' \
+      "__zp_deactivate_next() { unset ZP_TRANSPORT_NEXT; }" \
+      "__zp_apply_next() { export ZP_TRANSPORT_NEXT=ok; }" \
+      "_zp_run_payload __zp_apply_next __zp_deactivate_next"
+    ;;
+  emit:apply:partial)
+    printf '%s\n' \
+      "__zp_deactivate_partial() { unset ZP_TRANSPORT_SECRET; }" \
+      "__zp_apply_partial() { export ZP_TRANSPORT_SECRET='phase5-runtime-transport-secret'; return 9; }" \
+      "_zp_run_payload __zp_apply_partial __zp_deactivate_partial"
+    ;;
+  emit:apply:invalid)
+    printf '%s\n' 'if then # phase5-runtime-transport-secret'
+    ;;
+  emit:apply:failed)
+    exit 7
+    ;;
+  *) exit 64 ;;
+esac
+`)
+
+	const body = `
+source "$1"
+
+assert_transport_scrubbed() {
+  local secret="$1" allow_secret_value="$2" parameter_name function_name
+  [[ -z "${REPLY+x}" ]] || return 70
+  for parameter_name in ${(k)parameters}; do
+    # The scan runs inside this helper, so do not mistake its own local
+    # arguments for leaked process-global state.
+    [[ "${parameters[$parameter_name]}" == *-local* ]] && continue
+    case "$parameter_name" in
+      [A-Za-z_]*) ;;
+      *) continue ;;
+    esac
+    # zsh retains the complete -c script in this intrinsic diagnostic
+    # parameter; it is not loader-owned state and necessarily contains the
+    # fixture embedded by this regression probe.
+    case "$parameter_name" in
+      ZSH_EXECUTION_STRING|argv) continue ;;
+    esac
+    case "$parameter_name" in
+      ZP_APPLIED_SCALAR_*) return 71 ;;
+      ZP_TRANSPORT_SECRET) [[ "$allow_secret_value" == 1 ]] && continue ;;
+    esac
+    if [[ "${(P)parameter_name}" == *"$secret"* ]]; then
+      print -u2 -- "transport residue parameter: $parameter_name"
+      return 72
+    fi
+  done
+  for function_name in ${(k)functions}; do
+    if [[ "$function_name" == "${ZP_ACTIVE_REVERSE_FN-}" ]]; then continue; fi
+    case "$function_name" in
+      __zp_apply_*|__zp_deactivate_*) return 73 ;;
+    esac
+    if [[ "${functions[$function_name]}" == *"$secret"* ]]; then
+      print -u2 -- "transport residue function: $function_name"
+      return 74
+    fi
+  done
+}
+
+# Partial evaluation applies the secret before returning nonzero. Its reverse
+# must run, and the local payload must disappear once activation returns.
+REPLY='phase5-runtime-transport-secret'
+activate partial
+[[ "$ZP_LAST_RUNTIME_STATUS" -ne 0 ]] || exit 10
+[[ -z "${ZP_TRANSPORT_SECRET+x}" && -z "${ZP_ACTIVE_REVERSE_FN+x}" ]] || exit 11
+assert_transport_scrubbed 'phase5-runtime-transport-secret' 0 || exit $?
+
+# A successful activation intentionally leaves the target value plus exactly
+# one active reverse. Neither REPLY nor duplicate global applied-value slots
+# may retain another copy of the resolved secret.
+REPLY='phase5-runtime-transport-secret'
+activate secret
+[[ "$ZP_TRANSPORT_SECRET" == 'phase5-runtime-transport-secret' ]] || exit 20
+[[ "$ZP_ACTIVE_PROFILE" == secret && "$ZSHPRO_PROFILE" == secret ]] || exit 21
+[[ -n "${ZP_ACTIVE_REVERSE_FN-}" && ${+functions[$ZP_ACTIVE_REVERSE_FN]} == 1 ]] || exit 22
+[[ "${functions[$ZP_ACTIVE_REVERSE_FN]}" == *ZP_TRANSPORT_SECRET* ]] || exit 23
+assert_transport_scrubbed 'phase5-runtime-transport-secret' 1 || exit $?
+
+# Switching consumes secret's retained reverse and installs a different active
+# reverse. The old resolved payload must no longer be reachable anywhere.
+REPLY='phase5-runtime-transport-secret'
+activate next
+[[ -z "${ZP_TRANSPORT_SECRET+x}" && "$ZP_TRANSPORT_NEXT" == ok ]] || exit 30
+[[ "$ZP_ACTIVE_PROFILE" == next && ${+functions[$ZP_ACTIVE_REVERSE_FN]} == 1 ]] || exit 31
+[[ "${functions[$ZP_ACTIVE_REVERSE_FN]}" != *phase5-runtime-transport-secret* ]] || exit 32
+assert_transport_scrubbed 'phase5-runtime-transport-secret' 0 || exit $?
+
+REPLY='phase5-runtime-transport-secret'
+deactivate
+[[ -z "${ZP_TRANSPORT_NEXT+x}" && -z "${ZP_ACTIVE_REVERSE_FN+x}" ]] || exit 40
+assert_transport_scrubbed 'phase5-runtime-transport-secret' 0 || exit $?
+
+# Preflight failures must scrub stale REPLY too. Invalid source contains the
+# fixture and therefore covers the parser boundary separately from a nonzero
+# emitter result.
+REPLY='phase5-runtime-transport-secret'
+activate failed
+[[ "$ZP_LAST_RUNTIME_STATUS" -ne 0 ]] || exit 50
+assert_transport_scrubbed 'phase5-runtime-transport-secret' 0 || exit $?
+
+REPLY='phase5-runtime-transport-secret'
+activate invalid
+[[ "$ZP_LAST_RUNTIME_STATUS" -ne 0 ]] || exit 60
+assert_transport_scrubbed 'phase5-runtime-transport-secret' 0 || exit $?
+`
+	cmd := exec.Command(realZsh, "-f", "-c", body, "zsh-pro-runtime-transport-scrub-test", loader)
+	cmd.Env = liveEnv(dir, "PATH="+dir+":"+os.Getenv("PATH"))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("runtime transport retained resolved source outside active state: %v\n%s", err, out)
+	}
+}
+
 func TestLiveTerminalRuntimeTransportIgnoresSharedTMPDIRRace(t *testing.T) {
 	realZsh, err := exec.LookPath("zsh")
 	if err != nil {

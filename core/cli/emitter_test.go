@@ -347,26 +347,38 @@ source "$2"
 [[ "${functions[zp_capture_scalar]}" == "$before_capture" ]] || exit 13
 [[ "${functions[zp_restore_scalar]}" == "$before_restore" ]] || exit 14
 [[ -n "${ZP_ACTIVE_REVERSE_FN-}" && ${+functions[$ZP_ACTIVE_REVERSE_FN]} == 1 ]] || exit 15
+[[ "${functions[$ZP_ACTIVE_REVERSE_FN]}" == *ZP_RUNTIME_SECRET* ]] || exit 16
+[[ -z "${REPLY+x}" ]] || exit 17
+for parameter_name in ${(k)parameters}; do
+  case "$parameter_name" in
+    ZP_APPLIED_SCALAR_*) exit 18 ;;
+  esac
+done
 for function_name in ${(k)functions}; do
   case "$function_name" in
-    __zp_apply_*) exit 16 ;;
-    __zp_deactivate_*) [[ "$function_name" == "$ZP_ACTIVE_REVERSE_FN" ]] || exit 17 ;;
+    __zp_apply_*) exit 19 ;;
+    __zp_deactivate_*) [[ "$function_name" == "$ZP_ACTIVE_REVERSE_FN" ]] || exit 20 ;;
   esac
 done
 typeset -g +x ZP_ACTIVE_PROFILE=secret
 export ZSHPRO_PROFILE=secret
 deactivate
-[[ -z "${ZP_RUNTIME_SECRET+x}" && -z "${ZP_ACTIVE_REVERSE_FN+x}" ]] || exit 20
-[[ -z "${ZP_ACTIVE_PROFILE+x}" && -z "${ZSHPRO_PROFILE+x}" ]] || exit 21
-[[ "${functions[zp_apply]}" == "$before_apply" ]] || exit 22
-[[ "${functions[zp_deactivate]}" == "$before_deactivate" ]] || exit 23
-[[ "${functions[zp_capture_scalar]}" == "$before_capture" ]] || exit 24
-[[ "${functions[zp_restore_scalar]}" == "$before_restore" ]] || exit 25
+[[ -z "${ZP_RUNTIME_SECRET+x}" && -z "${ZP_ACTIVE_REVERSE_FN+x}" && -z "${REPLY+x}" ]] || exit 21
+[[ -z "${ZP_ACTIVE_PROFILE+x}" && -z "${ZSHPRO_PROFILE+x}" ]] || exit 22
+[[ "${functions[zp_apply]}" == "$before_apply" ]] || exit 23
+[[ "${functions[zp_deactivate]}" == "$before_deactivate" ]] || exit 24
+[[ "${functions[zp_capture_scalar]}" == "$before_capture" ]] || exit 25
+[[ "${functions[zp_restore_scalar]}" == "$before_restore" ]] || exit 26
+for parameter_name in ${(k)parameters}; do
+  case "$parameter_name" in
+    ZP_APPLIED_SCALAR_*) exit 27 ;;
+  esac
+done
 for function_name in ${(k)functions}; do
   case "$function_name" in
-    __zp_apply_*|__zp_deactivate_*) exit 26 ;;
+    __zp_apply_*|__zp_deactivate_*) exit 28 ;;
   esac
-  [[ "${functions[$function_name]}" != *"$3"* ]] || exit 27
+  [[ "${functions[$function_name]}" != *"$3"* ]] || exit 29
 done
 `
 	cmd := exec.Command(realZsh, "-f", "-c", body, "zsh-pro-runtime-secret-test", loaderPath, sourcePath, runtimeSecretFixture)

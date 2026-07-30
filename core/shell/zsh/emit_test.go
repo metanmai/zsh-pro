@@ -43,6 +43,48 @@ func TestEmitStaticDynamicAndSyntax(t *testing.T) {
 	}
 }
 
+func TestEmitRuntimeAvoidsStaticAppliedSecretCopiesButKeepsDynamicReversal(t *testing.T) {
+	p := activate.Plan{Activate: []activate.Op{
+		activate.SetScalar{Name: "ZP_RUNTIME_STATIC", Applied: "phase5-static-secret", Exported: true},
+		activate.SetScalar{Name: "ZP_RUNTIME_DYNAMIC", Applied: "$HOME/runtime", Dynamic: true, Exported: true},
+	}, Deactivate: []activate.Op{
+		activate.RestoreScalar{Name: "ZP_RUNTIME_STATIC", Applied: "phase5-static-secret"},
+		activate.RestoreScalar{Name: "ZP_RUNTIME_DYNAMIC", Applied: "$HOME/runtime", Dynamic: true},
+	}}
+	apply, deactivate, err := (Provider{}).EmitRuntime(p, "zp_runtime_apply", "zp_runtime_reverse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	staticSlot := encodeSlot("APPLIED_SCALAR", "ZP_RUNTIME_STATIC")
+	dynamicSlot := encodeSlot("APPLIED_SCALAR", "ZP_RUNTIME_DYNAMIC")
+	for name, source := range map[string]string{"apply": apply, "deactivate": deactivate} {
+		if strings.Contains(source, staticSlot) {
+			t.Fatalf("%s retained avoidable static applied slot %q:\n%s", name, staticSlot, source)
+		}
+		if !strings.Contains(source, dynamicSlot) {
+			t.Fatalf("%s omitted dynamic applied slot %q:\n%s", name, dynamicSlot, source)
+		}
+	}
+
+	script := strings.Join([]string{
+		loaderScript,
+		"export ZP_RUNTIME_STATIC=before-static ZP_RUNTIME_DYNAMIC=before-dynamic",
+		"export HOME=/runtime-home",
+		apply,
+		"zp_runtime_apply",
+		"[[ $ZP_RUNTIME_STATIC == phase5-static-secret ]] || exit 10",
+		"[[ $ZP_RUNTIME_DYNAMIC == /runtime-home/runtime ]] || exit 11",
+		"[[ ${+" + dynamicSlot + "} == 1 ]] || exit 12",
+		deactivate,
+		"zp_runtime_reverse",
+		"[[ $ZP_RUNTIME_STATIC == before-static && $ZP_RUNTIME_DYNAMIC == before-dynamic ]] || exit 13",
+		"[[ ${+" + dynamicSlot + "} == 0 ]] || exit 14",
+	}, "\n")
+	if out, err := exec.Command("zsh", "-f", "-c", script, "zsh-pro-runtime-dynamic-test").CombinedOutput(); err != nil {
+		t.Fatalf("runtime scalar reversal lost dynamic correctness: %v\n%s\n%s", err, out, script)
+	}
+}
+
 func TestEmitRejectsHostileNamesWithoutOutput(t *testing.T) {
 	a, d, err := (Provider{}).Emit(activate.Plan{Activate: []activate.Op{
 		activate.SetOption{Name: "foo;touch", Enabled: true},

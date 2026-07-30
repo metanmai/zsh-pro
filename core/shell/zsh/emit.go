@@ -140,6 +140,12 @@ zp_restore_scalar() {
 type emitNames struct {
 	apply, deactivate            string
 	captureScalar, restoreScalar string
+	// captureApplied records every applied scalar in a global slot for the
+	// standalone emitter. Runtime payloads omit that duplicate for static
+	// values: their retained reverse already carries the expected literal, so a
+	// second global copy would unnecessarily extend a resolved secret's
+	// lifetime. Dynamic values still require a slot for their evaluated value.
+	captureApplied bool
 }
 
 // Emit renders one plan into two directly sourceable blocks. This public
@@ -147,10 +153,11 @@ type emitNames struct {
 // runtime transport below uses loader-owned helpers and unique function names.
 func (Provider) Emit(p activate.Plan) (apply, deactivate string, err error) {
 	return emitPlan(p, emitNames{
-		apply:         "zp_apply",
-		deactivate:    "zp_deactivate",
-		captureScalar: "zp_capture_scalar",
-		restoreScalar: "zp_restore_scalar",
+		apply:          "zp_apply",
+		deactivate:     "zp_deactivate",
+		captureScalar:  "zp_capture_scalar",
+		restoreScalar:  "zp_restore_scalar",
+		captureApplied: true,
 	}, true)
 }
 
@@ -163,10 +170,11 @@ func (Provider) EmitRuntime(p activate.Plan, applyName, deactivateName string) (
 		return "", "", fmt.Errorf("runtime emission requires safe function names")
 	}
 	return emitPlan(p, emitNames{
-		apply:         applyName,
-		deactivate:    deactivateName,
-		captureScalar: "_zp_capture_scalar",
-		restoreScalar: "_zp_restore_scalar",
+		apply:          applyName,
+		deactivate:     deactivateName,
+		captureScalar:  "_zp_capture_scalar",
+		restoreScalar:  "_zp_restore_scalar",
+		captureApplied: false,
 	}, false)
 }
 
@@ -212,7 +220,9 @@ func emitActivate(b *strings.Builder, op activate.Op, names emitNames) error {
 		} else {
 			fmt.Fprintf(b, "  typeset -g %s=%s\n", x.Name, renderValue(x.Applied, x.Dynamic))
 		}
-		fmt.Fprintf(b, "  typeset -g %s=\"$%s\"\n", applied, x.Name)
+		if names.captureApplied || x.Dynamic {
+			fmt.Fprintf(b, "  typeset -g %s=\"$%s\"\n", applied, x.Name)
+		}
 	case activate.ApplyListDelta:
 		if !safeEnvName(x.Name) {
 			return nil
@@ -262,12 +272,12 @@ func emitDeactivate(b *strings.Builder, op activate.Op, names emitNames) error {
 		if !safeEnvName(x.Name) {
 			return nil
 		}
-		emitRestoreScalar(b, x.Name, x.Applied, names)
+		emitRestoreScalar(b, x.Name, x.Applied, x.Dynamic, names)
 	case activate.UnsetScalar:
 		if !safeEnvName(x.Name) {
 			return nil
 		}
-		emitRestoreScalar(b, x.Name, x.Applied, names)
+		emitRestoreScalar(b, x.Name, x.Applied, x.Dynamic, names)
 	case activate.RebuildListFromBase:
 		if !safeEnvName(x.Name) {
 			return nil
@@ -319,8 +329,19 @@ func emitDeactivate(b *strings.Builder, op activate.Op, names emitNames) error {
 	return nil
 }
 
-func emitRestoreScalar(b *strings.Builder, name, applied string, names emitNames) {
-	fmt.Fprintf(b, "  %s %s %s %s %s %s %s\n", names.restoreScalar, name, renderValue(applied, false), encodeSlot("ORIGINAL_SCALAR", name), encodeSlot("PRESENT_SCALAR", name), encodeSlot("EXPORTED_SCALAR", name), encodeSlot("APPLIED_SCALAR", name))
+func emitRestoreScalar(b *strings.Builder, name, applied string, dynamic bool, names emitNames) {
+	args := []string{
+		names.restoreScalar,
+		name,
+		renderValue(applied, false),
+		encodeSlot("ORIGINAL_SCALAR", name),
+		encodeSlot("PRESENT_SCALAR", name),
+		encodeSlot("EXPORTED_SCALAR", name),
+	}
+	if names.captureApplied || dynamic {
+		args = append(args, encodeSlot("APPLIED_SCALAR", name))
+	}
+	fmt.Fprintf(b, "  %s\n", strings.Join(args, " "))
 }
 
 // Reserved future element-removal form: when ListDelta.Deletions is activated,

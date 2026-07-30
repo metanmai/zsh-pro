@@ -127,10 +127,11 @@ func normalizeOptions(in []model.OptionSet) []model.OptionSet {
 func deactivate(m model.Manifest) []Op {
 	var out []Op
 	for _, s := range m.Env {
+		dynamic := scalarDynamic(s)
 		if s.Original != nil {
-			out = append(out, RestoreScalar{Name: s.Name, Applied: s.Applied, Original: s.Original})
+			out = append(out, RestoreScalar{Name: s.Name, Applied: s.Applied, Dynamic: dynamic, Original: s.Original})
 		} else {
-			out = append(out, UnsetScalar{Name: s.Name, Applied: s.Applied})
+			out = append(out, UnsetScalar{Name: s.Name, Applied: s.Applied, Dynamic: dynamic})
 		}
 	}
 	for _, l := range m.Lists {
@@ -155,10 +156,7 @@ func deactivate(m model.Manifest) []Op {
 func activate(m model.Manifest) []Op {
 	var out []Op
 	for _, s := range m.Env {
-		dynamic := containsDynamic(s.Applied)
-		if s.Dynamic != nil {
-			dynamic = *s.Dynamic
-		}
+		dynamic := scalarDynamic(s)
 		// A missing field is a legacy manifest, which historically used export
 		// assignment for scalar activation.
 		exported := true
@@ -191,6 +189,15 @@ func activate(m model.Manifest) []Op {
 	}
 	return out
 }
+
+func scalarDynamic(s model.Scalar) bool {
+	dynamic := containsDynamic(s.Applied)
+	if s.Dynamic != nil {
+		dynamic = *s.Dynamic
+	}
+	return dynamic
+}
+
 func containsDynamic(s string) bool {
 	for _, x := range []string{"$", "`"} {
 		for i := 0; i < len(s); i++ {
