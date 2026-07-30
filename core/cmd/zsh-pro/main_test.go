@@ -117,8 +117,12 @@ func seedCompositionStore(t *testing.T, root, profile, identity, secret string) 
 	if err := s.Init(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(root, 0o700); err != nil {
+	info, err := os.Stat(root)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o700 {
+		t.Fatalf("Store.Init root mode = %#o, want 0700", got)
 	}
 	if err := s.Create(ctx, profile); err != nil {
 		t.Fatal(err)

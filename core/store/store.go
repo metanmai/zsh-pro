@@ -130,11 +130,15 @@ func (s *Store) RuntimeSecretResolver() KeychainDriver {
 // common ancestor every profile forks from. It NEVER calls a working-tree verb
 // (status/checkout/reset): a bare repo has no working tree (Pitfall 1).
 func (s *Store) Init(ctx context.Context) error {
+	// Runtime capture later accepts only a private, current-user store root.
+	// Establish (or safely migrate) that invariant before asking git whether an
+	// existing directory is bare; otherwise an old 0755 repository returns
+	// early here and every sourced runtime command rejects it.
+	if err := ensurePrivateStoreDir(s.dir); err != nil {
+		return err
+	}
 	if s.git.isBareRepo(ctx) {
 		return nil // already initialized — idempotent no-op, never clobber (D-06)
-	}
-	if err := os.MkdirAll(s.dir, 0o755); err != nil {
-		return err
 	}
 	if _, err := s.git.run(ctx, "init", "--bare", "-b", "main"); err != nil {
 		return err

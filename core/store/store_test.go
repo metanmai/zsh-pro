@@ -12,7 +12,9 @@ package store
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -59,8 +61,23 @@ func TestInitIdempotent(t *testing.T) {
 	if !reflect.DeepEqual(branches, []string{"main"}) {
 		t.Errorf("after Init, Branches = %v, want [main]", branches)
 	}
+	info, err := os.Stat(s.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o700 {
+		t.Fatalf("initialized store mode = %#o, want 0700", got)
+	}
 
-	// Second Init must be an idempotent no-op (never clobber).
+	// Existing stores from before the runtime descriptor boundary were commonly
+	// initialized at 0755. Re-init must repair a current-user store rather than
+	// returning early because the bare repository already exists.
+	if err := os.Chmod(s.dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Second Init must be an idempotent no-op for repository content while it
+	// repairs the store root's private mode.
 	if err := s.Init(ctx); err != nil {
 		t.Fatalf("Init (second): %v", err)
 	}
@@ -74,6 +91,69 @@ func TestInitIdempotent(t *testing.T) {
 	if !reflect.DeepEqual(branches, []string{"main"}) {
 		t.Errorf("after re-Init, Branches = %v, want [main] (no clobber)", branches)
 	}
+	info, err = os.Stat(s.dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o700 {
+		t.Fatalf("reinitialized store mode = %#o, want 0700", got)
+	}
+}
+
+func TestInitRefusesUnsafeExistingStoreRoot(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed; skipping store orchestration tests")
+	}
+
+	t.Run("symlink", func(t *testing.T) {
+		target := filepath.Join(t.TempDir(), "target")
+		if err := os.Mkdir(target, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		root := filepath.Join(t.TempDir(), "store-link")
+		if err := os.Symlink(target, root); err != nil {
+			t.Fatal(err)
+		}
+		s, err := New(root, stubRegen{}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Init(context.Background()); err == nil {
+			t.Fatal("Init accepted a symlinked store root")
+		}
+		info, err := os.Lstat(root)
+		if err != nil || info.Mode()&os.ModeSymlink == 0 {
+			t.Fatalf("Init changed symlink root: info=%v err=%v", info, err)
+		}
+		info, err = os.Stat(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != 0o755 {
+			t.Fatalf("Init changed symlink target mode = %#o, want 0755", got)
+		}
+	})
+
+	t.Run("regular file", func(t *testing.T) {
+		root := filepath.Join(t.TempDir(), "store-file")
+		if err := os.WriteFile(root, []byte("not a directory"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		s, err := New(root, stubRegen{}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Init(context.Background()); err == nil {
+			t.Fatal("Init accepted a regular-file store root")
+		}
+		info, err := os.Stat(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !info.Mode().IsRegular() {
+			t.Fatalf("Init changed regular-file root into %v", info.Mode())
+		}
+	})
 }
 
 // TestCurrent pins D-13: ZSHPRO_PROFILE carries the profile name only; unset => main.
