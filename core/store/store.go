@@ -100,6 +100,28 @@ func New(dir string, regen shell.Regenerator, kc KeychainDriver) (*Store, error)
 	return &Store{dir: dir, git: g, regen: regen, keychain: kc}, nil
 }
 
+// NewRuntime constructs the read path used by the sourced runtime helper. The
+// root and vaultParent descriptors were authenticated by core/cli and remain
+// owned by its RuntimeRoot for the duration of one emission. Git inherits root
+// as a child descriptor; the fallback vault is opened relative to vaultParent
+// with O_NOFOLLOW. No path spelling from $ZSHPRO_HOME is reused here.
+func NewRuntime(root, vaultParent *os.File, regen shell.Regenerator) (*Store, error) {
+	g, err := newRuntimeGitRunner(root)
+	if err != nil {
+		return nil, err
+	}
+	return &Store{git: g, regen: regen, keychain: newRuntimeKeychain(vaultParent)}, nil
+}
+
+// RuntimeSecretResolver exposes the already-bound runtime resolver to the
+// composition root's narrow CLI seam. Store retains ownership of the driver.
+func (s *Store) RuntimeSecretResolver() KeychainDriver {
+	if s == nil {
+		return nil
+	}
+	return s.keychain
+}
+
 // Init initializes the bare profile store and is idempotent (D-05/D-06): re-running
 // it on an existing store is a safe no-op that never clobbers the repo. If the dir
 // is already a bare repo, Init returns nil immediately. Otherwise it creates the

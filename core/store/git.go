@@ -3,6 +3,7 @@ package store
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"time"
@@ -23,6 +24,13 @@ const gitTimeout = 5 * time.Second
 // error on failure (D-11). The store never imports a git library (go-git rejected).
 type gitRunner struct {
 	repoDir string // path to the bare git repo ($ZSHPRO_HOME)
+
+	// runtimeRoot is non-nil only for a sourced-loader capture. Every git
+	// subprocess starts from this descriptor's /dev/fd spelling before exec and
+	// inherits it as fd 3 with a relative GIT_DIR. The resulting working
+	// directory preserves the authenticated object even if its old pathname is
+	// replaced meanwhile.
+	runtimeRoot *os.File
 }
 
 // newGitRunner constructs a gitRunner after a one-time exec.LookPath("git") guard,
@@ -35,6 +43,30 @@ func newGitRunner(dir string) (gitRunner, error) {
 	return gitRunner{repoDir: dir}, nil
 }
 
+// newRuntimeGitRunner anchors all git operations to root rather than a path.
+// /dev/fd is available on both supported Unix targets. command starts each git
+// child in the current-process descriptor path before exec, then passes the
+// same directory through ExtraFiles as fd 3 for the child lifetime.
+func newRuntimeGitRunner(root *os.File) (gitRunner, error) {
+	if root == nil {
+		return gitRunner{}, ErrGitCommand
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		return gitRunner{}, ErrGitAbsent
+	}
+	return gitRunner{repoDir: ".", runtimeRoot: root}, nil
+}
+
+func (g gitRunner) command(ctx context.Context, args ...string) *exec.Cmd {
+	if g.runtimeRoot == nil {
+		return exec.CommandContext(ctx, "git", append([]string{"-C", g.repoDir}, args...)...)
+	}
+	cmd := exec.CommandContext(ctx, "git", append([]string{"--git-dir=."}, args...)...)
+	cmd.Dir = fmt.Sprintf("/dev/fd/%d", g.runtimeRoot.Fd())
+	cmd.ExtraFiles = []*os.File{g.runtimeRoot}
+	return cmd
+}
+
 // run executes `git -C <repoDir> <args...>` with a timeout, returning stdout on
 // success and a zsh-pro-phrased mapped error on failure (raw stderr is never
 // surfaced — D-11, Pitfall 4). This is the canonical shape lifted from the zsh
@@ -43,7 +75,7 @@ func (g gitRunner) run(ctx context.Context, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, gitTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", g.repoDir}, args...)...)
+	cmd := g.command(ctx, args...)
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if err := cmd.Run(); err != nil {
@@ -58,7 +90,7 @@ func (g gitRunner) runStdin(ctx context.Context, stdin []byte, args ...string) (
 	ctx, cancel := context.WithTimeout(ctx, gitTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", g.repoDir}, args...)...)
+	cmd := g.command(ctx, args...)
 	cmd.Stdin = bytes.NewReader(stdin)
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
@@ -77,9 +109,13 @@ func (g gitRunner) runCommit(ctx context.Context, tmpIndex, ts string, args ...s
 	ctx, cancel := context.WithTimeout(ctx, gitTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", g.repoDir}, args...)...)
+	cmd := g.command(ctx, args...)
+	gitDir := g.repoDir
+	if g.runtimeRoot != nil {
+		gitDir = "."
+	}
 	cmd.Env = append(os.Environ(),
-		"GIT_DIR="+g.repoDir,
+		"GIT_DIR="+gitDir,
 		"GIT_INDEX_FILE="+tmpIndex,
 		"GIT_AUTHOR_NAME=zsh-pro",
 		"GIT_AUTHOR_EMAIL=zsh-pro@local",

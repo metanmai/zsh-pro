@@ -39,7 +39,14 @@ func main() {
 	// Runtime secret dereference remains behind the narrow CLI resolver seam;
 	// the existing concrete driver is created once here and never exposes a
 	// resolved value to CLI logging or profile persistence.
-	emitter := cli.NewRuntimeEmitter(cliStore, provider, kc)
+	emitter := cli.NewRuntimeEmitterWithRuntimeStore(cliStore, provider, kc, func(root *cli.RuntimeRoot) (cli.Store, cli.SecretResolver, error) {
+		repository, vaultParent := root.Files()
+		boundStore, err := store.NewRuntime(repository, vaultParent, provider)
+		if err != nil {
+			return nil, nil, err
+		}
+		return boundStore, boundStore.RuntimeSecretResolver(), nil
+	})
 
 	os.Exit(cli.New(provider, cliStore, emitter).Run(os.Args[1:], os.Stdout, os.Stderr))
 }

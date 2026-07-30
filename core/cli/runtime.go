@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -17,6 +16,17 @@ const (
 	runtimeTimeoutMinSeconds = 1
 	runtimeTimeoutMaxSeconds = 99
 )
+
+// runtimeRootValidated is a package-local synchronization seam for the
+// descriptor-replacement regression. Production leaves it as a no-op; the test
+// pauses here, after authentication and before the descriptor-bound store is
+// constructed, to prove no later path reopen can observe a swapped root.
+var runtimeRootValidated = func(*RuntimeRoot) {}
+
+type runtimeRootEmitter interface {
+	emitFromRuntimeRoot(context.Context, *RuntimeRoot, string, string) (string, error)
+	listFromRuntimeRoot(context.Context, *RuntimeRoot) ([]string, error)
+}
 
 // runRuntime owns the private, sourced-loader transport commands. They are
 // intentionally not part of the user-facing profile surface: the loader uses
@@ -36,9 +46,11 @@ func (c *CLI) runRuntime(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-// runRuntimeCapture executes only the loader's emit/list child command. Its
-// stdout stays in an in-memory buffer until the child exits, so no emitted
-// source is written beneath ZSHPRO_HOME or another attacker-replaceable path.
+// runRuntimeCapture executes only the loader's emit/list request. For emit it
+// authenticates ZSHPRO_HOME once and constructs a descriptor-bound store in
+// this process; it never launches a second composition root that can reopen the
+// original pathname. Its stdout stays in memory until the request succeeds, so
+// no emitted source is written beneath an attacker-replaceable path.
 func (c *CLI) runRuntimeCapture(args []string, stdout, stderr io.Writer) int {
 	if len(args) < 4 || args[1] != "--" {
 		return runtimeFail(stderr, 2, "usage: zsh-pro runtime capture <seconds> -- zsh-pro <emit|list> ...")
@@ -51,42 +63,77 @@ func (c *CLI) runRuntimeCapture(args []string, stdout, stderr io.Writer) int {
 	if len(childArgs) < 2 || childArgs[0] != "zsh-pro" {
 		return runtimeFail(stderr, 2, "runtime capture only permits zsh-pro emit or list")
 	}
+	var root *RuntimeRoot
 	switch childArgs[1] {
 	case "emit":
 		if len(childArgs) != 4 || (childArgs[2] != "apply" && childArgs[2] != "deactivate") || childArgs[3] == "" {
 			return runtimeFail(stderr, 2, "runtime capture requires zsh-pro emit <apply|deactivate> <profile>")
 		}
-		root, err := runtimeRoot()
+		rootPath, err := runtimeRoot()
 		if err != nil {
 			return runtimeFail(stderr, 1, err.Error())
 		}
 		// Before the emitter starts, secureRuntimeRoot walks every component
-		// by descriptor with O_NOFOLLOW. The transport itself never stages or
-		// reopens emitted source below that configured root.
-		if err := secureRuntimeRoot(root); err != nil {
+		// by descriptor with O_NOFOLLOW and leaves the terminal descriptors
+		// open. The emission below must consume these exact objects rather than
+		// root, whose spelling may be replaced after this check.
+		root, err = secureRuntimeRoot(rootPath)
+		if err != nil {
 			return runtimeFail(stderr, 1, "runtime staging root is unsafe")
 		}
+		defer func() { _ = root.Close() }()
+		runtimeRootValidated(root)
 	case "list":
 		if len(childArgs) != 2 {
 			return runtimeFail(stderr, 2, "runtime capture requires zsh-pro list without arguments")
 		}
+		rootPath, err := runtimeRoot()
+		if err != nil {
+			return runtimeFail(stderr, 1, err.Error())
+		}
+		root, err = secureRuntimeRoot(rootPath)
+		if err != nil {
+			return runtimeFail(stderr, 1, "runtime staging root is unsafe")
+		}
+		defer func() { _ = root.Close() }()
+		runtimeRootValidated(root)
 	default:
 		return runtimeFail(stderr, 2, "runtime capture only permits zsh-pro emit or list")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, childArgs[0], childArgs[1:]...)
-	var captured bytes.Buffer
-	cmd.Stdout = &captured
-	cmd.Stderr = stderr
-	if err := cmd.Run(); err != nil {
+	bound, ok := c.emitter.(runtimeRootEmitter)
+	if !ok {
+		return runtimeFail(stderr, 1, "runtime emitter is unavailable")
+	}
+	if childArgs[1] == "list" {
+		branches, err := bound.listFromRuntimeRoot(ctx, root)
+		if err != nil {
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return runtimeFail(stderr, 124, "runtime command timed out")
+			}
+			return runtimeFail(stderr, 1, "runtime command failed")
+		}
+		for _, branch := range branches {
+			if _, err := fmt.Fprintln(stdout, branch); err != nil {
+				return runtimeFail(stderr, 1, "write captured runtime source")
+			}
+		}
+		return 0
+	}
+
+	source, err := bound.emitFromRuntimeRoot(ctx, root, childArgs[2], childArgs[3])
+	if err != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return runtimeFail(stderr, 124, "runtime command timed out")
 		}
 		return runtimeFail(stderr, 1, "runtime command failed")
 	}
-	if _, err := stdout.Write(captured.Bytes()); err != nil {
+	if source == "" {
+		return runtimeFail(stderr, 1, "emit produced empty output")
+	}
+	if _, err := io.WriteString(stdout, source); err != nil {
 		return runtimeFail(stderr, 1, "write captured runtime source")
 	}
 	return 0

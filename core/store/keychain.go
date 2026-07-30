@@ -54,6 +54,7 @@ var (
 	_ KeychainDriver = macOSKeychain{}
 	_ KeychainDriver = linuxKeychain{}
 	_ KeychainDriver = vaultKeychain{}
+	_ KeychainDriver = runtimeVaultKeychain{}
 )
 
 // NewOSKeychainDriver selects the secret backend at runtime via exec.LookPath,
@@ -70,6 +71,19 @@ func NewOSKeychainDriver(dir string) KeychainDriver {
 		return linuxKeychain{}
 	}
 	return newVaultKeychain(dir)
+}
+
+// newRuntimeKeychain selects the ordinary OS backends when available. Its
+// file-vault fallback is different: it opens the sibling through the
+// authenticated parent descriptor, never through filepath.Dir(ZSHPRO_HOME).
+func newRuntimeKeychain(parent *os.File) KeychainDriver {
+	if _, err := exec.LookPath("security"); err == nil {
+		return macOSKeychain{}
+	}
+	if _, err := exec.LookPath("secret-tool"); err == nil {
+		return linuxKeychain{}
+	}
+	return runtimeVaultKeychain{parent: parent}
 }
 
 // macOSKeychain stores secrets in the macOS login keychain via the `security`
@@ -274,14 +288,18 @@ func (v vaultKeychain) Delete(key string) error {
 // skipped (forward/back compatible: a hand-edited or legacy plaintext line that is
 // not valid base64 is ignored rather than surfacing a corrupt value).
 func (v vaultKeychain) load() (map[string]string, error) {
-	entries := map[string]string{}
 	b, err := os.ReadFile(v.path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return entries, nil
+			return map[string]string{}, nil
 		}
 		return nil, ErrSecretBackendUnavailable
 	}
+	return decodeVault(b), nil
+}
+
+func decodeVault(b []byte) map[string]string {
+	entries := map[string]string{}
 	for _, line := range strings.Split(string(b), "\n") {
 		if line == "" {
 			continue
@@ -296,7 +314,35 @@ func (v vaultKeychain) load() (map[string]string, error) {
 		}
 		entries[k] = string(raw)
 	}
-	return entries, nil
+	return entries
+}
+
+// runtimeVaultKeychain is the read-only file fallback for a descriptor-bound
+// runtime emission. Store/Delete are intentionally unavailable: activating a
+// profile must never mutate a vault while the helper holds a transient root.
+type runtimeVaultKeychain struct {
+	parent *os.File
+}
+
+func (runtimeVaultKeychain) Kind() model.SecretRefKind { return model.SecretRefFile }
+
+func (runtimeVaultKeychain) Store(string, string) error { return ErrSecretBackendUnavailable }
+
+func (runtimeVaultKeychain) Delete(string) error { return ErrSecretBackendUnavailable }
+
+func (v runtimeVaultKeychain) Retrieve(key string) (string, error) {
+	b, err := readRuntimeVault(v.parent)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", ErrSecretNotFound
+		}
+		return "", ErrSecretBackendUnavailable
+	}
+	value, ok := decodeVault(b)[key]
+	if !ok {
+		return "", ErrSecretNotFound
+	}
+	return value, nil
 }
 
 // save writes the name->value map back to the vault file with 0o600 perms (owner
