@@ -1,6 +1,6 @@
 ---
 phase: 05-runtime-loader-cli-bootstrap
-reviewed: 2026-07-30T03:52:09Z
+reviewed: 2026-07-30T04:07:57Z
 reviewer_model: gpt-5.6-sol
 depth: deep
 files_reviewed: 29
@@ -42,31 +42,29 @@ findings:
 status: issues_found
 ---
 
-# Phase 5: Final Independent Sol Code Review
+# Phase 5: Final Independent Sol Functional Lifecycle Review
 
-**Reviewed:** 2026-07-30T03:52:09Z
+**Reviewed:** 2026-07-30T04:07:57Z
 **Depth:** deep
 **Files Reviewed:** 29
 **Status:** issues_found
 
 ## Summary
 
-Phase 5 is close, but it is not clean. The final installer/store transaction
-repairs are present: unsupported platforms fail during store initialization
-before bootstrap writes; fresh-store failures remove the unchanged created
-tree; existing-store mode migration is reversible; HOME, XDG, and explicit
-roots are covered by built-binary tests. The retained reverse-function design
-also gives successful transitions, failed-apply cleanup, retryable cleanup,
-deactivation, and secret scrubbing a coherent lifecycle.
+Phase 5 is not clean. The previously reported no-argument failure under
+`NO_UNSET` is fixed and its native-zsh regressions pass. Built-binary lifecycle
+probes also passed for the HOME default, `XDG_DATA_HOME`, and explicit
+`ZSHPRO_HOME`: `install -> source -> activate main -> deactivate -> list`
+survived `NO_UNSET ERR_EXIT ERR_RETURN`, retained the expected terminal-lifetime
+base/last-good values, and removed active/reverse markers on deactivation.
+The complete uncached Go suite, vet, and build pass.
 
-One public-shell boundary still violates the option-heavy fail-open contract.
-`activate` and `checkout` expand an absent positional parameter before their
-usage checks. Under `NO_UNSET`, a no-argument invocation aborts the remaining
-sourced command stream, so the documented diagnostic/status path is never
-reached.
+However, the installer applies the `.zshrc` symlink-following policy to the
+security-sensitive cached-loader path. It accepts both a symlinked runtime
+directory and a symlinked `loader.zsh`, so a successful install can chmod or
+overwrite unrelated user-owned filesystem objects. This is an actionable
+data-loss/path-redirection defect and blocks release.
 
-The complete uncached Go suite, vet, build, lint, and `make check` pass. Those
-gates do not exercise this no-argument plus `NO_UNSET` combination.
 `hyperfine` remains an unavailable manual timing item and is not a source
 finding.
 
@@ -74,75 +72,85 @@ finding.
 
 ## Critical Issues
 
-### CR-01: [BLOCKER] Missing verb arguments abort `NO_UNSET` shells before fail-open handling
+### CR-01: [BLOCKER] Cached-loader installation follows symlinks and mutates unrelated targets
 
-**Files:** `core/shell/zsh/hook.go:482`, `core/shell/zsh/hook.go:496`
+**Files:** `core/cli/install.go:297-303`, `core/cli/install.go:410-433`,
+`core/cli/install.go:453-466`
 
-**Issue:** Both public functions begin with `local name="$1"`. With
-`setopt NO_UNSET`, expanding an absent `$1` raises `parameter not set` before
-the subsequent `[[ -z "$name" ]]` usage branch. In a sourced/noninteractive
-command stream, zsh skips everything after the call. This is incorrect
-user-visible behavior for a routine usage error and contradicts Phase 5's
-requirement that option-heavy shells return safely. The functions' later
-`return 0` cannot help because execution never reaches it.
+**Issue:** The runtime-directory guard uses `os.Stat`, which follows a
+`~/.zsh-pro` or `ZSHPRO_HOME` symlink, and then calls `os.Chmod` through that
+same path. The loader writer subsequently calls the generic
+`resolveWriteTarget`, whose deliberate `.zshrc` behavior is to follow a final
+symlink with `filepath.EvalSymlinks`. That policy is unsafe for a generated
+mode-0600 cache file.
 
-**Functional reproduction:**
+Consequently, `zsh-pro install` can report success after changing an unrelated
+directory's permissions and creating a loader inside it, or after replacing an
+unrelated file with executable loader source. The store initializer's no-follow
+checks do not protect the default cache because the cache defaults to
+`$HOME/.zsh-pro` while the store defaults to
+`$HOME/.local/share/zsh-pro`/`XDG_DATA_HOME`.
+
+**Functional reproduction 1 — directory redirection:**
 
 ```sh
-zsh -fc '
-  setopt NO_UNSET
-  source <(go run ./core/cmd/zsh-pro hook)
-  print BEFORE
-  activate
-  print AFTER
-'
+home="$(mktemp -d)"
+victim="$(mktemp -d)"
+chmod 0755 "$victim"
+ln -s "$victim" "$home/.zsh-pro"
+HOME="$home" zsh-pro install
+stat -c '%a' "$victim"
+test -f "$victim/loader.zsh"
 ```
 
-Observed output:
+Observed: install exited 0, the unrelated directory changed from `0755` to
+`0700`, and `loader.zsh` was created inside it.
 
-```text
-BEFORE
-activate:1: 1: parameter not set
+**Functional reproduction 2 — file overwrite:**
+
+```sh
+home="$(mktemp -d)"
+mkdir -m 700 "$home/.zsh-pro"
+victim="$(mktemp)"
+printf 'DO NOT OVERWRITE\n' >"$victim"
+chmod 0644 "$victim"
+ln -s "$victim" "$home/.zsh-pro/loader.zsh"
+HOME="$home" zsh-pro install
+head -n 1 "$victim"
+stat -c '%a' "$victim"
 ```
 
-`AFTER` is absent. Replacing `activate` with `checkout` reproduces the same
-failure. Adding `ERR_EXIT` does not restore the promised handled path.
+Observed: install exited 0; the unrelated file was replaced by the cached
+loader and changed to mode `0600`, while the symlink remained.
 
-**Fix:**
+**Fix:** Split target-resolution policies. Keep explicit symlink resolution only
+for the user-selected `.zshrc` compatibility path. For the generated cache:
 
-```zsh
-activate() {
-  local name="${1-}"
-  # existing handled usage branch
-}
+- walk/validate the runtime directory without following symlinks (the existing
+  supported-platform descriptor traversal is the appropriate model);
+- reject a symlink or non-directory at every runtime-root component that the
+  installer owns;
+- reject an existing symlink/non-regular `loader.zsh`;
+- create and promote the cache relative to an authenticated directory
+  descriptor with no-follow semantics, preserving the current validation and
+  rollback transaction.
 
-checkout() {
-  local name="${1-}"
-  # existing handled usage branch
-}
-```
-
-Add native-zsh regression cases for both verbs with no argument under
-`NO_UNSET`, `NO_UNSET ERR_EXIT`, and `NO_UNSET ERR_RETURN`. Assert that the
-following command runs, `ZP_LAST_RUNTIME_STATUS == 2`, the usage diagnostic is
-present, and no profile/reverse state changes.
+Add built-binary tests for both reproductions and assert failure leaves the
+symlink, target bytes, target mode, store, and `.zshrc` unchanged.
 
 ## Verification Evidence
 
 - `GOTOOLCHAIN=auto go test -count=1 ./...` — passed.
 - `GOTOOLCHAIN=auto go vet ./...` — passed.
 - `GOTOOLCHAIN=auto go build ./...` — passed.
-- `make check` — passed (`golangci-lint`: 0 issues; all tests passed).
-- Native `zsh -f` no-argument `NO_UNSET` probes — failed as documented in
-  CR-01.
-- Current installer tests cover new/existing store rollback and HOME,
-  `XDG_DATA_HOME`, and explicit `ZSHPRO_HOME`; current built-binary tests cover
-  the supported Linux/Darwin selection and unsupported-platform build paths.
-- `hyperfine` is unavailable; manual startup timing remains outside this source
-  verdict.
+- Built-binary HOME, XDG, and explicit-root install/source/activate/deactivate
+  probes under `NO_UNSET ERR_EXIT ERR_RETURN` — passed.
+- Built-binary cache-directory and cache-file symlink probes — failed as
+  documented in CR-01.
+- `hyperfine` — unavailable manual timing item; not counted as a defect.
 
 ---
 
-_Reviewed: 2026-07-30T03:52:09Z_
-_Reviewer: GPT-5.6 Sol (gsd-code-reviewer)_
+_Reviewed: 2026-07-30T04:07:57Z_
+_Reviewer: GPT-5.6 Sol (independent deep functional reviewer)_
 _Depth: deep_
