@@ -110,7 +110,9 @@ func TestInstallStoreInitializationFailureDoesNotMutateBootstrap(t *testing.T) {
 	}
 
 	initErr := errors.New("profile store fixture unavailable")
-	err := runInstallWithStoreInitialization(zsh.Provider{}, func(context.Context) error { return initErr })
+	err := runInstallWithStoreInitialization(zsh.Provider{}, func(context.Context) (StoreInitialization, error) {
+		return StoreInitialization{}, initErr
+	})
 	if !errors.Is(err, initErr) {
 		t.Fatalf("install error = %v, want wrapped initialization error", err)
 	}

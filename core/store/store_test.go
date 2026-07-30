@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 
 	"zsh-pro/core/model"
@@ -152,6 +153,123 @@ func TestInitRefusesUnsafeExistingStoreRoot(t *testing.T) {
 		}
 		if !info.Mode().IsRegular() {
 			t.Fatalf("Init changed regular-file root into %v", info.Mode())
+		}
+	})
+}
+
+func TestInitForInstallRollsBackOnlyCreatedStoreState(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("transactional initialization is unsupported on this platform")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed; skipping store orchestration tests")
+	}
+
+	t.Run("new root and parents", func(t *testing.T) {
+		home := t.TempDir()
+		root := filepath.Join(home, ".local", "share", "zsh-pro")
+		s, err := New(root, stubRegen{}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		transaction, err := s.InitForInstall(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if transaction.CreatedPath() != root {
+			t.Fatalf("CreatedPath() = %q, want %q", transaction.CreatedPath(), root)
+		}
+		if !s.git.isBareRepo(context.Background()) {
+			t.Fatal("transactional initialization did not create a bare repository")
+		}
+		if err := transaction.Rollback(); err != nil {
+			t.Fatalf("rollback new store: %v", err)
+		}
+		for _, path := range []string{root, filepath.Dir(root), filepath.Dir(filepath.Dir(root))} {
+			if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("rollback left newly created path %s: %v", path, err)
+			}
+		}
+	})
+
+	t.Run("preexisting initialized migration", func(t *testing.T) {
+		root := filepath.Join(t.TempDir(), "profiles")
+		s, err := New(root, stubRegen{}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx := context.Background()
+		if err := s.Init(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(root, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		before, exists, err := snapshotStoreTree(root)
+		if err != nil || !exists {
+			t.Fatalf("snapshot initialized store = (%v, %v)", exists, err)
+		}
+
+		transaction, err := s.InitForInstall(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if transaction.CreatedPath() != "" {
+			t.Fatalf("migration CreatedPath() = %q, want empty", transaction.CreatedPath())
+		}
+		if info, err := os.Stat(root); err != nil || info.Mode().Perm() != 0o700 {
+			t.Fatalf("migrated store mode = %v, err=%v; want 0700", info.Mode().Perm(), err)
+		}
+		if err := transaction.Rollback(); err != nil {
+			t.Fatalf("rollback migrated store: %v", err)
+		}
+		if info, err := os.Stat(root); err != nil || info.Mode().Perm() != 0o755 {
+			t.Fatalf("restored store mode = %v, err=%v; want 0755", info.Mode().Perm(), err)
+		}
+		after, exists, err := snapshotStoreTree(root)
+		if err != nil || !exists || !sameStoreTree(before, after) {
+			t.Fatalf("rollback rewrote preexisting store: exists=%v err=%v", exists, err)
+		}
+	})
+
+	t.Run("preexisting uninitialized directory", func(t *testing.T) {
+		root := t.TempDir()
+		before, exists, err := snapshotStoreTree(root)
+		if err != nil || !exists {
+			t.Fatalf("snapshot uninitialized directory = (%v, %v)", exists, err)
+		}
+		s, err := New(root, stubRegen{}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.InitForInstall(context.Background()); err == nil {
+			t.Fatal("transactional initialization accepted a preexisting uninitialized directory")
+		}
+		after, exists, err := snapshotStoreTree(root)
+		if err != nil || !exists || !sameStoreTree(before, after) {
+			t.Fatalf("rejected initialization changed preexisting directory: exists=%v err=%v", exists, err)
+		}
+	})
+
+	t.Run("changed new root is retained", func(t *testing.T) {
+		root := filepath.Join(t.TempDir(), "profiles")
+		s, err := New(root, stubRegen{}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		transaction, err := s.InitForInstall(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		foreign := filepath.Join(root, "concurrent-user-file")
+		if err := os.WriteFile(foreign, []byte("preserve me"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := transaction.Rollback(); err == nil {
+			t.Fatal("rollback removed a root that no longer matched its created state")
+		}
+		if got, err := os.ReadFile(foreign); err != nil || string(got) != "preserve me" {
+			t.Fatalf("rollback removed or rewrote concurrent data: %q, err=%v", got, err)
 		}
 	})
 }

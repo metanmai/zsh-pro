@@ -54,16 +54,23 @@ func newCLI() *cli.CLI {
 		return boundStore, boundStore.RuntimeSecretResolver(), nil
 	})
 
-	return cli.NewWithStoreInitializer(provider, cliStore, emitter, func(ctx context.Context) error {
+	return cli.NewWithStoreInitializer(provider, cliStore, emitter, func(ctx context.Context) (cli.StoreInitialization, error) {
 		dir, err := cli.StoreRoot()
 		if err != nil {
-			return err
+			return cli.StoreInitialization{}, err
 		}
 		keychain := store.NewOSKeychainDriver(dir)
 		initialized, err := store.New(dir, provider, keychain)
 		if err != nil {
-			return err
+			return cli.StoreInitialization{}, err
 		}
-		return initialized.Init(ctx)
+		transaction, err := initialized.InitForInstall(ctx)
+		if err != nil {
+			return cli.StoreInitialization{}, err
+		}
+		return cli.StoreInitialization{
+			Rollback:    transaction.Rollback,
+			CreatedPath: transaction.CreatedPath(),
+		}, nil
 	})
 }

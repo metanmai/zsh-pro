@@ -15,7 +15,19 @@ type Store interface {
 	Read(ctx context.Context, branch string) (model.Profile, error)
 }
 
+// StoreInitialization records only the profile-store state that an explicit
+// install is allowed to compensate if a later bootstrap step fails. Rollback
+// must never delete or rewind a pre-existing repository; CreatedPath is set
+// only when this invocation created the store root so installer rollback can
+// order an overlapping runtime-directory cleanup safely.
+type StoreInitialization struct {
+	Rollback    func() error
+	CreatedPath string
+}
+
 // StoreInitializer bootstraps or safely migrates the persistent profile store
 // during an explicit install. It is deliberately separate from Store so that
-// ordinary read-only CLI verbs cannot create or mutate profile storage.
-type StoreInitializer func(ctx context.Context) error
+// ordinary read-only CLI verbs cannot create or mutate profile storage. A
+// successful initializer returns compensation for state it created or migrated
+// during this invocation; the installer invokes it on every later failure.
+type StoreInitializer func(ctx context.Context) (StoreInitialization, error)

@@ -37,9 +37,9 @@ func runInstall(provider shell.Hooker) error {
 }
 
 // runInstallWithStoreInitialization validates the user-owned bootstrap first,
-// then initializes the profile store before preparing or promoting either
-// bootstrap artifact. A failed store initialization therefore cannot leave an
-// installed loader or .zshrc block behind.
+// then initializes the profile store as part of the same transaction as the
+// loader and .zshrc replacements. Every later failure invokes the initializer's
+// narrowly scoped compensation before returning an installation error.
 func runInstallWithStoreInitialization(provider shell.Hooker, initializeStore StoreInitializer) error {
 	paths, err := resolveInstallPaths()
 	if err != nil {
@@ -53,26 +53,28 @@ func runInstallWithStoreInitialization(provider shell.Hooker, initializeStore St
 	if err != nil {
 		return err
 	}
+	var storeInitialization StoreInitialization
 	if initializeStore != nil {
-		if err := initializeStore(context.Background()); err != nil {
-			return fmt.Errorf("initialize profile store: %w", err)
+		storeInitialization, err = initializeStore(context.Background())
+		if err != nil {
+			return installTransactionError("initialize profile store", err, rollbackStoreInitialization(storeInitialization))
 		}
 	}
 	rcWrite, err := prepareAtomicWrite(paths.zshrcPath, next, 0o644)
 	if err != nil {
-		return fmt.Errorf("prepare %s: %w", paths.zshrcPath, err)
+		return installTransactionError("prepare "+paths.zshrcPath, err, rollbackStoreInitialization(storeInitialization))
 	}
 	rcRollback, err := prepareWriteRollback(rcWrite.target)
 	if err != nil {
 		rcWrite.discard()
-		return fmt.Errorf("prepare rollback for %s: %w", paths.zshrcPath, err)
+		return installTransactionError("prepare rollback for "+paths.zshrcPath, err, rollbackStoreInitialization(storeInitialization))
 	}
 
 	runtimeState, err := secureRuntimeDirectory(paths.runtimeDir)
 	if err != nil {
 		rcWrite.discard()
 		rcRollback.discard()
-		return fmt.Errorf("create runtime directory: %w", err)
+		return installTransactionError("create runtime directory", err, rollbackStoreInitialization(storeInitialization))
 	}
 	loader := filepath.Join(paths.runtimeDir, "loader.zsh")
 	loaderScript := "# zsh-pro cached loader version " + buildinfo.Version + "\n" + provider.HookScript()
@@ -80,7 +82,7 @@ func runInstallWithStoreInitialization(provider shell.Hooker, initializeStore St
 	if err != nil {
 		rcWrite.discard()
 		rcRollback.discard()
-		rollbackErr := runtimeState.rollback()
+		rollbackErr := rollbackRuntimeAndStore(runtimeState, storeInitialization)
 		return installTransactionError("install cached loader", err, rollbackErr)
 	}
 	loaderRollback, err := prepareWriteRollback(loaderWrite.target)
@@ -88,7 +90,7 @@ func runInstallWithStoreInitialization(provider shell.Hooker, initializeStore St
 		loaderWrite.discard()
 		rcWrite.discard()
 		rcRollback.discard()
-		rollbackErr := runtimeState.rollback()
+		rollbackErr := rollbackRuntimeAndStore(runtimeState, storeInitialization)
 		return installTransactionError("prepare loader rollback", err, rollbackErr)
 	}
 
@@ -98,7 +100,7 @@ func runInstallWithStoreInitialization(provider shell.Hooker, initializeStore St
 		loaderRollback.discard()
 		rcWrite.discard()
 		rcRollback.discard()
-		rollbackErr = errors.Join(rollbackErr, runtimeState.rollback())
+		rollbackErr = errors.Join(rollbackErr, rollbackRuntimeAndStore(runtimeState, storeInitialization))
 		return installTransactionError("install cached loader", err, rollbackErr)
 	}
 	if err := rcWrite.promote(); err != nil {
@@ -110,13 +112,39 @@ func runInstallWithStoreInitialization(provider shell.Hooker, initializeStore St
 		rcRollback.discard()
 		loaderWrite.discard()
 		loaderRollback.discard()
-		rollbackErr = errors.Join(rollbackErr, runtimeState.rollback())
+		rollbackErr = errors.Join(rollbackErr, rollbackRuntimeAndStore(runtimeState, storeInitialization))
 		return installTransactionError("write "+paths.zshrcPath, err, rollbackErr)
 	}
 
 	rcRollback.discard()
 	loaderRollback.discard()
 	return nil
+}
+
+func rollbackStoreInitialization(initialization StoreInitialization) error {
+	if initialization.Rollback == nil {
+		return nil
+	}
+	return initialization.Rollback()
+}
+
+// rollbackRuntimeAndStore restores the loader/cache state before a pre-existing
+// store migration so its original mode is the final visible state. When an
+// explicit ZSHPRO_HOME made the store root and runtime directory the same newly
+// created path, remove the store first; a successful store rollback owns and
+// removes the shared directory without ever deleting pre-existing data.
+func rollbackRuntimeAndStore(runtime runtimeDirectoryState, initialization StoreInitialization) error {
+	if initialization.CreatedPath != "" && filepath.Clean(initialization.CreatedPath) == filepath.Clean(runtime.path) {
+		storeErr := rollbackStoreInitialization(initialization)
+		if storeErr == nil {
+			// The created store owned the shared root, so its successful rollback
+			// already removed the runtime directory. Calling runtime.rollback here
+			// would turn a complete restoration into a spurious ENOENT error.
+			return nil
+		}
+		return errors.Join(storeErr, runtime.rollback())
+	}
+	return errors.Join(runtime.rollback(), rollbackStoreInitialization(initialization))
 }
 
 func (c *CLI) runInstall(stdout, stderr io.Writer) int {

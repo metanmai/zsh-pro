@@ -52,3 +52,42 @@ func ensurePrivateStoreDir(dir string) error {
 	}
 	return nil
 }
+
+// restorePrivateStoreDirMode restores an install-time privacy migration only
+// through the same no-follow descriptor boundary used for the forward change.
+// The descriptor must still name the exact pre-install object, so rollback
+// cannot chmod a substituted path or a newly introduced foreign directory.
+func restorePrivateStoreDirMode(dir string, original os.FileInfo) error {
+	if original == nil {
+		return fmt.Errorf("restore profile store root: missing original metadata")
+	}
+	fd, err := syscall.Open(dir, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_CLOEXEC|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return fmt.Errorf("open profile store root for rollback: %w", err)
+	}
+	f := os.NewFile(uintptr(fd), "zsh-pro profile store rollback")
+	if f == nil {
+		_ = syscall.Close(fd)
+		return fmt.Errorf("retain profile store rollback descriptor")
+	}
+	defer func() { _ = f.Close() }()
+
+	current, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("stat profile store root for rollback: %w", err)
+	}
+	if !current.IsDir() || !os.SameFile(original, current) {
+		return fmt.Errorf("profile store root changed during installation")
+	}
+	var stat syscall.Stat_t
+	if err := syscall.Fstat(int(f.Fd()), &stat); err != nil {
+		return fmt.Errorf("stat profile store root rollback descriptor: %w", err)
+	}
+	if stat.Uid != uint32(os.Geteuid()) {
+		return fmt.Errorf("profile store root is no longer owned by the current user")
+	}
+	if err := f.Chmod(original.Mode()); err != nil {
+		return fmt.Errorf("restore profile store root mode: %w", err)
+	}
+	return nil
+}
