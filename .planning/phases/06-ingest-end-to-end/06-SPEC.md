@@ -1,8 +1,8 @@
 # Phase 6: Ingest End-to-End — Specification
 
 **Created:** 2026-07-02
-**Corrected:** 2026-08-02 (P6-011/P6-012)
-**Ambiguity score:** 0.16 (gate: ≤ 0.20)
+**Corrected:** 2026-08-02 (P6-011/P6-012/P6-013)
+**Ambiguity score:** 0.08 corrected (original assessment: 0.16; gate: ≤ 0.20)
 **Requirements:** 5 locked
 **Mode:** `--auto`, followed by an authorized architecture correction grounded in the landed Phase 5 installer and Phase 2/3/4 code contracts.
 
@@ -33,7 +33,7 @@ The Phase 6 delta is orchestration and proof. It must not introduce a generated 
 
 3. **Non-destructive, idempotent startup adoption**: Ingest/install changes only exact zsh-pro loader marker regions and performs one target promotion.
    - Current: Phase 5 supplies the safe installer, but Phase 6 needs to compose it transactionally with Store ingest.
-   - Target: First adoption appends the canonical loader region while preserving every preexisting byte. Installed/re-ingest replaces or collapses only exact balanced marker regions according to the landed topology contract, preserving every byte before, between, and after them in original order. The authenticated journal uses `expectedTarget=original snapshot` and `expectedCandidate=independent install candidate`, promotes loader then target once before Store commit, and finalizes after a committed outcome. There is no final post-commit target rewrite.
+   - Target: First adoption appends the canonical loader region while preserving every preexisting byte. Installed/re-ingest replaces or collapses only exact balanced marker regions according to the landed topology contract, preserving every byte before, between, and after them in original order. The authenticated journal uses `expectedTarget=original snapshot` and `expectedCandidate=independently durable candidate identity/digest/mode evidence`; candidate source bytes remain confined to the authenticated exchange peer. It promotes loader then target once before Store commit and finalizes after a committed outcome. There is no final post-commit target rewrite.
    - Acceptance: An independently authored expected-installed template matches the actual file after exactly one in-memory substitution of a runtime-generated secret placeholder; no literal-bearing expected file is written. Outside-marker bytes match the original exactly. A second unchanged ingest is byte-identical with one marker pair. Pre-commit and Store-noncommit rows restore/retain filesystem state before Store Abort and loader/cache/initializer compensation.
 
 4. **Out-of-block installer-append detection**: Ordinary content after the canonical END marker is warned about and remains byte-identical without being excluded from the full Profile merely because it is post-END.

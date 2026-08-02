@@ -24,20 +24,20 @@ The SPEC gate passed on the initial assessment (ambiguity 0.16, all dimensions a
 ## OQ-06-03 — Ingest `--json` output shape (dedicated DTO/renderer vs inline struct)
 
 - **Question:** Does the `ingest` verb's `--json` output get a dedicated `core/dto` type + `core/render` renderer (like `analyze`), or a smaller inline JSON struct emitted from the CLI?
-- **Tentative choice:** A small ingest-result DTO in `core/dto` rendered via a thin `core/render` path — consistent with the existing domain→DTO separation and the `analyze` precedent (`core/render/json.go` + `core/dto/envelope.go`). Fields include managed-entry count, unmanaged-statement count, optional unmanaged-source-line count, withheld list (name + line, NO value), warning list, ok/exit_code, and truthful transaction state.
+- **Tentative choice:** A small ingest-result DTO in `core/dto` rendered via a thin `core/render` path — consistent with the existing domain→DTO separation and the `analyze` precedent (`core/render/json.go` + `core/dto/envelope.go`). Locked fields include `managed_entries`, `unmanaged_statements`, `source_statements`, `accounted_statements`, optional `unmanaged_source_lines`, withheld list (name + line, NO value), warning list, ok/exit_code, and truthful transaction state. The required invariant is `managed_entries + unmanaged_statements = accounted_statements = source_statements`.
 - **Alternatives:** An inline `map[string]any`/anonymous struct marshaled directly in the CLI (lighter, but diverges from the established render/DTO seam and risks leaking store types onto the wire); reusing the `fail` envelope shape for success too (conflates error and success envelopes).
 - **Why uncertain:** UX/serialization-surface choice; both satisfy the agent contract (exactly one JSON object on stdout). The `analyze` path establishes the DTO+renderer pattern, but ingest's payload is small enough that an inline struct is defensible.
-- **Impact:** Low — the wire shape is trivially changeable; no requirement depends on the exact JSON structure, only that withheld + counts + warnings are present and no secret value / zsh text / store type reaches the wire.
+- **Impact:** Low for DTO-versus-inline placement only. The complete accounting fields/invariant, withheld metadata, warnings, transaction state, one-object JSON framing, and absence of secret values/zsh text/store internals are required and are not discretionary.
 - **Confidence:** Medium-High (the render/DTO seam is the established pattern; safe default follows it).
 
-## OQ-06-04 — Seam for reading Phase 5 marker constants in the out-of-block scan
+## OQ-06-04 — Marker-detector ownership (CLOSED 2026-08-02)
 
 - **Question:** How does the out-of-block-append detector obtain Phase 5's BEGIN/END marker strings without duplicating them or crossing the composition-root layering line?
-- **Tentative choice:** Co-locate the out-of-block detector with the Phase 5 installer (the package that already owns the marker sentinels + the `~/.zshrc` read-modify-write), so the marker text has a single source of truth; the ingest orchestration invokes it. If the detector must live in the ingest path and cross a package boundary, expose the marker/scan via a narrow seam (mirroring the `shell.Regenerator`/`shell.Hooker` provider-seam pattern) so `core/cli` holds no marker/zsh text.
+- **Decision:** Co-locate the detector with the landed Phase 5 installer in `core/cli`, where `install.go` already owns the marker sentinels and `.zshrc` topology scan. The ingest controller calls that package-private scan/result seam. No marker or zsh text crosses a package boundary and there is exactly one marker source of truth.
 - **Alternatives:** Re-declare the marker constants in the ingest package (rejected: two sources of truth — a marker drift silently breaks detection); read markers from a config value (over-engineered for two fixed constants).
-- **Why uncertain:** The markers and installer now exist in `core/cli/install.go`; only the narrow internal scan/result seam remains an implementation choice.
-- **Impact:** Low-Medium — determines where the detector lives and how it reaches the marker text; the BEHAVIOR (detect-and-warn, leave byte-identical) is locked independent of the seam. Reversible.
-- **Confidence:** Medium (behavior locked; physical seam depends on Phase 5's landed installer package).
+- **Why resolved:** The markers and installer are already in `core/cli/install.go`, and Phase 6's controller is also in `core/cli`; introducing another package seam would add indirection without changing ownership.
+- **Impact:** Low — only package-private identifier placement remains discretionary. Detection/warning behavior and the single marker source of truth are locked.
+- **Confidence:** High (verified against the landed package layout).
 
 ---
 

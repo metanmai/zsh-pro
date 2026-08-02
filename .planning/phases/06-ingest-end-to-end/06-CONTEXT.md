@@ -38,7 +38,7 @@ Five deliverables remain in scope:
 
 - **D-05: `EffectiveManaged()` is the activation/reporting projection, not a persistence filter.** `Store.CommitIngest` receives the complete source-ordered Profile after Store-owned redaction, including managed and unmanaged entries. `Store.Read(main)` must return that full Profile. `activate.Build` already ignores entries for which `!EffectiveManaged()` or `!Representable()`; Phase 6 pins that contract with unmanaged execution canaries and managed activation assertions.
 - **D-06: “Master” is only a logical unmanaged projection.** There is no physical master block, generated complement, or separate committed master file. Prefer user-facing `unmanaged_statements`/`unmanaged_source_lines`. Ordinary `.zshrc` bytes remain exactly where the user authored them. Because atomic full-file exchange necessarily stages those bytes, the only permitted additional literal-bearing copy is the authenticated transaction peer below a current-EUID mode-0700 directory; it is never a profile/cache/output/test artifact, is removed after durable finalize or restore, and is retained only when deleting recovery evidence would be unsafe.
-- **D-07: Reuse the landed Phase 5 installer exactly once.** Exact physical marker lines are `# >>> zsh-pro >>>` and `# <<< zsh-pro <<<`. No markers append the canonical loader region using landed separator rules; one balanced region is replaced; multiple balanced regions collapse to one while all surrounding/intervening ordinary bytes remain byte-identical; malformed topology fails before effects. Ingest prepares an independent install candidate from the original snapshot, promotes loader then `.zshrc` once, and never performs a later target rewrite.
+- **D-07: Reuse the landed Phase 5 installer exactly once.** Exact physical marker lines are `# >>> zsh-pro >>>` and `# <<< zsh-pro <<<`. When no marker region exists, append the canonical loader region using the landed separator rules; one balanced region is replaced; multiple balanced regions collapse to one while all surrounding/intervening ordinary bytes remain byte-identical; malformed topology fails before effects. Ingest prepares an independent install candidate from the original snapshot, promotes loader then `.zshrc` once, and never performs a later target rewrite.
 
 ### Area 3 — Secret exclusion and reruns
 
@@ -113,4 +113,4 @@ Five deliverables remain in scope:
 
 *Phase: 06-ingest-end-to-end*
 *Context corrected: 2026-08-02 — complete Profile persistence, non-destructive startup adoption, one filesystem promotion, and three-linked-assertion proof are locked.*
-*Next step: execute 06-01 through 06-05 after plan-structure/index review and the P6-011/P6-012 post-document review gate.*
+*Next step: execute 06-01 through 06-05 after plan-structure/index review and the P6-011/P6-012/P6-013 post-document review gate.*
