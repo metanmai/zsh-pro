@@ -13,19 +13,31 @@ import (
 	"zsh-pro/core/model"
 )
 
-const ErrInvalidIngestAuthority errStore = "zsh-pro: invalid ingest transaction authority"
+const (
+	// ErrInvalidIngestAuthority rejects zero, forged, expired, token-swapped, and
+	// cross-Store initialization or transaction authority.
+	ErrInvalidIngestAuthority errStore = "zsh-pro: invalid ingest transaction authority"
+	// ErrInitializerRollbackUnsafe means a transaction is still provisional,
+	// active/finalizing, published, or has retained/uncertain cleanup evidence.
+	ErrInitializerRollbackUnsafe errStore = "zsh-pro: profile store rollback is unsafe while ingest evidence is unresolved"
+	// ErrIngestUnavailable is the temporary fail-closed result until the baseline
+	// and quarantine implementation activates a valid reserved transaction.
+	ErrIngestUnavailable errStore = "zsh-pro: ingest transaction setup is unavailable"
+)
 
 // InstallInitialization is the narrowly scoped compensation returned by an
 // explicit install. It distinguishes a root created by this invocation from an
 // existing initialized repository whose private-mode migration may need to be
 // reversed after a later bootstrap failure.
 type InstallInitialization struct {
+	store *Store
+	id    model.InstallInitializationID
 	state *installInitializationState
 }
 
 // ID returns the opaque Store-issued authority for follow-on ingest work.
 func (i InstallInitialization) ID() model.InstallInitializationID {
-	return model.InstallInitializationID{}
+	return i.id
 }
 
 // Rollback restores exactly the state that InitForInstall changed. It is safe
@@ -35,7 +47,19 @@ func (i InstallInitialization) Rollback() error {
 	if i.state == nil {
 		return nil
 	}
+	if i.store != nil {
+		return i.store.rollbackInstallInitialization(i.id)
+	}
 	return i.state.rollback()
+}
+
+// Finalize expires this initialization authority without changing Store bytes.
+// Successful install/ingest flows call it after their durable effects complete.
+func (i InstallInitialization) Finalize() error {
+	if i.state == nil || i.store == nil {
+		return nil
+	}
+	return i.store.finalizeInstallInitialization(i.id)
 }
 
 // CreatedPath reports the store root only when this invocation created it. The
@@ -66,33 +90,244 @@ func (s *Store) InitForInstall(ctx context.Context) (InstallInitialization, erro
 	if err := state.sealCreatedTree(); err != nil {
 		return InstallInitialization{}, installInitializationError(err, state.rollback())
 	}
-	return InstallInitialization{state: state}, nil
+	id, err := model.NewInstallInitializationID()
+	if err != nil {
+		return InstallInitialization{}, installInitializationError(err, state.rollback())
+	}
+	root, err := filepath.Abs(state.dir)
+	if err != nil {
+		return InstallInitialization{}, installInitializationError(err, state.rollback())
+	}
+	rootInfo, err := os.Stat(state.dir)
+	if err != nil {
+		return InstallInitialization{}, installInitializationError(err, state.rollback())
+	}
+
+	s.transactionMu.Lock()
+	if s.storeNonce.IsZero() {
+		s.transactionMu.Unlock()
+		return InstallInitialization{}, installInitializationError(ErrInvalidIngestAuthority, state.rollback())
+	}
+	if s.installInitializations == nil {
+		s.installInitializations = make(map[model.InstallInitializationID]*installInitializationRecord)
+	}
+	if s.ingestTransactions == nil {
+		s.ingestTransactions = make(map[model.IngestTransactionID]*ingestTransactionRecord)
+	}
+	s.installInitializations[id] = &installInitializationRecord{
+		id:           id,
+		storeNonce:   s.storeNonce,
+		root:         filepath.Clean(root),
+		rootInfo:     rootInfo,
+		state:        state,
+		transactions: make(map[model.IngestTransactionID]struct{}),
+	}
+	s.transactionMu.Unlock()
+
+	return InstallInitialization{store: s, id: id, state: state}, nil
 }
 
 // BeginIngest starts a main-only ingest transaction.
 func (s *Store) BeginIngest(ctx context.Context, id model.InstallInitializationID) (model.IngestBeginOutcome, error) {
-	_, _ = ctx, id
-	return model.IngestBeginOutcome{}, ErrInvalidIngestAuthority
+	record, outcome, err := s.reserveIngestTransaction(id)
+	if err != nil {
+		return outcome, err
+	}
+	if s.beginAfterReserve != nil {
+		if err := s.beginAfterReserve(); err != nil {
+			return s.terminalizeBeginFailure(record, model.IngestFailureBaselineRead, model.QuarantineCleanupRemoved, false), err
+		}
+	}
+	return s.beginIngestReserved(ctx, record)
 }
 
 func (s *Store) rollbackInstallInitialization(id model.InstallInitializationID) error {
-	_ = id
-	return ErrInvalidIngestAuthority
+	s.transactionMu.Lock()
+	record, ok := s.validInstallInitializationLocked(id)
+	if !ok {
+		s.transactionMu.Unlock()
+		return ErrInvalidIngestAuthority
+	}
+	if record.terminal {
+		err := record.rollbackErr
+		s.transactionMu.Unlock()
+		return err
+	}
+	if record.closing || !s.initializerRollbackSafeLocked(record) {
+		s.transactionMu.Unlock()
+		return ErrInitializerRollbackUnsafe
+	}
+	record.closing = true
+	s.transactionMu.Unlock()
+
+	err := record.state.rollback()
+
+	s.transactionMu.Lock()
+	record.terminal = true
+	record.rollbackErr = err
+	s.transactionMu.Unlock()
+	return err
 }
 
 func (s *Store) installInitializationRoot(id model.InstallInitializationID) string {
-	_ = id
-	return ""
+	s.transactionMu.Lock()
+	defer s.transactionMu.Unlock()
+	record, ok := s.validInstallInitializationLocked(id)
+	if !ok {
+		return ""
+	}
+	return record.root
 }
 
 func (s *Store) installInitializationTransactionCount(id model.InstallInitializationID) int {
-	_ = id
-	return 0
+	s.transactionMu.Lock()
+	defer s.transactionMu.Unlock()
+	record, ok := s.validInstallInitializationLocked(id)
+	if !ok {
+		return 0
+	}
+	return len(record.transactions)
 }
 
 func (s *Store) initializerRollbackSafe(id model.InstallInitializationID) bool {
-	_ = id
-	return false
+	s.transactionMu.Lock()
+	defer s.transactionMu.Unlock()
+	record, ok := s.validInstallInitializationLocked(id)
+	return ok && !record.closing && !record.terminal && s.initializerRollbackSafeLocked(record)
+}
+
+type installInitializationRecord struct {
+	id           model.InstallInitializationID
+	storeNonce   model.InstallInitializationID
+	root         string
+	rootInfo     os.FileInfo
+	state        *installInitializationState
+	transactions map[model.IngestTransactionID]struct{}
+	closing      bool
+	terminal     bool
+	rollbackErr  error
+}
+
+type ingestTransactionRecord struct {
+	initializationID model.InstallInitializationID
+	transactionID    model.IngestTransactionID
+	storeNonce       model.InstallInitializationID
+	lifecycle        model.IngestLifecycle
+	commitStatus     model.IngestCommitStatus
+	cleanup          model.QuarantineCleanupState
+	recoveryRequired bool
+	beginOutcome     model.IngestBeginOutcome
+}
+
+func (s *Store) reserveIngestTransaction(id model.InstallInitializationID) (*ingestTransactionRecord, model.IngestBeginOutcome, error) {
+	s.transactionMu.Lock()
+	defer s.transactionMu.Unlock()
+	initialization, ok := s.validInstallInitializationLocked(id)
+	if !ok || initialization.closing || initialization.terminal {
+		return nil, model.IngestBeginOutcome{FailureCode: model.IngestFailureInvalidAuthority}, ErrInvalidIngestAuthority
+	}
+	token, err := model.NewIngestTransactionID()
+	if err != nil {
+		return nil, model.IngestBeginOutcome{FailureCode: model.IngestFailureInvalidAuthority}, err
+	}
+	record := &ingestTransactionRecord{
+		initializationID: id,
+		transactionID:    token,
+		storeNonce:       s.storeNonce,
+		lifecycle:        model.IngestLifecycleProvisional,
+		commitStatus:     model.IngestCommitNotCommitted,
+		cleanup:          model.QuarantineCleanupRemoved,
+	}
+	record.beginOutcome = model.IngestBeginOutcome{
+		InitializationID: id,
+		TransactionID:    token,
+		Lifecycle:        model.IngestLifecycleProvisional,
+		Cleanup:          model.QuarantineCleanupRemoved,
+		FailureCode:      model.IngestFailureNone,
+	}
+	s.ingestTransactions[token] = record
+	initialization.transactions[token] = struct{}{}
+	return record, record.beginOutcome, nil
+}
+
+func (s *Store) beginIngestReserved(_ context.Context, record *ingestTransactionRecord) (model.IngestBeginOutcome, error) {
+	return s.terminalizeBeginFailure(record, model.IngestFailureQuarantine, model.QuarantineCleanupRemoved, false), ErrIngestUnavailable
+}
+
+func (s *Store) terminalizeBeginFailure(
+	record *ingestTransactionRecord,
+	failure model.IngestFailureCode,
+	cleanup model.QuarantineCleanupState,
+	recoveryRequired bool,
+) model.IngestBeginOutcome {
+	s.transactionMu.Lock()
+	defer s.transactionMu.Unlock()
+	current, ok := s.ingestTransactions[record.transactionID]
+	if !ok || current != record || current.lifecycle == model.IngestLifecycleTerminal {
+		return record.beginOutcome
+	}
+	record.lifecycle = model.IngestLifecycleTerminal
+	record.commitStatus = model.IngestCommitNotCommitted
+	record.cleanup = cleanup
+	record.recoveryRequired = recoveryRequired
+	initialization := s.installInitializations[record.initializationID]
+	safe := initialization != nil && s.initializerRollbackSafeLocked(initialization)
+	record.beginOutcome = model.IngestBeginOutcome{
+		InitializationID:        record.initializationID,
+		TransactionID:           record.transactionID,
+		Lifecycle:               model.IngestLifecycleTerminal,
+		Cleanup:                 cleanup,
+		FailureCode:             failure,
+		RecoveryRequired:        recoveryRequired,
+		InitializerRollbackSafe: safe,
+	}
+	return record.beginOutcome
+}
+
+func (s *Store) validInstallInitializationLocked(id model.InstallInitializationID) (*installInitializationRecord, bool) {
+	if id.IsZero() || s.storeNonce.IsZero() {
+		return nil, false
+	}
+	record, ok := s.installInitializations[id]
+	if !ok || record == nil || record.id != id || record.storeNonce != s.storeNonce || record.state == nil {
+		return nil, false
+	}
+	return record, true
+}
+
+func (s *Store) initializerRollbackSafeLocked(initialization *installInitializationRecord) bool {
+	for token := range initialization.transactions {
+		record, ok := s.ingestTransactions[token]
+		if !ok || record == nil || record.initializationID != initialization.id || record.storeNonce != s.storeNonce {
+			return false
+		}
+		if record.lifecycle != model.IngestLifecycleTerminal || record.commitStatus != model.IngestCommitNotCommitted ||
+			record.cleanup != model.QuarantineCleanupRemoved || record.recoveryRequired {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Store) finalizeInstallInitialization(id model.InstallInitializationID) error {
+	s.transactionMu.Lock()
+	defer s.transactionMu.Unlock()
+	record, ok := s.validInstallInitializationLocked(id)
+	if !ok {
+		return ErrInvalidIngestAuthority
+	}
+	if record.terminal {
+		return record.rollbackErr
+	}
+	for token := range record.transactions {
+		transaction := s.ingestTransactions[token]
+		if transaction == nil || transaction.lifecycle != model.IngestLifecycleTerminal {
+			return ErrInitializerRollbackUnsafe
+		}
+	}
+	record.closing = true
+	record.terminal = true
+	return nil
 }
 
 type installInitializationState struct {

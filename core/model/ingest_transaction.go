@@ -1,5 +1,10 @@
 package model
 
+import (
+	"crypto/rand"
+	"encoding/hex"
+)
+
 // InstallInitializationID is an opaque Store-issued initialization authority.
 type InstallInitializationID struct {
 	token string
@@ -7,7 +12,11 @@ type InstallInitializationID struct {
 
 // NewInstallInitializationID creates a new opaque initialization identifier.
 func NewInstallInitializationID() (InstallInitializationID, error) {
-	return InstallInitializationID{}, nil
+	token, err := newOpaqueTransactionToken()
+	if err != nil {
+		return InstallInitializationID{}, err
+	}
+	return InstallInitializationID{token: token}, nil
 }
 
 // IsZero reports whether no authority was assigned.
@@ -21,7 +30,11 @@ type IngestTransactionID struct {
 
 // NewIngestTransactionID creates a new opaque transaction identifier.
 func NewIngestTransactionID() (IngestTransactionID, error) {
-	return IngestTransactionID{}, nil
+	token, err := newOpaqueTransactionToken()
+	if err != nil {
+		return IngestTransactionID{}, err
+	}
+	return IngestTransactionID{token: token}, nil
 }
 
 // IsZero reports whether no transaction was assigned.
@@ -31,12 +44,15 @@ type errIngestModel string
 
 func (e errIngestModel) Error() string { return string(e) }
 
-const errIngestModelUnavailable errIngestModel = "ingest transaction model is not implemented"
+const errInvalidIngestEvidence errIngestModel = "invalid ingest transaction evidence"
 
 // NewExpectedRevision validates and copies one Git object identifier.
 func NewExpectedRevision(value string) (*string, error) {
-	_ = value
-	return nil, errIngestModelUnavailable
+	if !validGitObjectID(value) {
+		return nil, errInvalidIngestEvidence
+	}
+	copy := value
+	return &copy, nil
 }
 
 // IngestBaseline is the exact main revision and Profile observed by Begin.
@@ -59,8 +75,64 @@ func NewIngestBaseline(
 	profile Profile,
 	profileObjectPresent bool,
 ) (IngestBaseline, error) {
-	_, _, _, _, _, _ = initializationID, transactionID, refPresent, expectedRevision, profile, profileObjectPresent
-	return IngestBaseline{}, errIngestModelUnavailable
+	baseline := IngestBaseline{
+		InitializationID:     initializationID,
+		TransactionID:        transactionID,
+		RefPresent:           refPresent,
+		Profile:              profile,
+		ProfileObjectPresent: profileObjectPresent,
+	}
+	if expectedRevision != nil {
+		copy := *expectedRevision
+		baseline.ExpectedRevision = &copy
+	}
+	if err := baseline.Validate(); err != nil {
+		return IngestBaseline{}, err
+	}
+	return baseline, nil
+}
+
+// Validate rejects contradictory or malformed baseline evidence. Callers must
+// revalidate immediately before durable effects because the exported optional
+// pointer can be mutated by a caller after construction.
+func (b IngestBaseline) Validate() error {
+	if b.InitializationID.IsZero() || b.TransactionID.IsZero() {
+		return errInvalidIngestEvidence
+	}
+	if b.RefPresent != (b.ExpectedRevision != nil) {
+		return errInvalidIngestEvidence
+	}
+	if b.ExpectedRevision != nil && !validGitObjectID(*b.ExpectedRevision) {
+		return errInvalidIngestEvidence
+	}
+	if !b.RefPresent && b.ProfileObjectPresent {
+		return errInvalidIngestEvidence
+	}
+	return nil
+}
+
+func newOpaqueTransactionToken() (string, error) {
+	var token [32]byte
+	if _, err := rand.Read(token[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(token[:]), nil
+}
+
+func validGitObjectID(value string) bool {
+	if len(value) != 40 && len(value) != 64 {
+		return false
+	}
+	for _, ch := range value {
+		switch {
+		case ch >= '0' && ch <= '9':
+		case ch >= 'a' && ch <= 'f':
+		case ch >= 'A' && ch <= 'F':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // IngestLifecycle records the immutable registry state of a transaction.

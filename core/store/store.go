@@ -17,6 +17,7 @@ import (
 	"context"
 	"os"
 	"strings"
+	"sync"
 
 	"zsh-pro/core/ir"
 	"zsh-pro/core/model"
@@ -52,10 +53,7 @@ type KeychainDriver interface {
 // name and its 1-based source line, so the CLI can tell the user exactly what was
 // withheld. It is zero-value-usable. Plan 03 populates it as Commit excludes
 // literal secrets; this plan only declares the shape.
-type WithheldSecret struct {
-	Name      string // the secret var name (Entry.Names[0]), e.g. "API_KEY"
-	StartLine int    // 1-based source line of the excluded assignment
-}
+type WithheldSecret = model.WithheldSecret
 
 // WithheldReport is the producer/consumer contract for secret exclusion: Phase 3
 // PRODUCES this report on Commit (Plan 03 populates it as it captures literal
@@ -65,7 +63,7 @@ type WithheldSecret struct {
 // means nothing was withheld. It is declared HERE because Commit's return type
 // references it (define contracts no later than first use); the type is FINAL —
 // Plan 03 changes neither it nor Commit's signature, only the body that fills it.
-type WithheldReport []WithheldSecret
+type WithheldReport = model.WithheldReport
 
 // Store is the git-backed profile store. It holds exactly four injected
 // dependencies and no global state, mirroring the project's injected-driver
@@ -85,6 +83,11 @@ type Store struct {
 	refUpdate func(context.Context, string, string, string) error
 	refDelete func(context.Context, string, string) error
 
+	transactionMu          sync.Mutex
+	storeNonce             model.InstallInitializationID
+	installInitializations map[model.InstallInitializationID]*installInitializationRecord
+	ingestTransactions     map[model.IngestTransactionID]*ingestTransactionRecord
+
 	// beginAfterReserve is a per-Store test seam used to prove that authority is
 	// reserved before any baseline or filesystem I/O. Production leaves it nil.
 	beginAfterReserve func() error
@@ -101,7 +104,19 @@ func New(dir string, regen shell.Regenerator, kc KeychainDriver) (*Store, error)
 	if err != nil {
 		return nil, err
 	}
-	return &Store{dir: dir, git: g, regen: regen, keychain: kc}, nil
+	nonce, err := model.NewInstallInitializationID()
+	if err != nil {
+		return nil, err
+	}
+	return &Store{
+		dir:                    dir,
+		git:                    g,
+		regen:                  regen,
+		keychain:               kc,
+		storeNonce:             nonce,
+		installInitializations: make(map[model.InstallInitializationID]*installInitializationRecord),
+		ingestTransactions:     make(map[model.IngestTransactionID]*ingestTransactionRecord),
+	}, nil
 }
 
 // NewRuntime constructs the read path used by the sourced runtime helper. The
@@ -114,7 +129,18 @@ func NewRuntime(root, vaultParent *os.File, regen shell.Regenerator) (*Store, er
 	if err != nil {
 		return nil, err
 	}
-	return &Store{git: g, regen: regen, keychain: newRuntimeKeychain(vaultParent)}, nil
+	nonce, err := model.NewInstallInitializationID()
+	if err != nil {
+		return nil, err
+	}
+	return &Store{
+		git:                    g,
+		regen:                  regen,
+		keychain:               newRuntimeKeychain(vaultParent),
+		storeNonce:             nonce,
+		installInitializations: make(map[model.InstallInitializationID]*installInitializationRecord),
+		ingestTransactions:     make(map[model.IngestTransactionID]*ingestTransactionRecord),
+	}, nil
 }
 
 // RuntimeSecretResolver exposes the already-bound runtime resolver to the
