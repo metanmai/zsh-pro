@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 
 	"zsh-pro/core/model"
 )
@@ -439,9 +440,18 @@ func (s *installInitializationState) rollback() error {
 			return
 		}
 		for _, path := range s.missingDirectories {
-			if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-				s.rollbackErr = fmt.Errorf("remove newly created profile store parent %s: %w", path, err)
-				return
+			if err := os.Remove(path); err != nil {
+				switch {
+				case errors.Is(err, os.ErrNotExist):
+					continue
+				case errors.Is(err, syscall.ENOTEMPTY), errors.Is(err, syscall.EEXIST):
+					// A stable per-root transaction sibling deliberately survives Store
+					// rollback, so its newly-created parent may no longer be removable.
+					return
+				default:
+					s.rollbackErr = fmt.Errorf("remove newly created profile store parent %s: %w", path, err)
+					return
+				}
 			}
 		}
 	})
