@@ -258,12 +258,13 @@ Plans:
   3. Re-running ingest/install is idempotent (the `.zshrc` managed block is byte-identical the second time), and installer appends that landed outside the managed block are detected and surfaced as a warning rather than clobbered.
   4. The committed baseline round-trips to a behavior-equivalent `.zshrc` (the round-trip oracle from Phase 2 holds against a real, end-to-end ingested file).
 
-**Plans**: TBD
+**Plans**: 3 plans
 
 Plans:
 
-- [ ] 06-01: TBD (end-to-end ingest path: real `~/.zshrc` → IR → baseline-branch commit; imperative-to-master-block routing)
-- [ ] 06-02: TBD (secret-exclusion + withheld report on ingest; out-of-block installer-append detection/warning; end-to-end round-trip)
+- [ ] 06-01-PLAN.md — Reuse the landed installer for explicit-target master routing, exact append detection, idempotence, and stale-write-safe promotion
+- [ ] 06-02-PLAN.md — Compose the `ingest [path] [--json]` CLI through IR routing, secret-safe `main` commit, deterministic reporting, and recoverable partial outcomes
+- [ ] 06-03-PLAN.md — Prove the real binary, Git store, secret boundary, append preservation, and source-order behavior oracle end-to-end
 
 ## Progress
 
@@ -277,7 +278,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 | 3. Git-Backed Store | 3/3 | Complete   | 2026-06-27 |
 | 4. Manifest Builder + Emit | 19/19 | Complete    | 2026-07-27 |
 | 5. Runtime Loader + CLI + Bootstrap | 8/8 | Complete    | 2026-07-30 |
-| 6. Ingest End-to-End | 0/2 | Not started | - |
+| 6. Ingest End-to-End | 0/3 | Not started | - |
 
 ## Requirement Coverage
 
