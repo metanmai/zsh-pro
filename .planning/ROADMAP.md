@@ -258,20 +258,25 @@ Plans:
   3. Re-running ingest/install is idempotent (the `.zshrc` managed block is byte-identical the second time), and installer appends that landed outside the managed block are detected and surfaced as a warning rather than clobbered.
   4. The committed baseline round-trips to a behavior-equivalent `.zshrc` (the round-trip oracle from Phase 2 holds against a real, end-to-end ingested file).
 
-**Plans**: 3 plans
+**Plans**: 5 plans
 
 Plans:
 **Wave 1**
 
-- [ ] 06-01-PLAN.md — Reuse the landed installer for explicit-target master routing, exact append detection, idempotence, and stale-write-safe promotion
+- [ ] 06-01-PLAN.md — Bind exact-revision baseline reads to isolated candidate quarantines with truthful initializer/abort evidence
 
-**Wave 2** *(blocked on Wave 1 completion)*
+**Wave 2** *(both plans blocked on Wave 1 completion; may run in parallel)*
 
-- [ ] 06-02-PLAN.md — Compose the `ingest [path] [--json]` CLI through IR routing, secret-safe `main` commit, deterministic reporting, and recoverable partial outcomes
+- [ ] 06-02-PLAN.md — Prepare/lock expected refs before backend/object publication with typed recovery and SecretRef-safe reruns
+- [ ] 06-03-PLAN.md — Share store-before-cache installer order and add descriptor-anchored, journaled, exact-snapshot filesystem promotion
 
-**Wave 3** *(blocked on Wave 2 completion)*
+**Wave 3** *(blocked on both Wave 2 plans)*
 
-- [ ] 06-03-PLAN.md — Prove the real binary, Git store, secret boundary, append preservation, and source-order behavior oracle end-to-end
+- [ ] 06-04-PLAN.md — Compose strict ingest arguments/output, rerun merge, typed compensation, and one-store composition-root wiring
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [ ] 06-05-PLAN.md — Prove the built binary, real store/provider round trip, all-object secret boundary, no-execution rule, layering, and immutable dependencies
 
 ## Progress
 
@@ -285,7 +290,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 | 3. Git-Backed Store | 3/3 | Complete   | 2026-06-27 |
 | 4. Manifest Builder + Emit | 19/19 | Complete    | 2026-07-27 |
 | 5. Runtime Loader + CLI + Bootstrap | 8/8 | Complete    | 2026-07-30 |
-| 6. Ingest End-to-End | 0/3 | Not started | - |
+| 6. Ingest End-to-End | 0/5 | Not started | - |
 
 ## Requirement Coverage
 

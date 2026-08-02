@@ -5,14 +5,14 @@ milestone_name: Branchable Shell Environments
 current_phase: 06
 current_phase_name: Ingest End-to-End
 status: executing
-stopped_at: Phase 6 planned — ready to execute 06-01
-last_updated: "2026-08-02T15:04:33.609Z"
+stopped_at: Phase 6 transaction model replanned — ready to execute 06-01
+last_updated: "2026-08-02T17:29:02.861Z"
 last_activity: 2026-08-02
-last_activity_desc: Phase 6 planned and independently verified — 3 plans in 3 waves
+last_activity_desc: Phase 6 checker blockers resolved — 5 plans in 4 waves
 progress:
   total_phases: 6
   completed_phases: 5
-  total_plans: 38
+  total_plans: 40
   completed_plans: 35
   percent: 83
 ---
@@ -29,9 +29,9 @@ See: .planning/PROJECT.md (updated 2026-06-25)
 ## Current Position
 
 Phase: 06 — Ingest End-to-End
-Plan: 0 of 3
+Plan: 0 of 5
 Status: Ready to execute
-Last activity: 2026-08-02 — Phase 6 planned and independently verified
+Last activity: 2026-08-02 — Phase 6 checker blockers resolved in 5 plans across 4 waves
 
 Progress: [████████░░] 83%
 
