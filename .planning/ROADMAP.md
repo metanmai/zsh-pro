@@ -265,16 +265,19 @@ Plans:
 
 - [ ] 06-01-PLAN.md — Bind exact-revision baseline reads to isolated candidate quarantines with truthful initializer/abort evidence
 
-**Wave 2** *(both plans blocked on Wave 1 completion; may run in parallel)*
+**Wave 2** *(blocked on Wave 1 completion)*
 
 - [ ] 06-02-PLAN.md — Prepare/lock expected refs before backend/object publication with typed recovery and SecretRef-safe reruns
-- [ ] 06-03-PLAN.md — Share store-before-cache installer order and add descriptor-anchored, journaled, exact-snapshot filesystem promotion
 
-**Wave 3** *(blocked on both Wave 2 plans)*
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 06-03-PLAN.md — Share store-before-cache installer order and add Linux/Darwin atomic-exchange, journaled, exact-snapshot filesystem promotion
+
+**Wave 4** *(blocked on Wave 3 completion)*
 
 - [ ] 06-04-PLAN.md — Compose strict ingest arguments/output, rerun merge, typed compensation, and one-store composition-root wiring
 
-**Wave 4** *(blocked on Wave 3 completion)*
+**Wave 5** *(blocked on Wave 4 completion)*
 
 - [ ] 06-05-PLAN.md — Prove the built binary, real store/provider round trip, all-object secret boundary, no-execution rule, layering, and immutable dependencies
 

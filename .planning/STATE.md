@@ -8,7 +8,7 @@ status: executing
 stopped_at: Phase 6 transaction model replanned — ready to execute 06-01
 last_updated: "2026-08-02T17:29:02.861Z"
 last_activity: 2026-08-02
-last_activity_desc: Phase 6 checker blockers resolved — 5 plans in 4 waves
+last_activity_desc: Phase 6 transaction model revised — 5 plans in 5 waves
 progress:
   total_phases: 6
   completed_phases: 5
@@ -31,7 +31,7 @@ See: .planning/PROJECT.md (updated 2026-06-25)
 Phase: 06 — Ingest End-to-End
 Plan: 0 of 5
 Status: Ready to execute
-Last activity: 2026-08-02 — Phase 6 checker blockers resolved in 5 plans across 4 waves
+Last activity: 2026-08-02 — Phase 6 transaction model revised in 5 plans across 5 waves
 
 Progress: [████████░░] 83%
 
