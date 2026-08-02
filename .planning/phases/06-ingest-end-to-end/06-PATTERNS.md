@@ -19,7 +19,7 @@
 - `runInstallWithStoreInitialization` reads and validates the target, invokes the injected store initializer, prepares the target, prepares/validates the cache loader, promotes the loader, then promotes `.zshrc`.
 - Loader-before-target promotion is a shipped invariant. Phase 6 preserves it while moving initializer completion before any cache directory creation/open.
 - `StoreInitialization` currently carries `Rollback` and caller-visible path/creation state. Phase 6 replaces boolean/path ownership authority with a Store-issued opaque `InstallInitializationID` bound to the exact Store instance, canonical root, and sealed baseline.
-- `core/cmd/zsh-pro/main.go` is the sole concrete composition root, but the current initializer closure constructs a second `*store.Store` after `cliStore`. Phase 6 must remove that split and route initialization plus Begin/Commit/Abort through the exact `cliStore` pointer.
+- `core/cmd/zsh-pro/main.go` is the sole concrete composition root, but the current initializer closure constructs a second `*store.Store` after `cliStore`. Phase 6 removes that split and routes initialization plus Begin/Commit/Abort through the exact `cliStore` pointer. `TestMainInitToBeginUsesExactCLIStore` is the real command-package proof: a second Store over the root cannot use the first pointer's initialization ID before effects.
 
 ## Landed managed-marker topology
 
@@ -54,9 +54,10 @@ Only ordinary nonblank/noncomment bytes after the canonical single END produce D
 
 - `installInitializationState.rollback` currently re-snapshots a pathname and calls `os.RemoveAll(s.dir)` for a fresh store root.
 - That implementation is historical context, not the Phase 6 quarantine-cleanup pattern.
-- Current Git command setup appends owned variables to `os.Environ()` without first stripping inherited `GIT_*`; a hostile inherited index/object/work-tree variable can therefore survive. Each Phase 6 quarantine must strip every inherited `GIT_*`, then set one private `GIT_INDEX_FILE`, private object directory, audited alternates, and controlled identity fields.
-- `AbortIngest` retains authenticated parent/quarantine handles and recorded device/inode identity, recurses only through the retained quarantine handle, and must not perform a final identity check followed by pathname unlink/rmdir. It may remove the directory entry only through an audited atomic identity-bound capability; if the platform has none, or setup/cleanup/substitution/durability cannot be proven, it retains the authenticated artifact and returns recovery required.
-- Begin setup failures after create/open/stat/register have their own durable unwind record. Abort terminal results are immutable and replayable; initializer rollback is safe only when every token registered beneath the exact initialization ID is terminal, no-publication, and cleanup removed.
+- Current Git command setup appends owned variables to `os.Environ()` and uses ambient repository discovery, so hostile inherited Git directory/work-tree/config/index/object variables can redirect effects. Phase 6 centralizes every Store command behind one typed non-worktree plumbing builder: strip inherited `GIT_*`, bind absolute canonical bare `GIT_DIR`, set `GIT_CONFIG_NOSYSTEM=1` and `GIT_CONFIG_GLOBAL=os.DevNull`, omit `GIT_WORK_TREE`, then add private candidate index/object/alternate values only where required. Checkout/reset/switch/restore/clean, `read-tree -u`, repository/work-tree overrides, and equivalent worktree-writing forms are rejected before process creation; the long-lived update-ref process reuses this exact runner.
+- `AbortIngest` retains authenticated parent/quarantine handles and recorded device/inode identity, recurses only through those handles, and binds every file, symlink, nested directory, and the top entry independently. Each removal requires an audited capability that atomically removes the exact authenticated opened identity; a final check followed by pathname unlink/rmdir is never sufficient. If the capability is unavailable, any child changes before or after the final-check seam, or cleanup/durability cannot be proven, the replacement stays untouched and the remaining tree plus recovery evidence is retained.
+- Public `BeginIngest(ctx, installInitializationID)` is structurally main-only. Under the Store mutex it validates the ID and reserves a provisional token before ref/profile/filesystem I/O; every exit terminalizes that same immutable record, including clean no-artifact failure and uncertain retained setup. Initializer rollback is safe only when every reserved token beneath the exact initialization ID is terminal, no-publication, and cleanup removed.
+- The legacy generic `Store.Commit(ctx, branch, ...)` never calls public Begin. It uses private `beginTransactionForRef` under internal non-removable authority so arbitrary validated branch B is preserved and main remains untouched.
 
 ## Atomic namespace pattern
 
@@ -91,7 +92,7 @@ Rules:
 
 ## Store publication and controller result pattern
 
-- `RefPresent` and `ProfileObjectPresent` are independent. An absent ref emits create/zero-old semantics; a present ref emits update with the Begin expected ID; mismatch is a clean conflict with zero publication.
+- `RefPresent`, optional `ExpectedRevision`, and `ProfileObjectPresent` are separate evidence. `ExpectedRevision` is absent if and only if RefPresent is false. Absent main performs only ref-existence resolution, zero exact-revision/profile/object/tree/parent reads, seeds an empty private index, and commits without a parent. Present main captures one expected object ID; Init-only profile absence, committed-empty profile presence, and operational probe/read failure remain distinct. Commit rejects any presence invariant mismatch before starting update-ref.
 - `CommitIngest` atomically claims Store + initialization ID + token. Commit, Abort, and terminal cleanup serialize on that registry state; caller paths never select artifacts.
 - Publication truth and quarantine cleanup truth are independent: committed/not-committed is preserved even when cleanup is removed, retained, or uncertain. Only a lost Git update-ref commit response enters observation ambiguity; backend, object-publication, and cleanup failures remain directly classified.
 - `IngestResult` counts `managed_entries`, `master_statements`, and physical `master_block_lines` separately. The invariant is `managed_entries + master_statements = accounted_statements = source_statements`; multiline master statements may span multiple block lines.
@@ -102,18 +103,19 @@ Rules:
 
 | Plan | Planned symbols/artifacts | Consumers |
 | --- | --- | --- |
-| 06-01 | `InstallInitializationID`, `IngestBaseline`, `IngestAbortOutcome`, `BeginIngest`, `AbortIngest`, private Git index/object state, authenticated replayable cleanup | 06-02, 06-03, 06-04 |
-| 06-02 | `IngestCommitOutcome`, `CommitIngest`, exact RefPresent wire table, atomic registry claim, independent publication/cleanup axes, value-free withheld report | 06-03 contract extension, 06-04 controller |
+| 06-01 | `InstallInitializationID`, optional `ExpectedRevision`, main-only `IngestBaseline`, `IngestAbortOutcome`, `BeginIngest`, `AbortIngest`, pre-I/O reservation, hermetic canonical bare-Git state, recursively identity-bound replayable cleanup | 06-02, 06-03, 06-04 |
+| 06-02 | `IngestCommitOutcome`, fixed-main `CommitIngest`, private branch-aware legacy constructor, exact ExpectedRevision/RefPresent wire table, atomic registry claim, independent publication/cleanup axes, value-free withheld report | 06-03 contract extension, 06-04 controller |
 | 06-03 | shared marker topology, `prepareIngestInstallAt`, `installSnapshot`, `promotionOutcome`, `atomicRenameAt` | 06-04 controller |
 | 06-04 | `runIngest`, strict `CLI.Run` dispatch, ingest DTO, one-store composition root | 06-05 E2E |
 | 06-05 | built-binary, real store/provider, privacy, no-execution, round-trip, exact-base/dependency gates, native macOS verifier/evidence | phase verification |
 
 ## Testing conventions
 
-- Every focused verify command first enumerates exact test names with `go test -list` and fails if any name is absent.
+- Every focused verify command first enumerates exact test names with `GOTOOLCHAIN=local go test -list` and fails if any name is absent.
+- Before any independent verifier does other work, `GOTOOLCHAIN=local go env GOVERSION` must match Go 1.25.x. Focused/full tests, vet, syscall/GOROOT audit, cross-builds, dependency queries, built-binary builds, the final `GOTOOLCHAIN=local make check`, and native macOS evidence all run in local mode; an automatic toolchain download cannot satisfy a Phase 6 gate.
 - Race/crash tests use per-instance seams, never mutable package globals that can cross parallel tests.
 - File assertions compare the explicit bounded snapshot fields, authenticated journal/parent/link state, and retained artifacts; target owner/timestamps/ACL/xattr/flags are not silently folded into equality.
-- Platform adapter tests run directly on their tagged host. Linux/Darwin amd64/arm64 are cross-compiled with `CGO_ENABLED=0`, but cross-build is compile evidence only. Darwin support requires the external exact-SHA native macOS runtime evidence recorded by 06-05.
+- Platform adapter tests run directly on their tagged host. Linux/Darwin amd64/arm64 are cross-compiled with `CGO_ENABLED=0 GOTOOLCHAIN=local`, but cross-build is compile evidence only. Darwin support requires external exact-SHA native macOS runtime evidence recording `go_toolchain: local` and exact Go 1.25.x `go_env_goversion` in 06-05.
 - Landed ordinary-install marker and rollback suites remain unchanged and run after focused tests.
 - `06-EXECUTION-BASE` contains exactly reviewed commit `557c818845f4239d5d50ecab02e37731bc117f10`; `go.mod`/`go.sum` remain byte-identical to it across HEAD, index, and worktree.
 - Production dependency lists for `core/cli`, `core/ir`, and `core/store` are inspected under explicit Linux/Darwin amd64/arm64 build contexts; every context rejects the concrete zsh provider and both exact `golang.org/x/sys` and every `golang.org/x/sys/*` subpackage.

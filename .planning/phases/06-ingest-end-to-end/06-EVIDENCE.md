@@ -17,13 +17,14 @@
 | Malformed topology is rejected | Existing tests cover orphan END, unterminated START, nested START, and stray/interleaved END | Ingest must share the parser and fail before side effects |
 | Current target promotion is pathname based | `preparedWrite.promote` calls `os.Rename`; rollback separately renames/removes | Replace with atomic exchange/exclusive creation and typed outcomes |
 | Current fresh-root cleanup is pathname recursive | `core/store/install_transaction.go` re-snapshots then calls `os.RemoveAll` | Abort quarantine cleanup requires retained handles + device/inode, descriptor-only recursion, and no final-check-then-pathname removal |
-| Current Git environment inherits caller state | `core/store/git.go` appends owned variables to `os.Environ()` without stripping existing `GIT_*` keys | Every candidate receives a private index/object environment after all inherited Git variables are removed; concurrent tests prove final Store state unchanged |
+| Current Git execution inherits caller state and ambient repository discovery | `core/store/git.go` discards the absolute lookup result, invokes `git` with `-C`, and appends owned variables to `os.Environ()` without stripping existing `GIT_*` keys | Centralize all Store/ref/candidate commands on an absolute canonical bare `GIT_DIR`, disabled system/global config, absent work tree, sanitized Git environment, and typed non-worktree argv; hostile variables/decoy worktree tests prove confinement |
 | Current initialization authority is caller-shaped | `StoreInitialization` exposes creation/path state rather than an opaque Store registry identity | `InitForInstall` issues an exact Store/root/baseline-bound `InstallInitializationID`; wrong/cross-Store IDs and mixed token outcomes cannot authorize rollback |
 | Existing platform pattern | `cache_syscalls_{linux,darwin}.go` and `runtime_openat_{linux,darwin}.go` use build tags, raw syscalls/linkname, and no new dependency | New atomic adapters follow the same local pattern |
+| Current command test build helper permits automatic toolchain selection | `core/cmd/zsh-pro/main_test.go` explicitly requests automatic mode; the Makefile has the same default | Phase 6 owns only `main_test.go` and its plan invocations: built-binary helpers and every independent gate force local Go 1.25.x, while the unchanged Makefile is invoked as `GOTOOLCHAIN=local make check` |
 
 ## Atomic API audit
 
-The read-only planning audit inspected the active Go 1.25 tree under `go env GOROOT`, its vendored generated Unix syscall sources, installed Linux headers, and the repository's existing Darwin syscall wrappers.
+The read-only planning audit inspected the active Go 1.25 tree under `go env GOROOT`, its vendored generated Unix syscall sources, installed Linux headers, and the repository's existing Darwin syscall wrappers. Execution must repeat this from `GOTOOLCHAIN=local go env GOROOT` only after local `go env GOVERSION` matches Go 1.25.x; automatic toolchain acquisition is not evidence.
 
 Verified call model:
 
@@ -69,16 +70,18 @@ Planning-time evidence included a local Linux 6.18/ext4 probe that exchanged two
 ## Quarantine cleanup conclusions
 
 - Pathname snapshot plus `RemoveAll` cannot authenticate the current quarantine pathname object at recursive-cleanup time.
-- Begin must retain the authenticated parent and quarantine handles and record device/inode/mode/owner from the live quarantine handle.
-- Abort compares parent-relative no-follow basename identity to the retained handle before descriptor-only recursion and at deterministic race seams, but a final identity check followed by pathname unlink/rmdir is not accepted because substitution can still win afterward.
-- Directory-entry removal is allowed only through a proven atomic identity-bound capability. If unavailable, or replacement occurs before/after any check, the authenticated empty quarantine and recovery record remain; replacement bytes/inode/mode/descendants stay untouched and initializer rollback is unsafe.
-- Begin setup failures after create/open/stat/register run the same authenticated unwind discipline and retain a recoverable internal record when cleanup or parent fsync is unprovable. Clean terminal Abort outcomes are immutable and replayed without a second cleanup call.
-- Initializer rollback is an aggregate over every token under the exact Store-issued initialization ID; any active/finalizing, published, retained, or uncertain token makes deletion unsafe.
+- Public Begin validates the Store-issued initialization ID and reserves a main-bound provisional token under the Store mutex before any ref/profile/filesystem I/O. Every exit terminalizes that same immutable record; clean no-artifact failure remains no-publication/removed evidence, while uncertain setup retains the authenticated locator/handles and recovery requirement.
+- Begin retains authenticated parent and quarantine handles and records device/inode/mode/owner from live handles. Abort and Begin unwind use the same recursive helper.
+- Every file, symlink, nested directory, and top quarantine entry is captured no-follow relative to its authenticated parent and independently identity-bound. A final identity check followed by pathname unlink/rmdir is not accepted because substitution can still win afterward.
+- Directory-entry removal is allowed only through a proven atomic capability that removes the exact authenticated opened child. If unavailable, or replacement occurs before or after the final-check seam at any depth, the replacement stays untouched and remaining tree/recovery evidence is retained; initializer rollback is unsafe.
+- Initializer rollback is an aggregate over every reserved token under the exact Store-issued initialization ID; failed Begin attempts remain visible, and any provisional/active/finalizing, published, retained, or uncertain token makes deletion unsafe.
 
 ## Store commit and controller evidence conclusions
 
-- `RefPresent` must remain distinct from `ProfileObjectPresent`: absent ref uses create/zero-old wire semantics, present ref uses update(expected), and mismatch aborts before backend/object effects.
+- Public `BeginIngest(ctx, installInitializationID)` has no branch input and resolves only `refs/heads/main`. Legacy arbitrary-branch `Store.Commit` uses a private internally authorized branch-aware transaction constructor rather than widening or calling public Begin.
+- Optional `ExpectedRevision` is absent if and only if `RefPresent` is false, independently of `ProfileObjectPresent`. Absent main performs zero exact-revision/tree/object/profile/parent reads, seeds an empty private index, and later uses create/zero-old with no commit parent. Present main captures one exact expected ID; Init-only, committed-empty, and operational probe failure are distinct. Commit rejects an invariant mismatch before ref-process startup.
 - `CommitIngest` claims Store + initialization ID + token atomically, derives paths only from the registry, and serializes Commit, Abort, and final cleanup.
+- Baseline probes, candidate plumbing, and the long-lived update-ref process all use the same canonical bare-store runner: inherited `GIT_*` removed, external config disabled, `GIT_WORK_TREE` absent, and worktree-mutating argv rejected before exec.
 - Publication status and quarantine-cleanup status are independent durable axes. Cleanup failure after committed or clean-not-committed preserves publication truth and retains evidence.
 - Only loss of the Git update-ref commit response is an ambiguous observation boundary. Backend, final-object publication, directory-sync, and cleanup failures have direct typed classifications.
 - Valid persisted SecretRefs are proven at CommitIngest level: exact entry pass-through, Kind once, Retrieve/Store/Delete zero, and no second withheld record; malformed shapes fail before ref processing.
@@ -93,7 +96,7 @@ These do not exist in the refreshed source snapshot; the named plan creates them
 
 | Artifact | Planned by | Key symbols/contract |
 | --- | --- | --- |
-| `core/model/ingest_transaction.go` | 06-01 | exact baseline + typed commit/abort/recovery evidence |
+| `core/model/ingest_transaction.go` | 06-01 | main-only baseline, optional ExpectedRevision invariant, and typed begin/commit/abort/recovery evidence |
 | `core/cli/install_transaction.go` | 06-03 | topology/layout snapshot, journal, `promotionOutcome`, recovery matrix |
 | `core/cli/atomic_rename.go` | 06-03 | `atomicRenameMode`, `atomicRenameAt`, `ErrAtomicRenameUnsupported` |
 | `core/cli/atomic_rename_linux.go` | 06-03 | audited Linux exchange/no-replace adapter |
@@ -102,17 +105,17 @@ These do not exist in the refreshed source snapshot; the named plan creates them
 | `core/cli/atomic_rename_test.go` | 06-03 | direct platform/identity/no-replace/unsupported tests |
 | `core/cli/ingest.go` | 06-04 | transactional ingest controller |
 | `core/dto/ingest.go` | 06-04 | value-free human/JSON result fields |
-| `scripts/verify-phase06-macos-runtime.sh` | 06-05 | native-Darwin-only exact-SHA exchange/no-replace runtime verifier |
-| `06-MACOS-RUNTIME-EVIDENCE.md` | 06-05 | attributable native macOS platform/filesystem/command/output PASS record |
+| `scripts/verify-phase06-macos-runtime.sh` | 06-05 | native-Darwin-only exact-SHA, local-Go-1.25.x exchange/no-replace runtime verifier |
+| `06-MACOS-RUNTIME-EVIDENCE.md` | 06-05 | attributable native macOS toolchain/GOVERSION/platform/filesystem/command/output PASS record |
 
 ## Execution gates derived from evidence
 
 1. Before Go edits, create `06-EXECUTION-BASE` with exactly `557c818845f4239d5d50ecab02e37731bc117f10` plus LF; verify the commit exists and never replace it from execution-time HEAD.
 2. Repeat and record exact syscall/trap/flag audit before writing `atomic_rename_*`.
-3. Require exact-name preflight for every focused test selector.
+3. Require every independent verifier to first reject non-local or non-Go-1.25.x execution, then exact-name-preflight every focused test selector. No Phase 6 gate may select automatic mode or download a toolchain.
 4. Run landed balanced-duplicate and malformed-marker tests unchanged.
-5. Run deterministic quarantine setup-unwind, terminal replay, aggregate-initialization, private-index/Git-environment, and substitution-before/after-final-check tests; no pathname deletion closes the last race.
+5. Run exact main-only/optional-revision tests; pre-I/O reservation/failed-Begin aggregate tests; hostile canonical bare-Git environment and rejected worktree-argv tests; and deterministic per-child file/symlink/nested-directory/top substitution tests at both final-check seams. No record is erased and no pathname deletion closes the last race.
 6. Run direct adapter identity/no-replace/unsupported-before-effects tests, static mutation-surface audit, changed parent/journal/link authentication, and eight separately named existing/absent crash rows; absent post-create rollback remains recovery required.
 7. Run controller accounting mismatch and multiline statement/line tests plus the parse/duplicate/candidate-preparation common-compensation matrix; never fabricate an ir.Build error.
-8. Cross-compile Linux and Darwin amd64/arm64 with CGO disabled, then block phase completion on attributable native macOS exchange/no-replace/late-target evidence for the exact implementation SHA.
-9. Prove `go.mod`/`go.sum` match the literal reviewed base across HEAD/index/worktree and, under explicit Linux/Darwin amd64/arm64 build contexts, reject the concrete zsh provider, exact `golang.org/x/sys`, and every x/sys subpackage from cli/ir/store dependency lists.
+8. Cross-compile Linux and Darwin amd64/arm64 with CGO disabled under local Go 1.25.x, then block phase completion on attributable native macOS exchange/no-replace/late-target evidence for the exact implementation SHA recording `go_toolchain: local` and exact `go_env_goversion`.
+9. Prove `go.mod`/`go.sum` match the literal reviewed base across HEAD/index/worktree and, under explicit local-toolchain Linux/Darwin amd64/arm64 build contexts, reject the concrete zsh provider, exact `golang.org/x/sys`, and every x/sys subpackage from cli/ir/store dependency lists; finish with `GOTOOLCHAIN=local make check`.
