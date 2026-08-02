@@ -248,15 +248,15 @@ Plans:
 
 ### Phase 6: Ingest End-to-End
 
-**Goal**: Polish the on-ramp last, against the final IR shape. Compose the already-built pieces into the full path: parse a real `~/.zshrc` → classify (declarative/imperative split) → partial-eval → regenerate → commit to the baseline branch — with the idempotent managed-block install and detection/warning of installer appends that landed outside the managed block. This is the moat: adopt the messy file the user already has, never make them rewrite it.
+**Goal**: Polish the on-ramp last, against the final IR shape. Compose the already-built pieces into the full path: parse a real `~/.zshrc` → classify (declarative/imperative split) → partial-eval → commit the complete redacted, source-ordered profile to the baseline branch — while preserving every preexisting startup byte outside the canonical managed loader region and warning about post-END appends. This is the moat: adopt the messy file the user already has without rewriting it into a generated complement.
 **Depends on**: Phase 2 (IR), Phase 3 (store)
 **Requirements**: PROF-03
 **Success Criteria** (what must be TRUE):
 
-  1. Running ingest on a real `~/.zshrc` produces a baseline-branch profile committed to the store, with declarative state captured and imperative lines routed to the unmanaged master block — never silently dropped.
+  1. Running ingest on a real `~/.zshrc` commits the complete redacted, source-ordered `model.Profile` to the baseline branch; `EffectiveManaged` is only the activation/reporting projection, and managed plus unmanaged statements account for every source statement without silently dropping or reordering one.
   2. Detected secrets are excluded from the committed baseline by default and the user is told exactly what was withheld (reusing the shipped secret detection end-to-end).
-  3. Re-running ingest/install is idempotent (the `.zshrc` managed block is byte-identical the second time), and installer appends that landed outside the managed block are detected and surfaced as a warning rather than clobbered.
-  4. The committed baseline round-trips to a behavior-equivalent `.zshrc` (the round-trip oracle from Phase 2 holds against a real, end-to-end ingested file).
+  3. First adoption appends the canonical Phase 5 loader region; installed/re-ingest replaces or collapses only exact marker regions. Re-running ingest/install is idempotent, every byte outside those regions remains exact and in order, and post-END appends are warned about rather than clobbered.
+  4. Three linked proofs hold: `Store.Read(main) → ir.Regenerate` preserves the full redacted profile's non-secret order/text/semantics; activation applies only `EffectiveManaged` entries and resolves `SecretRef`s; and a built-binary `zsh -f` comparison of the pristine source with the actual installed `.zshrc` is behavior-equivalent apart from exact zsh-pro-owned loader symbols, with no startup subprocess.
 
 **Plans**: 5 plans
 
@@ -271,11 +271,11 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] 06-03-PLAN.md — Share store-before-cache installer order and add Linux/Darwin atomic-exchange, journaled, exact-snapshot filesystem promotion
+- [ ] 06-03-PLAN.md — Share store-before-cache installer order and add Linux/Darwin atomic-exchange, journaled, exact-snapshot one-time loader/install promotion
 
 **Wave 4** *(blocked on Wave 3 completion)*
 
-- [ ] 06-04-PLAN.md — Compose strict ingest arguments/output, rerun merge, typed compensation, and one-store composition-root wiring
+- [ ] 06-04-PLAN.md — Compose strict ingest arguments/output, full-profile commit, typed filesystem-first compensation, and one-store composition-root wiring
 
 **Wave 5** *(blocked on Wave 4 completion)*
 

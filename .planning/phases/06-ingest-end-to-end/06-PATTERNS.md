@@ -32,14 +32,14 @@ The marker constants currently live in `core/cli/install.go`:
 
 | Topology | Landed ordinary-install behavior | Phase 6 ingest behavior |
 | --- | --- | --- |
-| No markers | Append one managed region using landed separator/newline rules | Full-source first adoption |
-| One balanced region | Replace that region; preserve all outside bytes | Installed-first-adoption or re-ingest from durable profile-object presence; eligible ordinary source is outside managed span |
-| Multiple sequential balanced regions | Collapse to one region; preserve ordinary bytes before, between, and after regions | Run the same repair and rescan; every managed region is excluded, and a later balanced region is not generic appended content |
+| No markers | Append one managed region using landed separator/newline rules | Parse the complete ordinary source; build one independent install candidate that appends the canonical loader region |
+| One balanced region | Replace that region; preserve all outside bytes | Parse all eligible ordinary bytes outside the exact tool-owned region; replace only that region in the install candidate |
+| Multiple sequential balanced regions | Collapse to one region; preserve ordinary bytes before, between, and after regions | Parse all eligible ordinary bytes outside tool-owned regions; collapse only exact regions while preserving surrounding/intervening bytes |
 | Orphan END | Refuse before write | Malformed; refuse before initializer/cache/target effects |
 | Unterminated START | Refuse before write | Malformed; refuse before effects |
 | Nested or interleaved markers | Refuse before write | Malformed; refuse before effects |
 
-Only ordinary nonblank/noncomment bytes after the canonical single END produce D-11's warning. Those bytes remain byte-identical and are not ingested.
+Only ordinary nonblank/noncomment bytes after the canonical single END produce D-11's warning. Those bytes remain byte-identical in place and, when eligible, remain represented in the complete source-ordered Profile; warning classification is not a persistence filter.
 
 ## Current transaction gaps the plans replace
 
@@ -48,7 +48,7 @@ Only ordinary nonblank/noncomment bytes after the canonical single END produce D
 - `preparedWrite.promote` currently calls pathname `os.Rename(temp, target)` and then syncs the parent directory.
 - `writeRollback.restore` separately renames or removes by pathname.
 - Validation and mutation are therefore not one conditional operation; move-aside plus link would also create an observable target absence.
-- Phase 6 replaces both initial and final target mutation with one authenticated transaction protocol, not an ingest-only writer.
+- Phase 6 replaces pathname mutation with one authenticated loader/install candidate transaction. It promotes `.zshrc` once before Store commit and finalizes that already-promoted transaction after commit; there is no final post-commit target rewrite.
 
 ### Store/quarantine cleanup
 
@@ -83,14 +83,14 @@ Phase 6 follows that pattern with no new module dependency:
 
 Rules:
 
-- Existing target: target is atomically exchanged with one `exchangePeerBasename`. That peer is the physical candidate name holding new bytes before exchange, displacedObserved after exchange, and the candidate again after guarded reverse; no additional recovery-only name or relocation exists.
+- Existing target: target is atomically exchanged once with one `exchangePeerBasename`. That peer is the canonical loader/install candidate before exchange, displacedObserved after exchange, and the candidate again after guarded reverse; no additional recovery-only name or relocation exists.
 - Absent target: use exclusive/no-replace creation, never exchange.
 - There is no `os.Rename`, hard-link sequence, delete-then-rename sequence, or weaker retry when the exact mode is unavailable.
 - `atomicRenameAtWithSyscall(call syscall6Fn,...)` receives its raw dependency per invocation; production passes `syscall.Syscall6` directly and tests use independent closures. Supported attempts make exactly one raw call, validation rejection makes zero, and no mutable package global controls the syscall.
 - `TestAtomicRenameLinuxGo125ABIAndFallbackSurface` derives the complete Linux architecture set from local Go 1.25 `go tool dist list`, parses local syscall sources and production AST, and pins every trap, flags 1/2, Syscall6 ABI order, one-call surface, and absence of retry/ordinary rename/link/unlink/remove fallbacks.
 - A substitution exchanged after prevalidation is detected as displacedObserved at the same exchange peer. Reverse through that same peer only while target still matches expectedCandidate and peer still matches displacedObserved; otherwise retain both names and require recovery.
 - A successful namespace syscall followed by directory-sync uncertainty is recovery required. Generic pathname rollback is disarmed.
-- Target and candidate identities are independent. `expectedTarget` is the bounded `postInstallSnapshot`: existence, requested-link topology, regular-file type, device/inode, content digest, and permission bits; uid/gid, timestamps, ACLs, xattrs, and platform flags stay outside equality. `expectedCandidate` comes only from independent candidate evidence. Pre-swap compares target/peer to expectedTarget/expectedCandidate; post-swap compares target to expectedCandidate and peer/displacedObserved to expectedTarget.
+- Target and candidate identities are independent. `expectedTarget` is the bounded original source snapshot: existence, requested-link topology, regular-file type, device/inode, content digest, and permission bits; uid/gid, timestamps, ACLs, xattrs, and platform flags stay outside equality. `expectedCandidate` comes only from independently durable canonical loader/install candidate evidence. Pre-swap compares target/peer to expectedTarget/expectedCandidate; post-swap compares target to expectedCandidate and peer/displacedObserved to expectedTarget.
 - The private journal binds target-parent and retained private transaction-directory descriptor identities, journal descriptor identity/mode/uid/gid/digest/schema/transaction ID, requested-link topology, `exchangePeerBasename`, `candidateEvidenceBasename`, and `journalBasename`. It defines no additional displaced-occupant artifact. Every mutation and cleanup reauthenticates those fields.
 - Durability is layered: candidate/evidence files are fsynced/closed, then the private transaction directory is fsynced; the prepared-journal file is fsynced/closed, then the transaction directory is fsynced again before target `atomicRenameAt`; every journal transition repeats file+transaction-directory fsync; every directory changed by forward/reverse/no-replace is synced. Any failure retains journal/artifacts with recovery required.
 - Capability preflight is two-stage and ordered before Store initialization/cache/loader/target effects: pure OS/architecture/mode adapter lookup first, then authenticated exchange plus no-replace on random private entries on the actual target filesystem. Unsupported capability leaves all later resources unchanged; uncertain private-probe cleanup retains authenticated probe evidence and disarms every later effect.
@@ -105,9 +105,11 @@ Rules:
 - RefPresent/ExpectedRevision selects one of two package-private typed update-ref mutation encoders only after validation: absent uses create; present uses update(expected). The long-lived session writes start and waits OK, writes mutation+prepare and waits prepare OK, performs backend/object publication plus every fanout/object-root fsync, and only then writes commit. Prepare rejection self-aborts/exits with no explicit abort write; every later pre-commit failure writes abort, and neither path writes commit. Callers cannot provide a raw ref verb and invalid state starts no process.
 - Persisted SecretRef validation is structural-first: unsupported/malformed rows call backend Kind zero times; a structurally valid wrong-backend-kind row and valid pass-through call Kind once; every persisted-reference row keeps Retrieve/Store/Delete zero. Git counters reset after Begin prove malformed CommitIngest performs no candidate object writes, final publication, ref-process start, or ref change.
 - Publication truth and quarantine cleanup truth are independent: committed/not-committed is preserved even when cleanup is removed, retained, or uncertain. Only a lost Git update-ref response after the separately staged commit write enters observation ambiguity; backend, object-publication, fanout/root-sync, and cleanup failures remain directly classified.
-- `IngestResult` counts `managed_entries`, `master_statements`, and physical `master_block_lines` separately. The invariant is `managed_entries + master_statements = accounted_statements = source_statements`; multiline master statements may span multiple block lines.
-- EffectiveManaged remains the sole partition predicate. Model retained input as ordered byte-addressed extents, map each entry to its exact extent, and subtract only extents represented by selected EffectiveManaged committed entries. Never positive-select recognized imperative kinds or reconstruct from `Entry.Text`; imperative, parser-opaque, forced-unmanaged, comment, and gap bytes remain verbatim, while ambiguous/unmapped association fails before commit.
-- Every post-initial-promotion/pre-Commit failure uses one `compensatePreCommitFilesystemFirst` helper. Its strict event order is filesystem classify/restore-or-unchanged -> AbortIngest -> loader/cache rollback -> initializer rollback; only unchanged/restored-durable may advance past the first gate, and any recovery/uncertainty keeps later counters zero. `ir.Build` is total; parse, duplicate/extent association, accounting, candidate preparation, and expectedTarget validation are the actual pre-Commit failure seams.
+- `IngestResult` counts `managed_entries` and `unmanaged_statements`; optional `unmanaged_source_lines` is a separate physical measure. The invariant is `managed_entries + unmanaged_statements = accounted_statements = source_statements`. No generated-block count or artifact is exposed.
+- The complete redacted source-ordered Profile is the persisted authority. EffectiveManaged is the sole activation/reporting projection, never a commit filter. `activate.Build`/the runtime emitter must ignore `!EffectiveManaged`/`!Representable` entries, while `Store.Read(main)` and `ir.Regenerate` retain unmanaged entries and their verbatim `Text` in order.
+- Every post-promotion/pre-Commit failure and Store noncommit uses one `compensatePreCommitFilesystemFirst` helper. Its strict event order is filesystem classify/restore-or-unchanged -> AbortIngest when applicable -> loader/cache rollback -> initializer rollback; only unchanged/restored-durable may advance past the first gate, and any recovery/uncertainty keeps later counters zero. A committed outcome finalizes the already-promoted loader/install transaction and never promotes another target candidate.
+- Persisted SecretRef pass-through and source-literal re-ingest are distinct: programmatic trusted references are Kind-only with zero Retrieve/Store/Delete; a literal still present in original source may be safely recaptured/reported and must not be described as a parsed SecretRef.
+- Atomic full-file exchange has one explicit secret-bearing exception: the exchange peer may duplicate original source bytes only below the authenticated current-EUID mode-0700 transaction directory. Candidate evidence is metadata-only; journal/cache/output/Store objects never receive source bytes. Finalize/restored-durable removes the peer, while uncertainty retains it for recovery. Tests inject a runtime literal only into the temp original source and expand the independently authored expected template only in memory.
 - The ingest failure renderer accepts only a value-free result plus a closed safe reason. JSON preserves status flags, all counts, withheld name/line metadata, and warnings without receiving a raw error.
 
 ## Phase 6 interface map
@@ -116,9 +118,9 @@ Rules:
 | --- | --- | --- |
 | 06-01 | `InstallInitializationID`, optional `ExpectedRevision`, main-only `IngestBaseline`, `IngestAbortOutcome`, `BeginIngest`, `AbortIngest`, pre-I/O reservation, hermetic canonical bare-Git state, persistent per-root transaction lock, replayable recursive cleanup | 06-02, 06-03, 06-04 |
 | 06-02 | `IngestCommitOutcome`, fixed-main `CommitIngest`, private branch-aware legacy constructor, staged start/mutation/prepare acknowledgements then durable-effects-before-commit protocol, atomic registry claim, independent publication/cleanup axes, value-free withheld report | 06-03 contract extension, 06-04 controller |
-| 06-03 | shared marker topology, `prepareIngestInstallAt`, `installSnapshot`, `promotionOutcome`, per-call `atomicRenameAt`, tagged platform tests, target-root transaction lock, retained transaction-directory FD, file+directory journal durability | 06-04 controller |
-| 06-04 | `runIngest`, strict `CLI.Run` dispatch, ingest DTO, one-store composition root | 06-05 E2E |
-| 06-05 | built-binary, real store/provider, privacy, no-execution, round-trip, exact-base/dependency gates, native macOS atomic plus supported-capability/owned-cleanup verifier evidence | phase verification |
+| 06-03 | shared marker topology, `prepareIngestInstallAt`, original `installSnapshot`, one `promotionOutcome`, per-call `atomicRenameAt`, tagged platform tests, target-root transaction lock, retained transaction-directory FD, file+directory journal durability | 06-04 controller |
+| 06-04 | `runIngest`, complete-Profile commit, strict `CLI.Run` dispatch, unmanaged-projection DTO, one-store composition root | 06-05 E2E |
+| 06-05 | built-binary actual-installed-startup, real store/provider regeneration, activation projection, privacy, no-execution, exact-base/dependency gates, native macOS atomic plus supported-capability/owned-cleanup verifier evidence | phase verification |
 
 ## Testing conventions
 
@@ -128,5 +130,6 @@ Rules:
 - File assertions compare the explicit bounded snapshot fields, authenticated journal/parent/link state, and retained artifacts; target owner/timestamps/ACL/xattr/flags are not silently folded into equality.
 - Platform-neutral atomic tests always run; exact local-GOOS selection runs the `linux || darwin` supported list or the `!linux &amp;&amp; !darwin` unsupported list. Linux/Darwin amd64/arm64 are cross-compiled with `CGO_ENABLED=0 GOTOOLCHAIN=local`, but cross-build is compile evidence only. Darwin completion requires external exact-SHA native macOS PASS evidence for atomic operations, `TestDarwinQuarantineCleanupCapabilitySupported`, and owned removal/sync across top-level, nested file/directory, symlink, and before/after replacement rows. Unsupported-retained output is BLOCKED/nonzero safety evidence only; it cannot complete Phase 6.
 - Landed ordinary-install marker and rollback suites remain unchanged and run after focused tests.
+- Built-binary startup evidence compares pristine original source with the actual installed `.zshrc`, proves outside-marker bytes exact, permits only exact zsh-pro-owned loader symbols, and rejects any startup subprocess.
 - `06-EXECUTION-BASE` contains exactly reviewed commit `557c818845f4239d5d50ecab02e37731bc117f10`; `go.mod`/`go.sum` remain byte-identical to it across HEAD, index, and worktree.
 - Production dependency lists for `core/cli`, `core/ir`, and `core/store` are inspected under explicit Linux/Darwin amd64/arm64 build contexts; every context rejects the concrete zsh provider and both exact `golang.org/x/sys` and every `golang.org/x/sys/*` subpackage.
