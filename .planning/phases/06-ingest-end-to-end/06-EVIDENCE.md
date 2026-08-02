@@ -9,14 +9,16 @@
 | Claim | Current evidence | Planning consequence |
 | --- | --- | --- |
 | Public dispatcher signature | `core/cli/cli.go`: `func (c *CLI) Run(args []string, stdout, stderr io.Writer) int` | 06-04 adds ingest dispatch with no signature/context change |
-| Current injection seam | `cli.New(p, s, e)` and `NewWithStoreInitializer(p, s, e, initializer)` | Extend the landed seam; one concrete store pointer at `main.go` |
+| Current injection seam | `cli.New(p, s, e)` and `NewWithStoreInitializer(p, s, e, initializer)`; `main.go` constructs `cliStore` but its initializer closure currently constructs a second Store | Extend the landed seam and remove the split; the exact `cliStore` pointer must issue initialization IDs and perform Begin/Commit/Abort |
 | Store-neutral CLI boundary | `core/cli/store.go` defines `Store`, `StoreInitialization`, `StoreInitializer` | New transaction evidence stays in `core/model`; no concrete-store import |
 | Store initialization placement | `runInstallWithStoreInitialization` calls initializer before target/cache preparation, then loader promotion before `.zshrc` promotion | Preserve shipped order and make shared-root/rollback ordering explicit |
 | Marker constants are landed | `core/cli/install.go` defines exact START/END constants | Historical claims that Phase 5 has not landed are stale |
 | Balanced duplicates are repaired | `TestInstallCollapsesBalancedDuplicatesAndPreservesInterveningContent`; `replaceManagedBlock` emits one replacement and removes later managed regions while preserving ordinary bytes | Multiple balanced regions are valid repair topology, not generic malformed/append topology |
 | Malformed topology is rejected | Existing tests cover orphan END, unterminated START, nested START, and stray/interleaved END | Ingest must share the parser and fail before side effects |
 | Current target promotion is pathname based | `preparedWrite.promote` calls `os.Rename`; rollback separately renames/removes | Replace with atomic exchange/exclusive creation and typed outcomes |
-| Current fresh-root cleanup is pathname recursive | `core/store/install_transaction.go` re-snapshots then calls `os.RemoveAll` | Abort quarantine cleanup requires retained handles + device/inode and descriptor-only recursion |
+| Current fresh-root cleanup is pathname recursive | `core/store/install_transaction.go` re-snapshots then calls `os.RemoveAll` | Abort quarantine cleanup requires retained handles + device/inode, descriptor-only recursion, and no final-check-then-pathname removal |
+| Current Git environment inherits caller state | `core/store/git.go` appends owned variables to `os.Environ()` without stripping existing `GIT_*` keys | Every candidate receives a private index/object environment after all inherited Git variables are removed; concurrent tests prove final Store state unchanged |
+| Current initialization authority is caller-shaped | `StoreInitialization` exposes creation/path state rather than an opaque Store registry identity | `InitForInstall` issues an exact Store/root/baseline-bound `InstallInitializationID`; wrong/cross-Store IDs and mixed token outcomes cannot authorize rollback |
 | Existing platform pattern | `cache_syscalls_{linux,darwin}.go` and `runtime_openat_{linux,darwin}.go` use build tags, raw syscalls/linkname, and no new dependency | New atomic adapters follow the same local pattern |
 
 ## Atomic API audit
@@ -56,17 +58,34 @@ The executor must repeat this audit against its actual Go 1.25 toolchain before 
 - Guarded reverse exchange is safe only while target still equals candidate evidence and recovery still equals the displaced identity. Otherwise retain both and report recovery required.
 - Existing-target exchange has no ENOENT interval: target is always the complete old or complete new file.
 - Absent-target creation is a different state machine because exchange requires two names. No-replace preserves a concurrently created target.
+- After no-replace succeeds, the audited adapters provide no identity-conditional inverse that atomically restores absence. Rollback therefore retains the installed target and journal as recovery-required evidence; it does not unlink after a check.
 - Atomic namespace success does not prove crash durability. The journal must be durable before the syscall, the parent directory must be fsynced after it, and a failed/uncertain sync retains journal/artifacts.
-- Recovery identifies pre/post rows from recorded identities and basenames; it does not infer success from journal state alone.
+- Recovery authenticates parent device/inode, journal descriptor identity/mode/uid/gid/digest/schema/transaction ID, requested-link topology, and basenames before identifying pre/post rows. It does not infer success from journal state alone.
+- The target snapshot itself is narrower: existence, requested-link topology, regular-file type, device/inode, digest, and permission bits. Target uid/gid, timestamps, ACLs, xattrs, and platform flags are excluded; journal ownership is an independent authentication axis.
+- All target/artifact namespace effects in `install.go` and `install_transaction.go` are confined to one authenticated descriptor-relative helper and guarded by a static AST mutation-surface test.
 
-Planning-time evidence included a local Linux 6.18/ext4 probe that exchanged two inode identities exactly and relevant landed installer tests. Darwin amd64/arm64 cross-compilation was viable in the audit; direct Darwin runtime tests remain the tagged execution gate on a macOS runner.
+Planning-time evidence included a local Linux 6.18/ext4 probe that exchanged two inode identities exactly and relevant landed installer tests. Darwin amd64/arm64 cross-compilation was viable in the audit, but the repository has no implementation-real required macOS workflow. Cross-build is not runtime proof: Phase 6 completion is blocked until `scripts/verify-phase06-macos-runtime.sh` runs on a native macOS host at the exact implementation SHA and attributable unedited PASS evidence is recorded in `06-MACOS-RUNTIME-EVIDENCE.md`.
 
 ## Quarantine cleanup conclusions
 
 - Pathname snapshot plus `RemoveAll` cannot authenticate the current quarantine pathname object at recursive-cleanup time.
 - Begin must retain the authenticated parent and quarantine handles and record device/inode/mode/owner from the live quarantine handle.
-- Abort must compare parent-relative no-follow basename identity to the retained handle before recursion, invoke the deterministic race seam, repeat the identity check, recurse only through the retained handle, recheck before non-recursive directory removal, then fsync the parent.
-- Replacement before cleanup or after the first identity check leaves the replacement bytes/inode/mode/descendants untouched and returns recovery required with initializer rollback unsafe.
+- Abort compares parent-relative no-follow basename identity to the retained handle before descriptor-only recursion and at deterministic race seams, but a final identity check followed by pathname unlink/rmdir is not accepted because substitution can still win afterward.
+- Directory-entry removal is allowed only through a proven atomic identity-bound capability. If unavailable, or replacement occurs before/after any check, the authenticated empty quarantine and recovery record remain; replacement bytes/inode/mode/descendants stay untouched and initializer rollback is unsafe.
+- Begin setup failures after create/open/stat/register run the same authenticated unwind discipline and retain a recoverable internal record when cleanup or parent fsync is unprovable. Clean terminal Abort outcomes are immutable and replayed without a second cleanup call.
+- Initializer rollback is an aggregate over every token under the exact Store-issued initialization ID; any active/finalizing, published, retained, or uncertain token makes deletion unsafe.
+
+## Store commit and controller evidence conclusions
+
+- `RefPresent` must remain distinct from `ProfileObjectPresent`: absent ref uses create/zero-old wire semantics, present ref uses update(expected), and mismatch aborts before backend/object effects.
+- `CommitIngest` claims Store + initialization ID + token atomically, derives paths only from the registry, and serializes Commit, Abort, and final cleanup.
+- Publication status and quarantine-cleanup status are independent durable axes. Cleanup failure after committed or clean-not-committed preserves publication truth and retains evidence.
+- Only loss of the Git update-ref commit response is an ambiguous observation boundary. Backend, final-object publication, directory-sync, and cleanup failures have direct typed classifications.
+- Valid persisted SecretRefs are proven at CommitIngest level: exact entry pass-through, Kind once, Retrieve/Store/Delete zero, and no second withheld record; malformed shapes fail before ref processing.
+- The legacy `Store.Commit` adapter has an exact committed/conflict/not-committed/recovery mapping with typed errors and value-free report behavior.
+- CLI accounting separates `master_statements` from physical `master_block_lines`; `managed_entries + master_statements = accounted_statements = source_statements`, including a multiline fixture where line and statement counts differ.
+- Every failure after initial promotion and before Commit uses one `abortAndCompensatePreCommit` path. `ir.Build` is total, so the real injected seams are parse, duplicate identity, accounting, candidate preparation, and snapshot validation.
+- The ingest-specific failure renderer accepts only a value-free `IngestResult` and closed safe reason; stale/recovery JSON retains status flags/counts/withheld/warnings without raw errors.
 
 ## Planned new files and symbols
 
@@ -83,14 +102,17 @@ These do not exist in the refreshed source snapshot; the named plan creates them
 | `core/cli/atomic_rename_test.go` | 06-03 | direct platform/identity/no-replace/unsupported tests |
 | `core/cli/ingest.go` | 06-04 | transactional ingest controller |
 | `core/dto/ingest.go` | 06-04 | value-free human/JSON result fields |
+| `scripts/verify-phase06-macos-runtime.sh` | 06-05 | native-Darwin-only exact-SHA exchange/no-replace runtime verifier |
+| `06-MACOS-RUNTIME-EVIDENCE.md` | 06-05 | attributable native macOS platform/filesystem/command/output PASS record |
 
 ## Execution gates derived from evidence
 
-1. Capture immutable `06-EXECUTION-BASE` before Go edits.
+1. Before Go edits, create `06-EXECUTION-BASE` with exactly `557c818845f4239d5d50ecab02e37731bc117f10` plus LF; verify the commit exists and never replace it from execution-time HEAD.
 2. Repeat and record exact syscall/trap/flag audit before writing `atomic_rename_*`.
 3. Require exact-name preflight for every focused test selector.
 4. Run landed balanced-duplicate and malformed-marker tests unchanged.
-5. Run deterministic quarantine replacement before/after-identity-check tests.
-6. Run direct adapter identity/no-replace/unsupported tests and existing/absent crash matrices.
-7. Cross-compile Linux and Darwin amd64/arm64 with CGO disabled; execute tagged runtime tests on their native hosts.
-8. Prove `go.mod`/`go.sum` and forbidden dependency/layering surfaces are unchanged from the execution base.
+5. Run deterministic quarantine setup-unwind, terminal replay, aggregate-initialization, private-index/Git-environment, and substitution-before/after-final-check tests; no pathname deletion closes the last race.
+6. Run direct adapter identity/no-replace/unsupported-before-effects tests, static mutation-surface audit, changed parent/journal/link authentication, and eight separately named existing/absent crash rows; absent post-create rollback remains recovery required.
+7. Run controller accounting mismatch and multiline statement/line tests plus the parse/duplicate/candidate-preparation common-compensation matrix; never fabricate an ir.Build error.
+8. Cross-compile Linux and Darwin amd64/arm64 with CGO disabled, then block phase completion on attributable native macOS exchange/no-replace/late-target evidence for the exact implementation SHA.
+9. Prove `go.mod`/`go.sum` match the literal reviewed base across HEAD/index/worktree and, under explicit Linux/Darwin amd64/arm64 build contexts, reject the concrete zsh provider, exact `golang.org/x/sys`, and every x/sys subpackage from cli/ir/store dependency lists.
