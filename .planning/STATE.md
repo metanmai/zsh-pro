@@ -2,18 +2,18 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Branchable Shell Environments
-current_phase: 05
-current_phase_name: Runtime Loader + CLI + Bootstrap
-status: verifying
-stopped_at: Completed 05-05-PLAN.md
-last_updated: "2026-07-29T18:52:31.360Z"
-last_activity: 2026-07-29
-last_activity_desc: Completed 05-04 bounded runtime failure containment and complete profile transition work
+current_phase: 06
+current_phase_name: Ingest End-to-End
+status: executing
+stopped_at: Phase 6 planned — ready to execute 06-01
+last_updated: "2026-08-02T15:04:33.609Z"
+last_activity: 2026-08-02
+last_activity_desc: Phase 6 planned and independently verified — 3 plans in 3 waves
 progress:
   total_phases: 6
   completed_phases: 5
-  total_plans: 32
-  completed_plans: 32
+  total_plans: 38
+  completed_plans: 35
   percent: 83
 ---
 
@@ -24,22 +24,22 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-25)
 
 **Core value:** `checkout <branch>` gives you a different, trustworthy shell environment — declarative state (aliases/env/PATH/functions/options) applies and reverses cleanly with zero residue, while portability is preserved (dynamic values like `$HOME`/`$(...)` stay late-bound, never frozen to one machine).
-**Current focus:** Phase 05 — Runtime Loader + CLI + Bootstrap
+**Current focus:** Phase 06 — Ingest End-to-End
 
 ## Current Position
 
-Phase: 05 — Runtime Loader + CLI + Bootstrap
-Plan: 5 of 5
-Status: Phase complete — ready for verification
-Last activity: 2026-07-29 — Completed 05-04 bounded runtime failure containment and complete profile transition work
+Phase: 06 — Ingest End-to-End
+Plan: 0 of 3
+Status: Ready to execute
+Last activity: 2026-08-02 — Phase 6 planned and independently verified
 
-Progress: [██████████] 100%
+Progress: [████████░░] 83%
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 25
+- Total plans completed: 35
 - Average duration: — min
 - Total execution time: 0 hours
 
@@ -50,6 +50,7 @@ Progress: [██████████] 100%
 | 02 | 3 | - | - |
 | 03 | 3 | - | - |
 | 04 | 19 | - | - |
+| 5 | 8 | - | - |
 
 **Recent Trend:**
 
@@ -185,6 +186,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-07-29T18:52:31.354Z
-Stopped at: Completed 05-05-PLAN.md
+Last session: 2026-08-02T15:04:33.609Z
+Stopped at: Phase 6 planned and verified; ready to execute 06-01
 Resume file: None

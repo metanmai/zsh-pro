@@ -261,9 +261,16 @@ Plans:
 **Plans**: 3 plans
 
 Plans:
+**Wave 1**
 
 - [ ] 06-01-PLAN.md — Reuse the landed installer for explicit-target master routing, exact append detection, idempotence, and stale-write-safe promotion
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 06-02-PLAN.md — Compose the `ingest [path] [--json]` CLI through IR routing, secret-safe `main` commit, deterministic reporting, and recoverable partial outcomes
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
 - [ ] 06-03-PLAN.md — Prove the real binary, Git store, secret boundary, append preservation, and source-order behavior oracle end-to-end
 
 ## Progress
