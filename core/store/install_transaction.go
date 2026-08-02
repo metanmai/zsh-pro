@@ -23,6 +23,9 @@ const (
 	// ErrIngestUnavailable is the temporary fail-closed result until the baseline
 	// and quarantine implementation activates a valid reserved transaction.
 	ErrIngestUnavailable errStore = "zsh-pro: ingest transaction setup is unavailable"
+	// ErrStoreTransactionLockUnavailable is returned before private namespace
+	// mutation when the authenticated per-root lock cannot be established.
+	ErrStoreTransactionLockUnavailable errStore = "zsh-pro: profile store transaction lock is unavailable"
 )
 
 // InstallInitialization is the narrowly scoped compensation returned by an

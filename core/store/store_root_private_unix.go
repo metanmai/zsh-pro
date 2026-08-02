@@ -3,10 +3,41 @@
 package store
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
+	"path/filepath"
 	"syscall"
 )
+
+type storeRootTransactionGuard struct {
+	valid bool
+}
+
+func storeTransactionNamespacePath(root string) (string, error) {
+	canonical, err := filepath.Abs(filepath.Clean(root))
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256([]byte(canonical))
+	name := ".zsh-pro-transactions-" + hex.EncodeToString(digest[:8])
+	return filepath.Join(filepath.Dir(canonical), name), nil
+}
+
+func withStoreRootTransactionLock(root string, fn func(*storeRootTransactionGuard) error) error {
+	_, _ = root, fn
+	return ErrStoreTransactionLockUnavailable
+}
+
+func (g *storeRootTransactionGuard) discardForTest() {
+	g.valid = false
+}
+
+func (g *storeRootTransactionGuard) withAuthenticatedMutation(fn func(*os.Root) error) error {
+	_, _ = g, fn
+	return ErrStoreTransactionLockUnavailable
+}
 
 // ensurePrivateStoreDir creates the profile-store root with the mode required
 // by descriptor-bound runtime capture. Existing roots are repaired only after

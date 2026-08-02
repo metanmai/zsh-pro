@@ -12,12 +12,14 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
 	"testing"
+	"time"
 
 	"zsh-pro/core/model"
 )
@@ -650,5 +652,270 @@ func TestInitForInstallRejectsChangedOrMismatchedOwnership(t *testing.T) {
 	}
 	if err := initialization.Rollback(); err == nil {
 		t.Fatal("repeated changed-tree rollback did not replay its failure")
+	}
+}
+
+func TestStoreTransactionRootLockProcessMatrix(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("cross-process Store transaction locks are unsupported on this platform")
+	}
+	if os.Getenv("ZSHPRO_STORE_LOCK_HELPER") == "1" {
+		root := os.Getenv("ZSHPRO_STORE_LOCK_ROOT")
+		ready := os.Getenv("ZSHPRO_STORE_LOCK_READY")
+		release := os.Getenv("ZSHPRO_STORE_LOCK_RELEASE")
+		err := withStoreRootTransactionLock(root, func(guard *storeRootTransactionGuard) error {
+			if err := guard.withAuthenticatedMutation(func(*os.Root) error { return nil }); err != nil {
+				return err
+			}
+			if err := os.WriteFile(ready, []byte("ready"), 0o600); err != nil {
+				return err
+			}
+			if release == "" {
+				return nil
+			}
+			deadline := time.Now().Add(5 * time.Second)
+			for time.Now().Before(deadline) {
+				if _, err := os.Stat(release); err == nil {
+					return nil
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			return errors.New("timed out waiting for lock release signal")
+		})
+		if err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, err)
+			os.Exit(12)
+		}
+		return
+	}
+
+	waitForFile := func(path string, timeout time.Duration) error {
+		deadline := time.Now().Add(timeout)
+		for time.Now().Before(deadline) {
+			if _, err := os.Stat(path); err == nil {
+				return nil
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		return fmt.Errorf("timed out waiting for %s", path)
+	}
+	startHelper := func(root, ready, release string) *exec.Cmd {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestStoreTransactionRootLockProcessMatrix$")
+		cmd.Env = append(os.Environ(),
+			"ZSHPRO_STORE_LOCK_HELPER=1",
+			"ZSHPRO_STORE_LOCK_ROOT="+root,
+			"ZSHPRO_STORE_LOCK_READY="+ready,
+			"ZSHPRO_STORE_LOCK_RELEASE="+release,
+		)
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		return cmd
+	}
+	signal := func(path string) {
+		if err := os.WriteFile(path, []byte("release"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	base := t.TempDir()
+	rootA := filepath.Join(base, "a", "store")
+	rootB := filepath.Join(base, "b", "store")
+	for _, root := range []string{rootA, rootB} {
+		if err := os.MkdirAll(root, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	readyA := filepath.Join(base, "ready-a")
+	releaseA := filepath.Join(base, "release-a")
+	holder := startHelper(rootA, readyA, releaseA)
+	if err := waitForFile(readyA, 3*time.Second); err != nil {
+		t.Fatal(err)
+	}
+
+	readySame := filepath.Join(base, "ready-same")
+	releaseSame := filepath.Join(base, "release-same")
+	contender := startHelper(rootA, readySame, releaseSame)
+	if err := waitForFile(readySame, 200*time.Millisecond); err == nil {
+		t.Fatal("same-root contender acquired while the first process held the lock")
+	}
+
+	readyDifferent := filepath.Join(base, "ready-different")
+	releaseDifferent := filepath.Join(base, "release-different")
+	different := startHelper(rootB, readyDifferent, releaseDifferent)
+	if err := waitForFile(readyDifferent, 3*time.Second); err != nil {
+		t.Fatal("different-root helper was unnecessarily blocked")
+	}
+	signal(releaseDifferent)
+	if err := different.Wait(); err != nil {
+		t.Fatalf("different-root helper: %v", err)
+	}
+
+	signal(releaseA)
+	if err := holder.Wait(); err != nil {
+		t.Fatalf("holder: %v", err)
+	}
+	if err := waitForFile(readySame, 3*time.Second); err != nil {
+		t.Fatal("same-root contender did not acquire after release")
+	}
+	signal(releaseSame)
+	if err := contender.Wait(); err != nil {
+		t.Fatalf("same-root contender: %v", err)
+	}
+
+	readyExit := filepath.Join(base, "ready-exit")
+	exiting := startHelper(rootA, readyExit, "")
+	if err := waitForFile(readyExit, 3*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if err := exiting.Wait(); err != nil {
+		t.Fatalf("exiting holder: %v", err)
+	}
+	readyAfterExit := filepath.Join(base, "ready-after-exit")
+	releaseAfterExit := filepath.Join(base, "release-after-exit")
+	afterExit := startHelper(rootA, readyAfterExit, releaseAfterExit)
+	if err := waitForFile(readyAfterExit, 3*time.Second); err != nil {
+		t.Fatal("process exit did not release the kernel lock")
+	}
+	signal(releaseAfterExit)
+	if err := afterExit.Wait(); err != nil {
+		t.Fatalf("post-exit holder: %v", err)
+	}
+
+	installRoot := filepath.Join(base, "install", "store")
+	store, err := New(installRoot, stubRegen{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialization, err := store.InitForInstall(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := withStoreRootTransactionLock(installRoot, func(*storeRootTransactionGuard) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	namespace, err := storeTransactionNamespacePath(installRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := initialization.Rollback(); err != nil {
+		t.Fatalf("rollback with persistent transaction sibling: %v", err)
+	}
+	if _, err := os.Lstat(installRoot); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("fresh Store root survived rollback: %v", err)
+	}
+	if info, err := os.Stat(namespace); err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
+		t.Fatalf("persistent transaction namespace = (%v, %v)", info, err)
+	}
+	if info, err := os.Stat(filepath.Join(namespace, "lock")); err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+		t.Fatalf("persistent transaction lock = (%v, %v)", info, err)
+	}
+}
+
+func TestStoreTransactionRootLockRejectsUnsafeEntry(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("cross-process Store transaction locks are unsupported on this platform")
+	}
+
+	for _, test := range []struct {
+		name  string
+		setup func(t *testing.T, namespace string)
+	}{
+		{
+			name: "namespace wrong mode",
+			setup: func(t *testing.T, namespace string) {
+				t.Helper()
+				if err := os.Mkdir(namespace, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "symlink lock",
+			setup: func(t *testing.T, namespace string) {
+				t.Helper()
+				if err := os.Mkdir(namespace, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				target := filepath.Join(filepath.Dir(namespace), "target")
+				if err := os.WriteFile(target, []byte("target"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, filepath.Join(namespace, "lock")); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "directory lock",
+			setup: func(t *testing.T, namespace string) {
+				t.Helper()
+				if err := os.Mkdir(namespace, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Mkdir(filepath.Join(namespace, "lock"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "wrong lock mode",
+			setup: func(t *testing.T, namespace string) {
+				t.Helper()
+				if err := os.Mkdir(namespace, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(namespace, "lock"), nil, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "store")
+			if err := os.Mkdir(root, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			namespace, err := storeTransactionNamespacePath(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			test.setup(t, namespace)
+			called := false
+			if err := withStoreRootTransactionLock(root, func(*storeRootTransactionGuard) error {
+				called = true
+				return nil
+			}); err == nil {
+				t.Fatal("unsafe transaction lock entry was accepted")
+			}
+			if called {
+				t.Fatal("callback ran after unsafe lock authentication")
+			}
+		})
+	}
+}
+
+func TestStoreTransactionRootLockUnavailableOrDiscarded(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("cross-process Store transaction locks are unsupported on this platform")
+	}
+	root := filepath.Join(t.TempDir(), "store")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	mutations := 0
+	err := withStoreRootTransactionLock(root, func(guard *storeRootTransactionGuard) error {
+		guard.discardForTest()
+		return guard.withAuthenticatedMutation(func(*os.Root) error {
+			mutations++
+			return nil
+		})
+	})
+	if err == nil {
+		t.Fatal("discarded lock descriptor retained mutation authority")
+	}
+	if mutations != 0 {
+		t.Fatalf("discarded lock performed %d namespace mutations", mutations)
 	}
 }
