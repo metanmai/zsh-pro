@@ -425,3 +425,230 @@ func TestValidBranchName(t *testing.T) {
 		}
 	}
 }
+
+func TestExpectedRevisionPresenceInvariant(t *testing.T) {
+	initID, err := model.NewInstallInitializationID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := model.NewIngestTransactionID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected, err := model.NewExpectedRevision("0123456789abcdef0123456789abcdef01234567")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := model.NewIngestBaseline(initID, token, false, expected, model.Profile{}, false); err == nil {
+		t.Fatal("absent ref accepted a present expected revision")
+	}
+	if _, err := model.NewIngestBaseline(initID, token, true, nil, model.Profile{}, false); err == nil {
+		t.Fatal("present ref accepted a missing expected revision")
+	}
+	if _, err := model.NewIngestBaseline(initID, token, false, nil, model.Profile{}, false); err != nil {
+		t.Fatalf("valid absent baseline: %v", err)
+	}
+	if _, err := model.NewIngestBaseline(initID, token, true, expected, model.Profile{}, true); err != nil {
+		t.Fatalf("valid present baseline: %v", err)
+	}
+	for _, bad := range []string{"", "not-an-object", "0123456789abcdef0123456789abcdef0123456g"} {
+		if _, err := model.NewExpectedRevision(bad); err == nil {
+			t.Errorf("NewExpectedRevision(%q) accepted an invalid object ID", bad)
+		}
+	}
+}
+
+func TestIngestTransactionEvidenceComplete(t *testing.T) {
+	assertDistinctStrings := func(name string, values ...string) {
+		t.Helper()
+		seen := make(map[string]struct{}, len(values))
+		for _, value := range values {
+			if value == "" {
+				t.Fatalf("%s contains an empty evidence value", name)
+			}
+			if _, ok := seen[value]; ok {
+				t.Fatalf("%s repeats evidence value %q", name, value)
+			}
+			seen[value] = struct{}{}
+		}
+	}
+
+	assertDistinctStrings("lifecycle",
+		string(model.IngestLifecycleProvisional), string(model.IngestLifecycleActive),
+		string(model.IngestLifecycleCommitting), string(model.IngestLifecycleFinalizing),
+		string(model.IngestLifecycleTerminal))
+	assertDistinctStrings("commit status",
+		string(model.IngestCommitNotCommitted), string(model.IngestCommitCommitted),
+		string(model.IngestCommitConflict), string(model.IngestCommitRecoveryRequired))
+	assertDistinctStrings("ref state",
+		string(model.IngestRefExpected), string(model.IngestRefCandidate),
+		string(model.IngestRefOther), string(model.IngestRefUnknown))
+	assertDistinctStrings("backend state",
+		string(model.IngestBackendUnchanged), string(model.IngestBackendApplied),
+		string(model.IngestBackendRestored), string(model.IngestBackendUncertain))
+	assertDistinctStrings("object state",
+		string(model.IngestObjectsQuarantined), string(model.IngestObjectsRemoved),
+		string(model.IngestObjectsPublished), string(model.IngestObjectsRetained),
+		string(model.IngestObjectsUncertain))
+	assertDistinctStrings("cleanup state",
+		string(model.QuarantineCleanupRemoved), string(model.QuarantineCleanupRetained),
+		string(model.QuarantineCleanupUncertain))
+	assertDistinctStrings("failure code",
+		string(model.IngestFailureNone), string(model.IngestFailureInvalidAuthority),
+		string(model.IngestFailureBaselineRead), string(model.IngestFailureQuarantine),
+		string(model.IngestFailureCleanup))
+
+	report := model.WithheldReport{{Name: "API_KEY", StartLine: 7}}
+	if report[0].Name != "API_KEY" || report[0].StartLine != 7 {
+		t.Fatalf("value-free withheld report changed shape: %#v", report)
+	}
+}
+
+func TestInstallInitializationIDBindsStoreAndRoot(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("transactional initialization is unsupported on this platform")
+	}
+	root := filepath.Join(t.TempDir(), "store")
+	s, err := New(root, stubRegen{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialization, err := s.InitForInstall(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if initialization.ID().IsZero() {
+		t.Fatal("InitForInstall returned a zero initialization ID")
+	}
+	if got := s.installInitializationRoot(initialization.ID()); got != root {
+		t.Fatalf("initialization root = %q, want %q", got, root)
+	}
+
+	other, err := New(filepath.Join(t.TempDir(), "other"), stubRegen{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := other.BeginIngest(context.Background(), initialization.ID()); !errors.Is(err, ErrInvalidIngestAuthority) {
+		t.Fatalf("cross-Store BeginIngest = %v, want ErrInvalidIngestAuthority", err)
+	}
+	if err := other.rollbackInstallInitialization(initialization.ID()); !errors.Is(err, ErrInvalidIngestAuthority) {
+		t.Fatalf("cross-Store rollback = %v, want ErrInvalidIngestAuthority", err)
+	}
+}
+
+func TestBeginIngestRejectsWrongOrCrossStoreInitialization(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("transactional initialization is unsupported on this platform")
+	}
+	newInstallStore := func(t *testing.T) *Store {
+		t.Helper()
+		root := filepath.Join(t.TempDir(), "store")
+		store, err := New(root, stubRegen{}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return store
+	}
+	s := newInstallStore(t)
+	initialization, err := s.InitForInstall(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := newInstallStore(t)
+	otherInitialization, err := other.InitForInstall(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for name, id := range map[string]model.InstallInitializationID{
+		"zero":        {},
+		"cross-store": otherInitialization.ID(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			outcome, err := s.BeginIngest(context.Background(), id)
+			if !errors.Is(err, ErrInvalidIngestAuthority) {
+				t.Fatalf("BeginIngest = (%#v, %v), want invalid authority", outcome, err)
+			}
+			if !outcome.TransactionID.IsZero() {
+				t.Fatalf("invalid authority reserved token %#v", outcome.TransactionID)
+			}
+		})
+	}
+	if s.installInitializationTransactionCount(initialization.ID()) != 0 {
+		t.Fatal("invalid Begin attempts were registered under the valid initialization")
+	}
+}
+
+func TestInstallInitializationAggregateIncludesFailedBegin(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("transactional initialization is unsupported on this platform")
+	}
+	root := filepath.Join(t.TempDir(), "store")
+	s, err := New(root, stubRegen{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialization, err := s.InitForInstall(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.beginAfterReserve = func() error { return ErrGitCommand }
+	outcome, err := s.BeginIngest(context.Background(), initialization.ID())
+	if !errors.Is(err, ErrGitCommand) {
+		t.Fatalf("BeginIngest = (%#v, %v), want injected failure", outcome, err)
+	}
+	if outcome.TransactionID.IsZero() {
+		t.Fatal("failed Begin did not return its pre-I/O reserved token")
+	}
+	if outcome.Lifecycle != model.IngestLifecycleTerminal || outcome.Cleanup != model.QuarantineCleanupRemoved || outcome.RecoveryRequired {
+		t.Fatalf("failed Begin evidence = %#v, want clean immutable terminal", outcome)
+	}
+	if got := s.installInitializationTransactionCount(initialization.ID()); got != 1 {
+		t.Fatalf("registered token count = %d, want 1", got)
+	}
+	if !s.initializerRollbackSafe(initialization.ID()) {
+		t.Fatal("clean failed Begin should keep initializer rollback safe")
+	}
+	if err := initialization.Rollback(); err != nil {
+		t.Fatalf("rollback after clean failed Begin: %v", err)
+	}
+	if _, err := os.Lstat(root); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("rollback left created store: %v", err)
+	}
+}
+
+func TestInitForInstallRejectsChangedOrMismatchedOwnership(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("transactional initialization is unsupported on this platform")
+	}
+	root := filepath.Join(t.TempDir(), "store")
+	s, err := New(root, stubRegen{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialization, err := s.InitForInstall(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	forged, err := model.NewInstallInitializationID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.rollbackInstallInitialization(forged); !errors.Is(err, ErrInvalidIngestAuthority) {
+		t.Fatalf("forged rollback = %v, want ErrInvalidIngestAuthority", err)
+	}
+	foreign := filepath.Join(root, "foreign")
+	if err := os.WriteFile(foreign, []byte("preserve"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := initialization.Rollback(); err == nil {
+		t.Fatal("rollback accepted a changed sealed Store tree")
+	}
+	if got, err := os.ReadFile(foreign); err != nil || string(got) != "preserve" {
+		t.Fatalf("changed-tree refusal lost foreign bytes: %q, %v", got, err)
+	}
+	if err := initialization.Rollback(); err == nil {
+		t.Fatal("repeated changed-tree rollback did not replay its failure")
+	}
+}

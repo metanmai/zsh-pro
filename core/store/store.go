@@ -84,6 +84,10 @@ type Store struct {
 	refRead   func(context.Context, string) (string, error)
 	refUpdate func(context.Context, string, string, string) error
 	refDelete func(context.Context, string, string) error
+
+	// beginAfterReserve is a per-Store test seam used to prove that authority is
+	// reserved before any baseline or filesystem I/O. Production leaves it nil.
+	beginAfterReserve func() error
 }
 
 // New constructs a Store after a one-time git-presence guard (an absent git binary

@@ -9,7 +9,11 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"zsh-pro/core/model"
 )
+
+const ErrInvalidIngestAuthority errStore = "zsh-pro: invalid ingest transaction authority"
 
 // InstallInitialization is the narrowly scoped compensation returned by an
 // explicit install. It distinguishes a root created by this invocation from an
@@ -17,6 +21,11 @@ import (
 // reversed after a later bootstrap failure.
 type InstallInitialization struct {
 	state *installInitializationState
+}
+
+// ID returns the opaque Store-issued authority for follow-on ingest work.
+func (i InstallInitialization) ID() model.InstallInitializationID {
+	return model.InstallInitializationID{}
 }
 
 // Rollback restores exactly the state that InitForInstall changed. It is safe
@@ -58,6 +67,32 @@ func (s *Store) InitForInstall(ctx context.Context) (InstallInitialization, erro
 		return InstallInitialization{}, installInitializationError(err, state.rollback())
 	}
 	return InstallInitialization{state: state}, nil
+}
+
+// BeginIngest starts a main-only ingest transaction.
+func (s *Store) BeginIngest(ctx context.Context, id model.InstallInitializationID) (model.IngestBeginOutcome, error) {
+	_, _ = ctx, id
+	return model.IngestBeginOutcome{}, ErrInvalidIngestAuthority
+}
+
+func (s *Store) rollbackInstallInitialization(id model.InstallInitializationID) error {
+	_ = id
+	return ErrInvalidIngestAuthority
+}
+
+func (s *Store) installInitializationRoot(id model.InstallInitializationID) string {
+	_ = id
+	return ""
+}
+
+func (s *Store) installInitializationTransactionCount(id model.InstallInitializationID) int {
+	_ = id
+	return 0
+}
+
+func (s *Store) initializerRollbackSafe(id model.InstallInitializationID) bool {
+	_ = id
+	return false
 }
 
 type installInitializationState struct {
