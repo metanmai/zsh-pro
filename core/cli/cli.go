@@ -71,6 +71,8 @@ func (c *CLI) Run(args []string, stdout, stderr io.Writer) int {
 		return int(model.ExitClean)
 	case buildinfo.Command:
 		return c.runAnalyze(args[1:], stdout, stderr)
+	case "ingest":
+		return c.runIngestCommand(args[1:], stdout, stderr)
 	case "hook":
 		if len(args) != 1 {
 			return noArgumentUsage(stderr, args[0])
