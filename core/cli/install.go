@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -45,11 +44,7 @@ func runInstallWithStoreInitialization(provider shell.Hooker, initializeStore St
 	if err != nil {
 		return err
 	}
-	current, err := os.ReadFile(paths.zshrcPath)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("read %s: %w", paths.zshrcPath, err)
-	}
-	next, err := replaceManagedBlock(current, renderInstallBlock())
+	prepared, err := prepareIngestInstallAt(paths.zshrcPath, renderInstallBlock())
 	if err != nil {
 		return err
 	}
@@ -60,7 +55,14 @@ func runInstallWithStoreInitialization(provider shell.Hooker, initializeStore St
 			return installTransactionError("initialize profile store", err, rollbackStoreInitialization(storeInitialization))
 		}
 	}
-	rcWrite, err := prepareAtomicWrite(paths.zshrcPath, next, 0o644)
+	if err := validateInstallRootRelationship(paths.runtimeDir, storeInitialization); err != nil {
+		return installTransactionError("validate profile store and runtime roots", err, rollbackStoreInitialization(storeInitialization))
+	}
+	targetMode := os.FileMode(0o644)
+	if prepared.originalSnapshot.exists {
+		targetMode = prepared.originalSnapshot.mode
+	}
+	rcWrite, err := prepareWriteTarget(prepared.originalSnapshot.resolvedPath, prepared.candidate, targetMode)
 	if err != nil {
 		return installTransactionError("prepare "+paths.zshrcPath, err, rollbackStoreInitialization(storeInitialization))
 	}
@@ -115,6 +117,18 @@ func runInstallWithStoreInitialization(provider shell.Hooker, initializeStore St
 		rollbackErr = errors.Join(rollbackErr, rollbackRuntimeAndStore(cacheState, storeInitialization))
 		return installTransactionError("write "+paths.zshrcPath, err, rollbackErr)
 	}
+	if err := finalizeStoreInitialization(storeInitialization); err != nil {
+		rollbackErr := errors.Join(
+			rollbackPromoted(&rcWrite, &rcRollback),
+			rollbackPromotedCache(&loaderWrite, &loaderRollback),
+		)
+		rcWrite.discard()
+		rcRollback.discard()
+		loaderWrite.discard()
+		loaderRollback.discard()
+		rollbackErr = errors.Join(rollbackErr, rollbackRuntimeAndStore(cacheState, storeInitialization))
+		return installTransactionError("finalize profile store initialization", err, rollbackErr)
+	}
 
 	rcRollback.discard()
 	loaderRollback.discard()
@@ -128,26 +142,85 @@ func rollbackStoreInitialization(initialization StoreInitialization) error {
 	return initialization.Rollback()
 }
 
+func finalizeStoreInitialization(initialization StoreInitialization) error {
+	if initialization.Finalize == nil {
+		return nil
+	}
+	return initialization.Finalize()
+}
+
 // rollbackRuntimeAndStore restores the loader/cache state before a pre-existing
 // store migration so its original mode is the final visible state. When an
 // explicit ZSHPRO_HOME made the store root and runtime directory the same newly
 // created path, remove the store first; a successful store rollback owns and
 // removes the shared directory without ever deleting pre-existing data.
 func rollbackRuntimeAndStore(cache *cacheDirectoryState, initialization StoreInitialization) error {
-	if cache != nil && initialization.CreatedPath != "" && filepath.Clean(initialization.CreatedPath) == filepath.Clean(cache.path) {
-		storeErr := rollbackStoreInitialization(initialization)
-		if storeErr == nil {
-			// The created store owned the shared root, so its successful rollback
-			// already removed the runtime directory. Calling runtime.rollback here
-			// would turn a complete restoration into a spurious ENOENT error.
-			return nil
-		}
-		return errors.Join(storeErr, cache.rollback())
-	}
 	if cache == nil {
 		return rollbackStoreInitialization(initialization)
 	}
 	return errors.Join(cache.rollback(), rollbackStoreInitialization(initialization))
+}
+
+func validateInstallRootRelationship(runtimeRoot string, initialization StoreInitialization) error {
+	storeRoot := initialization.CanonicalRoot
+	if storeRoot == "" {
+		storeRoot = initialization.CreatedPath
+	}
+	if storeRoot == "" {
+		return nil
+	}
+	canonicalRuntime, err := canonicalInstallRoot(runtimeRoot)
+	if err != nil {
+		return fmt.Errorf("canonicalize runtime root: %w", err)
+	}
+	canonicalStore, err := canonicalInstallRoot(storeRoot)
+	if err != nil {
+		return fmt.Errorf("canonicalize profile store root: %w", err)
+	}
+	if canonicalRuntime == canonicalStore {
+		return nil
+	}
+	if installRootContains(canonicalRuntime, canonicalStore) || installRootContains(canonicalStore, canonicalRuntime) {
+		return errors.New("profile store and runtime roots have an unsupported ancestor overlap")
+	}
+	return nil
+}
+
+func canonicalInstallRoot(path string) (string, error) {
+	if path == "" || !filepath.IsAbs(path) {
+		return "", errors.New("install root must be an absolute path")
+	}
+	abs := filepath.Clean(path)
+	cursor := abs
+	var suffix []string
+	for {
+		if _, err := os.Lstat(cursor); err == nil {
+			resolved, err := filepath.EvalSymlinks(cursor)
+			if err != nil {
+				return "", err
+			}
+			for index := len(suffix) - 1; index >= 0; index-- {
+				resolved = filepath.Join(resolved, suffix[index])
+			}
+			return filepath.Clean(resolved), nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+		parent := filepath.Dir(cursor)
+		if parent == cursor {
+			return "", errors.New("install root has no existing ancestor")
+		}
+		suffix = append(suffix, filepath.Base(cursor))
+		cursor = parent
+	}
+}
+
+func installRootContains(parent, child string) bool {
+	relative, err := filepath.Rel(parent, child)
+	if err != nil || relative == "." || relative == ".." {
+		return false
+	}
+	return !strings.HasPrefix(relative, ".."+string(filepath.Separator)) && !filepath.IsAbs(relative)
 }
 
 func (c *CLI) runInstall(stdout, stderr io.Writer) int {
@@ -209,90 +282,17 @@ func renderInstallBlock() []byte {
 // marker regions is copied verbatim. Any malformed marker sequence is rejected
 // before a caller can write, preventing accidental truncation to EOF.
 func replaceManagedBlock(current, block []byte) ([]byte, error) {
-	type region struct{ start, end int }
-	var regions []region
-	open := -1
-	for lineStart := 0; lineStart < len(current); {
-		lineEnd := len(current)
-		terminatorEnd := len(current)
-		if newline := bytes.IndexByte(current[lineStart:], '\n'); newline >= 0 {
-			lineEnd = lineStart + newline
-			terminatorEnd = lineEnd + 1
-		}
-
-		comparisonEnd := lineEnd
-		if terminatorEnd > lineEnd && comparisonEnd > lineStart && current[comparisonEnd-1] == '\r' {
-			comparisonEnd--
-		}
-		line := current[lineStart:comparisonEnd]
-
-		switch {
-		case bytes.Equal(line, []byte(installBegin)):
-			if open >= 0 {
-				return nil, errors.New("refusing to edit .zshrc: nested or interleaved BEGIN markers")
-			}
-			open = lineStart
-		case bytes.Equal(line, []byte(installEnd)):
-			if open < 0 {
-				return nil, errors.New("refusing to edit .zshrc: END marker has no preceding BEGIN marker")
-			}
-			// Keep the END line's terminator outside the region so the rendered
-			// block remains a complete physical line without normalizing it.
-			regions = append(regions, region{start: open, end: comparisonEnd})
-			open = -1
-		}
-
-		lineStart = terminatorEnd
+	layout, err := scanZshrcMarkerTopology(current)
+	if err != nil {
+		return nil, err
 	}
-	if open >= 0 {
-		return nil, errors.New("refusing to edit .zshrc: BEGIN marker has no END marker")
-	}
-	if len(regions) == 0 {
-		if len(current) == 0 {
-			return append(append([]byte(nil), block...), '\n'), nil
-		}
-		out := append([]byte(nil), current...)
-		if !bytes.HasSuffix(out, []byte("\n")) {
-			out = append(out, '\n')
-		}
-		out = append(out, '\n')
-		return append(out, block...), nil
-	}
-
-	var out bytes.Buffer
-	last := 0
-	for i, region := range regions {
-		out.Write(current[last:region.start])
-		if i == 0 {
-			out.Write(block)
-		}
-		last = region.end
-	}
-	out.Write(current[last:])
-	return out.Bytes(), nil
+	return renderManagedCandidate(current, block, layout), nil
 }
 
 type preparedWrite struct {
 	target   string
 	temp     string
 	promoted bool
-}
-
-// prepareAtomicWrite resolves the real target and fsyncs its sibling temporary
-// file without changing the target. The caller decides when to promote it.
-func prepareAtomicWrite(path string, content []byte, defaultMode os.FileMode) (preparedWrite, error) {
-	target, err := resolveWriteTarget(path)
-	if err != nil {
-		return preparedWrite{}, err
-	}
-	mode := defaultMode
-	info, statErr := os.Stat(target)
-	if statErr == nil {
-		mode = info.Mode().Perm()
-	} else if !errors.Is(statErr, os.ErrNotExist) {
-		return preparedWrite{}, statErr
-	}
-	return prepareWriteTarget(target, content, mode)
 }
 
 func prepareWriteTarget(target string, content []byte, mode os.FileMode) (preparedWrite, error) {
@@ -391,22 +391,6 @@ func installTransactionError(operation string, cause, rollbackErr error) error {
 		return fmt.Errorf("%s: %w", operation, cause)
 	}
 	return fmt.Errorf("%s: %w; rollback failed: %v", operation, cause, rollbackErr)
-}
-
-func resolveWriteTarget(path string) (string, error) {
-	target := path
-	info, err := os.Lstat(path)
-	if err == nil && info.Mode()&os.ModeSymlink != 0 {
-		target, err = filepath.EvalSymlinks(path)
-		if err != nil {
-			return "", err
-		}
-		return target, nil
-	}
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return "", err
-	}
-	return target, nil
 }
 
 func writeTemp(target string, content []byte, mode os.FileMode) (string, error) {

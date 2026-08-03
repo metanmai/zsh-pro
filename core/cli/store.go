@@ -15,13 +15,30 @@ type Store interface {
 	Read(ctx context.Context, branch string) (model.Profile, error)
 }
 
+// IngestTransactionStore is the CLI-neutral authenticated ingest surface. It
+// deliberately carries only model-owned authority and outcome values; core/cli
+// never imports or reconstructs the concrete Store.
+type IngestTransactionStore interface {
+	BeginIngest(context.Context, model.InstallInitializationID) (model.IngestBeginOutcome, error)
+	CommitIngest(context.Context, model.InstallInitializationID, model.IngestTransactionID, model.Profile, string) (model.IngestCommitOutcome, error)
+	AbortIngest(context.Context, model.InstallInitializationID, model.IngestTransactionID) (model.IngestAbortOutcome, error)
+}
+
 // StoreInitialization records only the profile-store state that an explicit
 // install is allowed to compensate if a later bootstrap step fails. Rollback
 // must never delete or rewind a pre-existing repository; CreatedPath is set
 // only when this invocation created the store root so installer rollback can
 // order an overlapping runtime-directory cleanup safely.
 type StoreInitialization struct {
-	Rollback    func() error
+	InitializationID model.InstallInitializationID
+	Transactions     IngestTransactionStore
+	CanonicalRoot    string
+	Rollback         func() error
+	Finalize         func() error
+
+	// CreatedPath is retained for the landed install adapter until the Phase 6
+	// composition-root plan supplies CanonicalRoot directly. It is ownership
+	// evidence only when this invocation created the root.
 	CreatedPath string
 }
 

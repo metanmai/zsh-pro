@@ -1188,47 +1188,6 @@ func envValue(env []string, name string) string {
 	return ""
 }
 
-// Task 1 RED scaffolding keeps the behavior-first tests buildable before the
-// production transaction types exist. GREEN removes these test-only declarations
-// when install_transaction.go supplies the real contracts.
-type markerTopology uint8
-
-const (
-	markerTopologyNone markerTopology = iota
-	markerTopologySingle
-	markerTopologyMultiple
-	ingestPostEndWarning = "zsh-pro: ordinary startup content remains after the managed loader block"
-)
-
-type markerRegion struct{}
-
-type zshrcMarkerLayout struct {
-	topology markerTopology
-	regions  []markerRegion
-}
-
-type installSnapshot struct{}
-
-func (installSnapshot) matchesCurrent() (bool, error) {
-	return false, errors.New("Task 1 install snapshot is not implemented")
-}
-
-type preparedIngestInstall struct {
-	originalSnapshot installSnapshot
-	eligibleSource   []byte
-	candidate        []byte
-	appendWarning    string
-	layout           zshrcMarkerLayout
-}
-
-func prepareIngestInstallAt(string, []byte) (preparedIngestInstall, error) {
-	return preparedIngestInstall{}, errors.New("Task 1 ingest preparation is not implemented")
-}
-
-func scanZshrcMarkerTopology([]byte) (zshrcMarkerLayout, error) {
-	return zshrcMarkerLayout{}, errors.New("Task 1 marker topology is not implemented")
-}
-
 func TestInstallInitializesStoreBeforeCache(t *testing.T) {
 	home := t.TempDir()
 	setInstallHome(t, home)
