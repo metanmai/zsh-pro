@@ -1657,3 +1657,512 @@ func TestAbortIngestRejectsQuarantineReplacementBeforeCleanup(t *testing.T) {
 func TestAbortIngestRejectsSubstitutionAfterFinalCheck(t *testing.T) {
 	testAbortIngestRetainsTopReplacement(t, true)
 }
+
+type phase6IngestCommitter interface {
+	CommitIngest(
+		context.Context,
+		model.InstallInitializationID,
+		model.IngestTransactionID,
+		model.Profile,
+		string,
+	) (model.IngestCommitOutcome, error)
+}
+
+func commitPhase6Ingest(
+	t *testing.T,
+	store *Store,
+	initialization InstallInitialization,
+	transaction model.IngestBeginOutcome,
+	profile model.Profile,
+) (model.IngestCommitOutcome, error) {
+	t.Helper()
+	committer, ok := any(store).(phase6IngestCommitter)
+	if !ok {
+		t.Fatal("Store does not implement the typed CommitIngest contract")
+	}
+	return committer.CommitIngest(
+		context.Background(),
+		initialization.ID(),
+		transaction.TransactionID,
+		profile,
+		"zsh-pro: ingest baseline",
+	)
+}
+
+func phase6Profile(name, value string) model.Profile {
+	return model.Profile{Entries: []model.Entry{{
+		Text:      "export " + name + "=" + value,
+		StartLine: 1,
+		Category:  model.CatEnvironment,
+		Kind:      model.KindAssignment,
+		Names:     []string{name},
+		Value:     value,
+		Exported:  true,
+		Managed:   true,
+		ValueMode: model.ValueModeLegacy,
+	}}}
+}
+
+func capturedUpdateRefTransactions(argv [][]string) [][]string {
+	var transactions [][]string
+	for _, args := range argv {
+		if len(args) > 0 && args[0] == "update-ref" {
+			transactions = append(transactions, args)
+		}
+	}
+	return transactions
+}
+
+func TestCommitIngestRefAbsentUsesCreateWire(t *testing.T) {
+	store, initialization, _ := newPhase6IngestStore(t)
+	ctx := context.Background()
+	tip, err := store.git.revParse(ctx, "refs/heads/main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.git.deleteRefCAS(ctx, "refs/heads/main", tip); err != nil {
+		t.Fatal(err)
+	}
+	transaction := beginPhase6Ingest(t, store, initialization)
+	var argv [][]string
+	store.git.beforeStart = func(args []string) { argv = append(argv, append([]string(nil), args...)) }
+	outcome, err := commitPhase6Ingest(t, store, initialization, transaction, phase6Profile("ABSENT", "one"))
+	if err != nil || outcome.Status != model.IngestCommitCommitted {
+		t.Fatalf("CommitIngest absent ref = (%#v, %v)", outcome, err)
+	}
+	transactions := capturedUpdateRefTransactions(argv)
+	if !reflect.DeepEqual(transactions, [][]string{{"update-ref", "--no-deref", "--stdin"}}) {
+		t.Fatalf("update-ref argv = %#v", transactions)
+	}
+}
+
+func TestCommitIngestRefPresentUsesExpectedUpdateWire(t *testing.T) {
+	store, initialization, _ := newPhase6IngestStore(t)
+	transaction := beginPhase6Ingest(t, store, initialization)
+	var argv [][]string
+	store.git.beforeStart = func(args []string) { argv = append(argv, append([]string(nil), args...)) }
+	outcome, err := commitPhase6Ingest(t, store, initialization, transaction, phase6Profile("PRESENT", "one"))
+	if err != nil || outcome.Status != model.IngestCommitCommitted || outcome.RefState != model.IngestRefCandidate {
+		t.Fatalf("CommitIngest present ref = (%#v, %v)", outcome, err)
+	}
+	transactions := capturedUpdateRefTransactions(argv)
+	if !reflect.DeepEqual(transactions, [][]string{{"update-ref", "--no-deref", "--stdin"}}) {
+		t.Fatalf("update-ref argv = %#v", transactions)
+	}
+}
+
+func TestCommitIngestRejectsCallerSelectedRefVerbBeforeProcess(t *testing.T) {
+	method, ok := reflect.TypeOf((*Store)(nil)).MethodByName("CommitIngest")
+	if !ok {
+		t.Fatal("CommitIngest is missing")
+	}
+	if method.Type.NumIn() != 6 {
+		t.Fatalf("CommitIngest accepts %d inputs including receiver; caller-selectable ref/verb authority is forbidden", method.Type.NumIn())
+	}
+}
+
+func TestUpdateRefSessionLocksOnlyAfterPrepareOK(t *testing.T) {
+	store, initialization, _ := newPhase6IngestStore(t)
+	first := beginPhase6Ingest(t, store, initialization)
+	second := beginPhase6Ingest(t, store, initialization)
+	firstOutcome, err := commitPhase6Ingest(t, store, initialization, first, phase6Profile("LOCK", "winner"))
+	if err != nil || firstOutcome.Status != model.IngestCommitCommitted {
+		t.Fatalf("winner = (%#v, %v)", firstOutcome, err)
+	}
+	secondOutcome, err := commitPhase6Ingest(t, store, initialization, second, phase6Profile("LOCK", "loser"))
+	if !errors.Is(err, ErrSecretRefConflict) || secondOutcome.Status != model.IngestCommitConflict ||
+		secondOutcome.Backend != model.IngestBackendUnchanged {
+		t.Fatalf("loser = (%#v, %v), want prepare conflict before effects", secondOutcome, err)
+	}
+}
+
+func TestCommitIngestEveryRefOperationIsNoDeref(t *testing.T) {
+	store, initialization, _ := newPhase6IngestStore(t)
+	transaction := beginPhase6Ingest(t, store, initialization)
+	var argv [][]string
+	store.git.beforeStart = func(args []string) { argv = append(argv, append([]string(nil), args...)) }
+	if outcome, err := commitPhase6Ingest(t, store, initialization, transaction, phase6Profile("DIRECT", "one")); err != nil || outcome.Status != model.IngestCommitCommitted {
+		t.Fatalf("CommitIngest = (%#v, %v)", outcome, err)
+	}
+	transactions := capturedUpdateRefTransactions(argv)
+	if len(transactions) == 0 {
+		t.Fatal("CommitIngest started no update-ref transaction")
+	}
+	for _, args := range transactions {
+		if !reflect.DeepEqual(args, []string{"update-ref", "--no-deref", "--stdin"}) {
+			t.Fatalf("unsafe update-ref argv = %#v", args)
+		}
+	}
+}
+
+func TestBeginAndCommitIngestRejectSymbolicOrSymlinkedMain(t *testing.T) {
+	for _, kind := range []string{"symbolic", "symlink"} {
+		t.Run(kind, func(t *testing.T) {
+			store, initialization, root := newPhase6IngestStore(t)
+			ctx := context.Background()
+			tip, err := store.git.revParse(ctx, "refs/heads/main")
+			if err != nil {
+				t.Fatal(err)
+			}
+			other := filepath.Join(root, "refs", "heads", "other")
+			if err := os.WriteFile(other, []byte(tip+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			mainRef := filepath.Join(root, "refs", "heads", "main")
+			switch kind {
+			case "symbolic":
+				if err := os.WriteFile(mainRef, []byte("ref: refs/heads/other\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			case "symlink":
+				if err := os.Remove(mainRef); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink("other", mainRef); err != nil {
+					t.Fatal(err)
+				}
+			}
+			starts := 0
+			store.git.beforeStart = func([]string) { starts++ }
+			if outcome, err := store.BeginIngest(ctx, initialization.ID()); err == nil ||
+				outcome.FailureCode != model.IngestFailureBaselineRead {
+				t.Fatalf("BeginIngest accepted %s main: (%#v, %v)", kind, outcome, err)
+			}
+			if starts != 0 {
+				t.Fatalf("%s main started %d Git processes", kind, starts)
+			}
+		})
+	}
+}
+
+func TestCommitIngestRecoveryGuardRejectsRefRedirection(t *testing.T) {
+	store, initialization, root := newPhase6IngestStore(t)
+	transaction := beginPhase6Ingest(t, store, initialization)
+	mainRef := filepath.Join(root, "refs", "heads", "main")
+	if err := os.WriteFile(mainRef, []byte("ref: refs/heads/other\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := commitPhase6Ingest(t, store, initialization, transaction, phase6Profile("REDIRECT", "one"))
+	if err == nil || outcome.Status == model.IngestCommitCommitted || !outcome.RecoveryRequired {
+		t.Fatalf("redirected ref recovery = (%#v, %v)", outcome, err)
+	}
+}
+
+type blockingPhase6Keychain struct {
+	entered chan struct{}
+	release chan struct{}
+	values  map[string]string
+	once    sync.Once
+}
+
+func (k *blockingPhase6Keychain) Store(key, value string) error {
+	k.once.Do(func() { close(k.entered) })
+	<-k.release
+	k.values[key] = value
+	return nil
+}
+
+func (k *blockingPhase6Keychain) Retrieve(key string) (string, error) {
+	value, ok := k.values[key]
+	if !ok {
+		return "", ErrSecretNotFound
+	}
+	return value, nil
+}
+
+func (k *blockingPhase6Keychain) Delete(key string) error {
+	delete(k.values, key)
+	return nil
+}
+
+func (*blockingPhase6Keychain) Kind() model.SecretRefKind { return model.SecretRefFile }
+
+func TestCommitIngestRefCommitWaitsForDurableEffects(t *testing.T) {
+	keychain := &blockingPhase6Keychain{entered: make(chan struct{}), release: make(chan struct{}), values: map[string]string{}}
+	root := filepath.Join(t.TempDir(), "store")
+	store, err := New(root, stubRegen{}, keychain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialization, err := store.InitForInstall(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	transaction := beginPhase6Ingest(t, store, initialization)
+	want := *transaction.Baseline.ExpectedRevision
+	done := make(chan struct {
+		outcome model.IngestCommitOutcome
+		err     error
+	}, 1)
+	go func() {
+		outcome, commitErr := commitPhase6Ingest(t, store, initialization, transaction, buildSecretProfile(t, "export API_KEY=blocked\n"))
+		done <- struct {
+			outcome model.IngestCommitOutcome
+			err     error
+		}{outcome: outcome, err: commitErr}
+	}()
+	select {
+	case <-keychain.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("backend effect was not reached")
+	}
+	current, err := store.git.revParse(context.Background(), "refs/heads/main")
+	if err != nil || current != want {
+		t.Fatalf("ref moved before backend completed: %q, %v; want %q", current, err, want)
+	}
+	close(keychain.release)
+	result := <-done
+	if result.err != nil || result.outcome.Status != model.IngestCommitCommitted {
+		t.Fatalf("CommitIngest = (%#v, %v)", result.outcome, result.err)
+	}
+}
+
+func TestCommitIngestPreCommitFailureNeverWritesRefCommit(t *testing.T) {
+	keychain := &transactionKeychain{values: map[string]string{}, failKey: "API_KEY", failOnce: true}
+	root := filepath.Join(t.TempDir(), "store")
+	store, err := New(root, stubRegen{}, keychain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialization, err := store.InitForInstall(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	transaction := beginPhase6Ingest(t, store, initialization)
+	want := *transaction.Baseline.ExpectedRevision
+	outcome, err := commitPhase6Ingest(t, store, initialization, transaction, buildSecretProfile(t, "export API_KEY=blocked\n"))
+	if !errors.Is(err, ErrSecretBackendUnavailable) || outcome.Status == model.IngestCommitCommitted {
+		t.Fatalf("backend failure = (%#v, %v)", outcome, err)
+	}
+	current, readErr := store.git.revParse(context.Background(), "refs/heads/main")
+	if readErr != nil || current != want {
+		t.Fatalf("backend failure moved ref: %q, %v; want %q", current, readErr, want)
+	}
+}
+
+func TestCommitIngestRejectsRefPresenceExpectedMismatch(t *testing.T) {
+	store, initialization, _ := newPhase6IngestStore(t)
+	transaction := beginPhase6Ingest(t, store, initialization)
+	*transaction.Baseline.ExpectedRevision = "invalid"
+	starts := 0
+	store.git.beforeStart = func([]string) { starts++ }
+	outcome, err := commitPhase6Ingest(t, store, initialization, transaction, phase6Profile("INVALID", "one"))
+	if err == nil || outcome.Status == model.IngestCommitCommitted || starts != 0 {
+		t.Fatalf("invalid expected evidence = (%#v, %v), starts=%d", outcome, err, starts)
+	}
+}
+
+func TestCommitIngestRefMismatchCleansWithZeroPublication(t *testing.T) {
+	store, initialization, _ := newPhase6IngestStore(t)
+	first := beginPhase6Ingest(t, store, initialization)
+	second := beginPhase6Ingest(t, store, initialization)
+	if outcome, err := commitPhase6Ingest(t, store, initialization, first, phase6Profile("WINNER", "one")); err != nil || outcome.Status != model.IngestCommitCommitted {
+		t.Fatalf("winner = (%#v, %v)", outcome, err)
+	}
+	outcome, err := commitPhase6Ingest(t, store, initialization, second, phase6Profile("LOSER", "two"))
+	if !errors.Is(err, ErrSecretRefConflict) || outcome.Status != model.IngestCommitConflict ||
+		outcome.Backend != model.IngestBackendUnchanged || outcome.Cleanup != model.QuarantineCleanupRemoved {
+		t.Fatalf("loser = (%#v, %v)", outcome, err)
+	}
+}
+
+func TestCommitIngestUpdateRefUsesSanitizedBareEnvironment(t *testing.T) {
+	store, initialization, _ := newPhase6IngestStore(t)
+	decoy := newTestStore(t)
+	if err := decoy.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	decoyTip, err := decoy.git.revParse(context.Background(), "refs/heads/main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_DIR", decoy.dir)
+	t.Setenv("GIT_WORK_TREE", t.TempDir())
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "0")
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(t.TempDir(), "hostile.gitconfig"))
+	t.Setenv("GIT_INDEX_FILE", filepath.Join(t.TempDir(), "hostile-index"))
+	t.Setenv("GIT_OBJECT_DIRECTORY", filepath.Join(t.TempDir(), "hostile-objects"))
+	t.Setenv("GIT_ALTERNATE_OBJECT_DIRECTORIES", filepath.Join(t.TempDir(), "hostile-alternates"))
+	transaction := beginPhase6Ingest(t, store, initialization)
+	if outcome, err := commitPhase6Ingest(t, store, initialization, transaction, phase6Profile("SAFE", "one")); err != nil || outcome.Status != model.IngestCommitCommitted {
+		t.Fatalf("CommitIngest = (%#v, %v)", outcome, err)
+	}
+	if current, err := decoy.git.revParse(context.Background(), "refs/heads/main"); err != nil || current != decoyTip {
+		t.Fatalf("hostile environment changed decoy ref: %q, %v", current, err)
+	}
+}
+
+func TestCommitIngestClaimsRegisteredTransaction(t *testing.T) {
+	store, initialization, _ := newPhase6IngestStore(t)
+	committer, ok := any(store).(phase6IngestCommitter)
+	if !ok {
+		t.Fatal("Store does not implement CommitIngest")
+	}
+	outcome, err := committer.CommitIngest(context.Background(), initialization.ID(), model.IngestTransactionID{}, model.Profile{}, "claim")
+	if !errors.Is(err, ErrInvalidIngestAuthority) || outcome.FailureCode != model.IngestFailureInvalidAuthority {
+		t.Fatalf("unknown token = (%#v, %v)", outcome, err)
+	}
+}
+
+func TestCommitIngestRejectsForgedOrSwappedToken(t *testing.T) {
+	firstStore, firstInitialization, _ := newPhase6IngestStore(t)
+	secondStore, secondInitialization, _ := newPhase6IngestStore(t)
+	first := beginPhase6Ingest(t, firstStore, firstInitialization)
+	second := beginPhase6Ingest(t, secondStore, secondInitialization)
+	committer := any(firstStore).(phase6IngestCommitter)
+	for _, authority := range []struct {
+		initialization model.InstallInitializationID
+		transaction    model.IngestTransactionID
+	}{
+		{initialization: firstInitialization.ID(), transaction: second.TransactionID},
+		{initialization: secondInitialization.ID(), transaction: first.TransactionID},
+	} {
+		outcome, err := committer.CommitIngest(context.Background(), authority.initialization, authority.transaction, model.Profile{}, "forged")
+		if !errors.Is(err, ErrInvalidIngestAuthority) || outcome.Status == model.IngestCommitCommitted {
+			t.Fatalf("forged authority = (%#v, %v)", outcome, err)
+		}
+	}
+}
+
+func TestCommitAbortAndCleanupSerialize(t *testing.T) {
+	keychain := &blockingPhase6Keychain{entered: make(chan struct{}), release: make(chan struct{}), values: map[string]string{}}
+	root := filepath.Join(t.TempDir(), "store")
+	store, err := New(root, stubRegen{}, keychain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialization, err := store.InitForInstall(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	transaction := beginPhase6Ingest(t, store, initialization)
+	done := make(chan error, 1)
+	go func() {
+		_, commitErr := commitPhase6Ingest(t, store, initialization, transaction, buildSecretProfile(t, "export API_KEY=blocked\n"))
+		done <- commitErr
+	}()
+	select {
+	case <-keychain.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("commit did not reach backend")
+	}
+	if _, err := store.AbortIngest(context.Background(), initialization.ID(), transaction.TransactionID); !errors.Is(err, ErrInvalidIngestAuthority) {
+		t.Fatalf("AbortIngest during Commit = %v, want invalid authority", err)
+	}
+	close(keychain.release)
+	if err := <-done; err != nil {
+		t.Fatalf("CommitIngest after release: %v", err)
+	}
+}
+
+func TestCommitIngestCleanupRequiresCrossProcessRootLock(t *testing.T) {
+	store, initialization, _ := newPhase6IngestStore(t)
+	transaction := beginPhase6Ingest(t, store, initialization)
+	store.cleanupDiscardLock = true
+	outcome, err := commitPhase6Ingest(t, store, initialization, transaction, phase6Profile("LOCKED", "one"))
+	if err == nil || outcome.Status != model.IngestCommitCommitted || outcome.Cleanup != model.QuarantineCleanupRetained ||
+		!outcome.RecoveryRequired {
+		t.Fatalf("discarded cleanup lock = (%#v, %v)", outcome, err)
+	}
+}
+
+func TestCommitIngestCommittedCleanupAxis(t *testing.T) {
+	store, initialization, _ := newPhase6IngestStore(t)
+	transaction := beginPhase6Ingest(t, store, initialization)
+	outcome, err := commitPhase6Ingest(t, store, initialization, transaction, phase6Profile("CLEAN", "one"))
+	if err != nil || outcome.Status != model.IngestCommitCommitted || outcome.Cleanup != model.QuarantineCleanupRemoved || outcome.RecoveryRequired {
+		t.Fatalf("committed cleanup = (%#v, %v)", outcome, err)
+	}
+}
+
+func TestCommitIngestNotCommittedCleanupAxis(t *testing.T) {
+	store, initialization, _ := newPhase6IngestStore(t)
+	first := beginPhase6Ingest(t, store, initialization)
+	second := beginPhase6Ingest(t, store, initialization)
+	if _, err := commitPhase6Ingest(t, store, initialization, first, phase6Profile("FIRST", "one")); err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := commitPhase6Ingest(t, store, initialization, second, phase6Profile("SECOND", "two"))
+	if !errors.Is(err, ErrSecretRefConflict) || outcome.Status != model.IngestCommitConflict ||
+		outcome.Cleanup != model.QuarantineCleanupRemoved || outcome.RecoveryRequired {
+		t.Fatalf("conflict cleanup = (%#v, %v)", outcome, err)
+	}
+}
+
+func TestCommitIngestCleanupFailurePreservesPublication(t *testing.T) {
+	store, initialization, _ := newPhase6IngestStore(t)
+	transaction := beginPhase6Ingest(t, store, initialization)
+	store.cleanupBeforeFinalCheck = func(quarantineCleanupSeam) error { return errors.New("injected cleanup failure") }
+	outcome, err := commitPhase6Ingest(t, store, initialization, transaction, phase6Profile("PUBLISHED", "one"))
+	if err == nil || outcome.Status != model.IngestCommitCommitted || outcome.Cleanup != model.QuarantineCleanupRetained ||
+		!outcome.RecoveryRequired {
+		t.Fatalf("cleanup failure rewrote publication = (%#v, %v)", outcome, err)
+	}
+}
+
+func TestCommitIngestCleanupRejectsNestedReplacement(t *testing.T) {
+	store, initialization, _ := newPhase6IngestStore(t)
+	transaction := beginPhase6Ingest(t, store, initialization)
+	store.cleanupBeforeFinalCheck = func(seam quarantineCleanupSeam) error {
+		if seam.Relative != "." {
+			return errors.New("injected nested replacement")
+		}
+		return nil
+	}
+	outcome, err := commitPhase6Ingest(t, store, initialization, transaction, phase6Profile("NESTED", "one"))
+	if err == nil || outcome.Status != model.IngestCommitCommitted || outcome.Cleanup != model.QuarantineCleanupRetained {
+		t.Fatalf("nested replacement = (%#v, %v)", outcome, err)
+	}
+}
+
+func TestCommitIngestObservedCandidateIsCommitted(t *testing.T) {
+	store, initialization, _ := newPhase6IngestStore(t)
+	transaction := beginPhase6Ingest(t, store, initialization)
+	outcome, err := commitPhase6Ingest(t, store, initialization, transaction, phase6Profile("OBSERVED", "candidate"))
+	if err != nil || outcome.Status != model.IngestCommitCommitted || outcome.RefState != model.IngestRefCandidate {
+		t.Fatalf("candidate observation = (%#v, %v)", outcome, err)
+	}
+}
+
+func TestCommitIngestExpectedRefRecoveryGuard(t *testing.T) {
+	store, initialization, _ := newPhase6IngestStore(t)
+	first := beginPhase6Ingest(t, store, initialization)
+	second := beginPhase6Ingest(t, store, initialization)
+	if _, err := commitPhase6Ingest(t, store, initialization, first, phase6Profile("GUARD", "winner")); err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := commitPhase6Ingest(t, store, initialization, second, phase6Profile("GUARD", "loser"))
+	if !errors.Is(err, ErrSecretRefConflict) || outcome.Status != model.IngestCommitConflict || outcome.Backend != model.IngestBackendUnchanged {
+		t.Fatalf("expected ref guard = (%#v, %v)", outcome, err)
+	}
+}
+
+func TestCommitIngestUnknownRefRequiresRecovery(t *testing.T) {
+	store, initialization, root := newPhase6IngestStore(t)
+	transaction := beginPhase6Ingest(t, store, initialization)
+	mainRef := filepath.Join(root, "refs", "heads", "main")
+	if err := os.WriteFile(mainRef, []byte("not-an-object\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := commitPhase6Ingest(t, store, initialization, transaction, phase6Profile("UNKNOWN", "one"))
+	if err == nil || outcome.Status == model.IngestCommitCommitted || !outcome.RecoveryRequired {
+		t.Fatalf("unknown ref = (%#v, %v)", outcome, err)
+	}
+}
+
+func TestCommitIngestDifferentProfilesConflict(t *testing.T) {
+	store, initialization, _ := newPhase6IngestStore(t)
+	first := beginPhase6Ingest(t, store, initialization)
+	second := beginPhase6Ingest(t, store, initialization)
+	if outcome, err := commitPhase6Ingest(t, store, initialization, first, phase6Profile("PROFILE", "winner")); err != nil || outcome.Status != model.IngestCommitCommitted {
+		t.Fatalf("winner = (%#v, %v)", outcome, err)
+	}
+	outcome, err := commitPhase6Ingest(t, store, initialization, second, phase6Profile("PROFILE", "loser"))
+	if !errors.Is(err, ErrSecretRefConflict) || outcome.Status != model.IngestCommitConflict || outcome.Backend != model.IngestBackendUnchanged {
+		t.Fatalf("loser = (%#v, %v)", outcome, err)
+	}
+	profile, readErr := store.Read(context.Background(), "main")
+	if readErr != nil || !reflect.DeepEqual(profile, phase6Profile("PROFILE", "winner")) {
+		t.Fatalf("winner profile = (%#v, %v)", profile, readErr)
+	}
+}
