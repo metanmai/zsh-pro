@@ -63,6 +63,16 @@ const (
 	ingestFailureFinalizeFailed
 )
 
+// ingestControllerSeams are copied per invocation. They expose only
+// deterministic observation/failure points used to prove transaction ordering;
+// production always passes nil.
+type ingestControllerSeams struct {
+	install      *installTransactionSeams
+	event        func(string)
+	afterBuild   func(*model.Profile)
+	beforeCommit func(*guardedInstallTransaction) error
+}
+
 func (reason ingestFailureReason) String() string {
 	switch reason {
 	case ingestFailureProviderUnavailable:
@@ -114,10 +124,14 @@ func (c *CLI) runIngestCommand(args []string, stdout, stderr io.Writer) int {
 		return renderIngestResult(result, ingestFailureStoreUnavailable, parsed.asJSON, stdout, stderr)
 	}
 
-	// Task 3 replaces this closed staged failure with the transaction
-	// controller. Keeping the staged path value-free ensures Task 1 can land the
-	// public contract without inventing a partial filesystem transaction.
-	return renderIngestResult(result, ingestFailureTransactionUnavailable, parsed.asJSON, stdout, stderr)
+	return c.runIngestWithSeams(parsed, stdout, stderr, nil)
+}
+
+// runIngestWithSeams is introduced with the Task 3 RED contract. GREEN
+// supplies the complete Store/filesystem controller.
+func (c *CLI) runIngestWithSeams(arguments ingestArguments, stdout, stderr io.Writer, _ *ingestControllerSeams) int {
+	result := newIngestResult(int(model.ExitRuntimeErr))
+	return renderIngestResult(result, ingestFailureTransactionUnavailable, arguments.asJSON, stdout, stderr)
 }
 
 func renderIngestResult(result dto.IngestResult, reason ingestFailureReason, asJSON bool, stdout, stderr io.Writer) int {
