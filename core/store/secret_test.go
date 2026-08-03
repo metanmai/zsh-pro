@@ -302,11 +302,11 @@ func TestCommitCompensatesAmbiguousRefFailure(t *testing.T) {
 		t.Skip("git not installed; skipping ref transaction test")
 	}
 	for _, tc := range []struct {
-		name string
-		move bool
+		name      string
+		committed bool
 	}{
-		{name: "before effect"},
-		{name: "after effect", move: true},
+		{name: "expected observed"},
+		{name: "candidate observed", committed: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -322,29 +322,37 @@ func TestCommitCompensatesAmbiguousRefFailure(t *testing.T) {
 			if err != nil {
 				t.Fatal("could not read baseline ref")
 			}
-			injected := false
-			s.refUpdate = func(ctx context.Context, ref, sha, old string) error {
-				if injected {
-					return s.git.updateRefCAS(ctx, ref, sha, old)
-				}
-				injected = true
-				if tc.move {
-					if err := s.git.updateRefCAS(ctx, ref, sha, old); err != nil {
+			s.commitRefSession = func(session *updateRefSession) error {
+				if tc.committed {
+					if err := session.Commit(); err != nil {
 						return err
 					}
+				} else if err := session.Abort(); err != nil {
+					return err
 				}
 				return ErrGitCommand
 			}
 			p := buildSecretProfile(t, "export API_KEY=next_value\n")
-			if _, err := s.Commit(ctx, "main", p, "ref transaction test"); !errors.Is(err, ErrGitCommand) {
-				t.Fatal("Commit did not return the typed ref error")
+			report, err := s.Commit(ctx, "main", p, "ref transaction test")
+			if tc.committed {
+				if err != nil || len(report) != 1 {
+					t.Fatalf("observed candidate = (%#v, %v), want committed report", report, err)
+				}
+			} else if !errors.Is(err, ErrIngestNotCommitted) || len(report) != 0 {
+				t.Fatalf("observed expected = (%#v, %v), want clean not-committed", report, err)
 			}
 			after, err := s.git.revParse(ctx, "refs/heads/main")
-			if err != nil || after != before {
-				t.Fatal("ambiguous ref failure was not restored to the prior SHA")
+			if err != nil {
+				t.Fatal(err)
 			}
-			if _, exists := kc.values["API_KEY"]; exists {
-				t.Fatal("ambiguous ref failure left a backend write behind")
+			if tc.committed {
+				if after == before || kc.values["API_KEY"] != "next_value" {
+					t.Fatal("candidate observation lost committed ref/backend effects")
+				}
+			} else if after != before {
+				t.Fatal("expected observation moved the ref")
+			} else if _, exists := kc.values["API_KEY"]; exists {
+				t.Fatal("guarded expected observation left a backend write behind")
 			}
 		})
 	}
@@ -739,6 +747,8 @@ func persistedSecretRefProfile(kind model.SecretRefKind) model.Profile {
 		Exported:                true,
 		Managed:                 true,
 		StructuralFidelityKnown: true,
+		DeclarationFlags:        []string{},
+		OptionFlags:             []string{},
 		Secret:                  ref,
 		ValueMode:               model.ValueModeUnsupported,
 	}}}
@@ -805,8 +815,13 @@ func TestCommitIngestMalformedSecretRefCallAndEffectMatrix(t *testing.T) {
 		{name: "runtime value", mutate: func(entry *model.Entry) { entry.RuntimeValue = &runtimeValue }},
 		{name: "dynamic", mutate: func(entry *model.Entry) { entry.Dynamic = true }},
 		{
-			name:     "backend kind mismatch",
-			mutate:   func(entry *model.Entry) { entry.Secret.Kind = model.SecretRefKeychain },
+			name: "backend kind mismatch",
+			mutate: func(entry *model.Entry) {
+				entry.Secret.Kind = model.SecretRefKeychain
+				placeholder := secretRefValue(*entry.Secret)
+				entry.Text = "export API_KEY=" + placeholder
+				entry.Value = placeholder
+			},
 			kind:     model.SecretRefFile,
 			wantKind: 1,
 		},

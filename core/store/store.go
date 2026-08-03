@@ -49,6 +49,27 @@ const (
 	ErrIngestRecoveryRequired errStore = "zsh-pro: profile ingest requires recovery"
 )
 
+type ingestRecoveryError struct {
+	committed bool
+}
+
+func (err ingestRecoveryError) Error() string { return ErrIngestRecoveryRequired.Error() }
+
+func (err ingestRecoveryError) Is(target error) bool { return target == ErrIngestRecoveryRequired }
+
+// Committed reports publication truth independently from the recovery error.
+func (err ingestRecoveryError) Committed() bool { return err.committed }
+
+type ingestNotCommittedError struct {
+	cause error
+}
+
+func (err ingestNotCommittedError) Error() string { return ErrIngestNotCommitted.Error() }
+
+func (err ingestNotCommittedError) Is(target error) bool {
+	return target == ErrIngestNotCommitted || errors.Is(err.cause, target)
+}
+
 // KeychainDriver is the keychain seam — Store/Retrieve/Delete move a name-scoped
 // secret value to/from a backend; Kind() reports which backend this driver is (so
 // Plan 03's literal-secret exclusion stamps the matching SecretRef.Kind on the
@@ -94,13 +115,6 @@ type Store struct {
 	regen    shell.Regenerator // injected per-entry zsh emitter (D-03; never the concrete zsh provider)
 	keychain KeychainDriver    // secret backend seam (concrete impls land in Plan 03)
 
-	// Per-instance test seams for ambiguous ref effects. Production leaves these nil
-	// and calls gitRunner directly; a test can inject one Store without leaking state
-	// to later tests or another concurrent Store.
-	refRead   func(context.Context, string) (string, error)
-	refUpdate func(context.Context, string, string, string) error
-	refDelete func(context.Context, string, string) error
-
 	transactionMu          sync.Mutex
 	storeNonce             model.InstallInitializationID
 	installInitializations map[model.InstallInitializationID]*installInitializationRecord
@@ -118,13 +132,16 @@ type Store struct {
 	cleanupDiscardLock         bool
 
 	// CommitIngest terminal outcomes are immutable and replayable by token.
-	ingestCommitOutcomes map[model.IngestTransactionID]ingestCommitTerminal
+	ingestCommitOutcomes  map[model.IngestTransactionID]ingestCommitTerminal
+	ingestTransactionRefs map[model.IngestTransactionID]validatedHeadRef
+	legacyInitialization  model.InstallInitializationID
 
 	// Per-Store test seams for deterministic publication/durability failures and
 	// value-free event ordering. Production leaves these nil.
 	commitPublishLink func(string, string) error
 	commitSyncDir     func(string) error
 	commitEvent       func(string)
+	commitRefSession  func(*updateRefSession) error
 }
 
 type ingestCommitTerminal struct {
@@ -287,7 +304,7 @@ func (s *Store) Create(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	return s.git.updateRef(ctx, "refs/heads/"+name, mainSHA)
+	return s.git.updateRefCAS(ctx, "refs/heads/"+name, mainSHA, strings.Repeat("0", len(mainSHA)))
 }
 
 type claimedIngestCommit struct {
@@ -328,11 +345,15 @@ func (s *Store) claimIngestCommit(
 		expected := *baseline.ExpectedRevision
 		baseline.ExpectedRevision = &expected
 	}
+	ref := mainHeadRef()
+	if transactionRef, ok := s.ingestTransactionRefs[transactionID]; ok {
+		ref = transactionRef
+	}
 	return claimedIngestCommit{
 		record:     record,
 		baseline:   baseline,
 		quarantine: record.quarantine,
-		ref:        mainHeadRef(),
+		ref:        ref,
 	}, nil, nil
 }
 
@@ -836,7 +857,13 @@ func (s *Store) CommitIngest(
 			}
 			outcome.Objects = model.IngestObjectsPublished
 
-			if commitSessionErr := session.Commit(); commitSessionErr == nil {
+			commitSessionErr := error(nil)
+			if s.commitRefSession != nil {
+				commitSessionErr = s.commitRefSession(session)
+			} else {
+				commitSessionErr = session.Commit()
+			}
+			if commitSessionErr == nil {
 				outcome.Status = model.IngestCommitCommitted
 				outcome.RefState = model.IngestRefCandidate
 				outcome.FailureCode = model.IngestFailureNone
@@ -912,213 +939,182 @@ func (s *Store) CommitIngest(
 	return s.terminalizeIngestCommit(claim, outcome, commitErr)
 }
 
-// Commit writes a profile to a target branch purely via plumbing — no checkout,
-// no working-tree mutation anywhere (D-12, critical decision #4; the conda race
-// avoided by construction). It stages exactly two blobs: profile.json (the
-// authoritative lossless IR serialization, D-01) and profile.zsh (a derived
-// source-ordered view generated through the injected regenerator seam, D-02/D-03).
-// The recipe is the Plan-01-proven Pattern 1 (exercised end-to-end by
-// TestGitCommitToBranch): hash-object each blob, seed a temp index from the branch
-// tree (parented) or empty (root commit), update-index --cacheinfo both paths,
-// write-tree, commit-tree, update-ref. Every git call goes through gitRunner so an
-// error is zsh-pro-phrased, never raw (D-11).
-//
-// Commit has its FINAL two-value signature (WithheldReport, error). Secret
-// exclusion is ACTIVE (D-07–D-10): as the FIRST step, excludeSecrets rewrites the
-// profile so every literal secret (Category==CatSecrets && !Dynamic && Value!="")
-// is captured into the injected keychain/vault backend and replaced by a SecretRef
-// (Kind=kc.Kind()) with its literal cleared, while already-dynamic secrets commit
-// verbatim (D-08). The post-exclusion profile is what gets marshaled, regenerated,
-// and committed — the literal value never enters the tree — and the populated
-// WithheldReport names what was withheld (success-criterion #4, surfaced by the CLI
-// in Phase 5). The signature is unchanged from Plan 02.
+type legacyInitializationAuthority struct {
+	id model.InstallInitializationID
+}
+
+func (s *Store) legacyAuthority(ctx context.Context) (legacyInitializationAuthority, error) {
+	s.transactionMu.Lock()
+	if !s.legacyInitialization.IsZero() {
+		if _, ok := s.validInstallInitializationLocked(s.legacyInitialization); ok {
+			authority := legacyInitializationAuthority{id: s.legacyInitialization}
+			s.transactionMu.Unlock()
+			return authority, nil
+		}
+	}
+	s.transactionMu.Unlock()
+
+	if s.dir == "" {
+		return legacyInitializationAuthority{}, ErrNotInitialized
+	}
+	preflightInfo, err := os.Lstat(s.dir)
+	if err != nil || !preflightInfo.IsDir() || preflightInfo.Mode()&os.ModeSymlink != 0 || !s.git.isBareRepo(ctx) {
+		return legacyInitializationAuthority{}, ErrNotInitialized
+	}
+	id, err := model.NewInstallInitializationID()
+	if err != nil {
+		return legacyInitializationAuthority{}, err
+	}
+	root, err := filepath.Abs(s.dir)
+	if err != nil {
+		return legacyInitializationAuthority{}, ErrInvalidIngestAuthority
+	}
+	rootInfo, err := os.Stat(root)
+	if err != nil || !rootInfo.IsDir() {
+		return legacyInitializationAuthority{}, ErrInvalidIngestAuthority
+	}
+	state := &installInitializationState{dir: root, preexisting: true, originalInfo: rootInfo}
+
+	s.transactionMu.Lock()
+	defer s.transactionMu.Unlock()
+	if !s.legacyInitialization.IsZero() {
+		if _, ok := s.validInstallInitializationLocked(s.legacyInitialization); ok {
+			return legacyInitializationAuthority{id: s.legacyInitialization}, nil
+		}
+	}
+	if s.storeNonce.IsZero() {
+		return legacyInitializationAuthority{}, ErrInvalidIngestAuthority
+	}
+	if s.installInitializations == nil {
+		s.installInitializations = make(map[model.InstallInitializationID]*installInitializationRecord)
+	}
+	if s.ingestTransactions == nil {
+		s.ingestTransactions = make(map[model.IngestTransactionID]*ingestTransactionRecord)
+	}
+	s.installInitializations[id] = &installInitializationRecord{
+		id:           id,
+		storeNonce:   s.storeNonce,
+		root:         filepath.Clean(root),
+		rootInfo:     rootInfo,
+		state:        state,
+		transactions: make(map[model.IngestTransactionID]struct{}),
+	}
+	s.legacyInitialization = id
+	return legacyInitializationAuthority{id: id}, nil
+}
+
+func (s *Store) beginTransactionForRef(
+	ctx context.Context,
+	ref validatedHeadRef,
+	authority legacyInitializationAuthority,
+) (model.IngestBeginOutcome, error) {
+	if !ref.valid() || authority.id.IsZero() {
+		return model.IngestBeginOutcome{FailureCode: model.IngestFailureInvalidAuthority}, ErrInvalidIngestAuthority
+	}
+	record, outcome, err := s.reserveIngestTransaction(authority.id)
+	if err != nil {
+		return outcome, err
+	}
+	revision, present, err := s.git.observeDirectRef(ctx, ref)
+	if err != nil {
+		return s.terminalizeBeginFailure(record, model.IngestFailureBaselineRead, model.QuarantineCleanupRemoved, false), err
+	}
+	var (
+		expected       *string
+		profile        model.Profile
+		profilePresent bool
+	)
+	if present {
+		expected, err = model.NewExpectedRevision(revision)
+		if err == nil {
+			profile, profilePresent, err = s.git.profileAtRevision(ctx, revision)
+		}
+		if err != nil {
+			return s.terminalizeBeginFailure(record, model.IngestFailureBaselineRead, model.QuarantineCleanupRemoved, false), err
+		}
+	}
+	baseline, err := model.NewIngestBaseline(
+		record.initializationID,
+		record.transactionID,
+		present,
+		expected,
+		profile,
+		profilePresent,
+	)
+	if err != nil {
+		return s.terminalizeBeginFailure(record, model.IngestFailureBaselineRead, model.QuarantineCleanupRemoved, false), err
+	}
+	record.baseline = baseline
+	cleanup, recoveryRequired, err := s.createIngestQuarantine(ctx, record)
+	if err != nil {
+		return s.terminalizeBeginFailure(record, model.IngestFailureQuarantine, cleanup, recoveryRequired), err
+	}
+
+	s.transactionMu.Lock()
+	current, ok := s.ingestTransactions[record.transactionID]
+	if !ok || current != record || record.lifecycle != model.IngestLifecycleProvisional {
+		s.transactionMu.Unlock()
+		return s.terminalizeBeginFailure(record, model.IngestFailureInvalidAuthority, model.QuarantineCleanupRetained, true), ErrInvalidIngestAuthority
+	}
+	if s.ingestTransactionRefs == nil {
+		s.ingestTransactionRefs = make(map[model.IngestTransactionID]validatedHeadRef)
+	}
+	s.ingestTransactionRefs[record.transactionID] = ref
+	record.lifecycle = model.IngestLifecycleActive
+	record.cleanup = model.QuarantineCleanupRetained
+	record.beginOutcome = model.IngestBeginOutcome{
+		InitializationID: record.initializationID,
+		TransactionID:    record.transactionID,
+		Baseline:         baseline,
+		Lifecycle:        model.IngestLifecycleActive,
+		Cleanup:          model.QuarantineCleanupRetained,
+		FailureCode:      model.IngestFailureNone,
+	}
+	outcome = record.beginOutcome
+	s.transactionMu.Unlock()
+	return outcome, nil
+}
+
+func adaptLegacyCommitOutcome(outcome model.IngestCommitOutcome, cause error) (WithheldReport, error) {
+	report := append(WithheldReport(nil), outcome.Withheld...)
+	if outcome.RecoveryRequired || outcome.Status == model.IngestCommitRecoveryRequired {
+		if outcome.Status == model.IngestCommitCommitted {
+			return report, ingestRecoveryError{committed: true}
+		}
+		return nil, ingestRecoveryError{committed: false}
+	}
+	switch outcome.Status {
+	case model.IngestCommitCommitted:
+		return report, nil
+	case model.IngestCommitConflict:
+		return nil, ErrSecretRefConflict
+	default:
+		return nil, ingestNotCommittedError{cause: cause}
+	}
+}
+
+// Commit is the source-compatible branch-aware adapter over the typed ingest
+// transaction. It validates the requested branch, creates a private Store-issued
+// initialization authority, and routes publication through the same prepared
+// no-deref ref lock, secret-redaction, durable-object, and cleanup state machine as
+// public main-only ingest. The adapter returns a report only when publication is
+// known committed and maps conflict, clean non-commit, and recovery-required
+// outcomes to stable sentinel-compatible errors.
 func (s *Store) Commit(ctx context.Context, branch string, p model.Profile, msg string) (WithheldReport, error) {
 	headRef, err := validatedHeadRefForBranch(branch)
 	if err != nil {
 		return nil, err
 	}
-
-	// Exclude literal secrets BEFORE anything is serialized: capture each into the
-	// backend, replace with a SecretRef, clear the literal. Everything downstream
-	// (marshal, regenerate, hash, commit) operates on `excluded`, NOT the caller's `p`,
-	// so the literal never reaches the committed tree (T-03-03). A backend/nil-driver
-	// failure aborts the Commit before any ref moves.
-	prepared, err := prepareSecrets(p, s.keychain)
+	authority, err := s.legacyAuthority(ctx)
 	if err != nil {
 		return nil, err
 	}
-	excluded, report := prepared.profile, prepared.report
-
-	// profile.json is authoritative (D-01); profile.zsh is the derived view emitted
-	// via the injected seam (D-02/D-03) — values pass through verbatim, never resolved.
-	jsonBytes, err := MarshalProfile(excluded)
+	transaction, err := s.beginTransactionForRef(ctx, headRef, authority)
 	if err != nil {
 		return nil, err
 	}
-	zshBytes := ir.Regenerate(excluded, s.regen)
-
-	blobJSON, err := s.git.hashObject(ctx, jsonBytes)
-	if err != nil {
-		return nil, err
-	}
-	blobZSH, err := s.git.hashObject(ctx, zshBytes)
-	if err != nil {
-		return nil, err
-	}
-
-	// Temp index file OUTSIDE any working tree (a bare repo has none anyway), cleaned
-	// up after. GIT_INDEX_FILE is set by runCommit so all index ops target it.
-	idxFile, err := os.CreateTemp("", "zshpro-index-*")
-	if err != nil {
-		return nil, err
-	}
-	idx := idxFile.Name()
-	// Only the name is needed; git owns the file content via GIT_INDEX_FILE. The
-	// deferred remove is best-effort — a leftover temp index is harmless.
-	_ = idxFile.Close()
-	defer func() { _ = os.Remove(idx) }()
-
-	ref := headRef.name
-	var parent string
-	if s.git.catFileExists(ctx, ref) {
-		// Seed the temp index from the branch's current tree and parent on its tip.
-		if _, err := s.git.runCommit(ctx, idx, commitTS, "read-tree", branch); err != nil {
-			return nil, err
-		}
-		parent, err = s.git.revParse(ctx, ref)
-		if err != nil {
-			return nil, err
-		}
-	} else if _, err := s.git.runCommit(ctx, idx, commitTS, "read-tree", "--empty"); err != nil {
-		// Brand-new branch: start from an empty index and make a root commit (no -p).
-		return nil, err
-	}
-
-	// Stage exactly profile.json + profile.zsh via cacheinfo (mode,sha,path) — never
-	// any other path, so the git-ignored vault file can never enter the tree.
-	if _, err := s.git.runCommit(ctx, idx, commitTS, "update-index", "--add", "--cacheinfo", "100644,"+blobJSON+",profile.json"); err != nil {
-		return nil, err
-	}
-	if _, err := s.git.runCommit(ctx, idx, commitTS, "update-index", "--add", "--cacheinfo", "100644,"+blobZSH+",profile.zsh"); err != nil {
-		return nil, err
-	}
-
-	treeOut, err := s.git.runCommit(ctx, idx, commitTS, "write-tree")
-	if err != nil {
-		return nil, err
-	}
-	tree := strings.TrimSpace(string(treeOut))
-
-	// commit-tree: parented if the branch existed, else a root commit. The message is
-	// passed as distinct argv (-m) — the Plan-01-proven form (TestGitCommitToBranch);
-	// it is non-sensitive fixed/user text and is never shell-interpolated.
-	commitArgs := []string{"commit-tree", tree, "-m", msg}
-	if parent != "" {
-		commitArgs = []string{"commit-tree", tree, "-p", parent, "-m", msg}
-	}
-	commitOut, err := s.git.runCommit(ctx, idx, commitTS, commitArgs...)
-	if err != nil {
-		return nil, err
-	}
-	commit := strings.TrimSpace(string(commitOut))
-
-	type priorSecret struct {
-		key, value string
-		exists     bool
-	}
-	priors := make([]priorSecret, 0, len(prepared.pending))
-	for _, mutation := range prepared.pending {
-		value, retrieveErr := s.keychain.Retrieve(mutation.key)
-		if retrieveErr != nil && retrieveErr != ErrSecretNotFound {
-			return nil, retrieveErr
-		}
-		priors = append(priors, priorSecret{key: mutation.key, value: value, exists: retrieveErr == nil})
-	}
-	rollback := func() error {
-		failed := false
-		for i := len(priors) - 1; i >= 0; i-- {
-			prior := priors[i]
-			var restoreErr error
-			if prior.exists {
-				restoreErr = s.keychain.Store(prior.key, prior.value)
-			} else {
-				restoreErr = s.keychain.Delete(prior.key)
-				if restoreErr == ErrSecretNotFound {
-					restoreErr = nil
-				}
-			}
-			if restoreErr != nil {
-				failed = true
-			}
-		}
-		if failed {
-			return ErrSecretRollback
-		}
-		return nil
-	}
-	for _, mutation := range prepared.pending {
-		if err := s.keychain.Store(mutation.key, mutation.value); err != nil {
-			if rollbackErr := rollback(); rollbackErr != nil {
-				return nil, rollbackErr
-			}
-			return nil, err
-		}
-	}
-	old := parent
-	if old == "" {
-		old = "0000000000000000000000000000000000000000"
-	}
-	if err := s.updateRefCAS(ctx, ref, commit, old); err != nil {
-		// update-ref can be ambiguous from this process's perspective (for example,
-		// a timeout after git has moved the ref). Re-read the ref before restoring
-		// secrets: compensate only if it points to OUR commit, and use CAS again so
-		// another writer can never be clobbered.
-		result := err
-		if current, readErr := s.readRef(ctx, ref); readErr == nil {
-			switch {
-			case current == commit:
-				var compensateErr error
-				if parent == "" {
-					compensateErr = s.deleteRefCAS(ctx, ref, commit)
-				} else {
-					compensateErr = s.updateRefCAS(ctx, ref, parent, commit)
-				}
-				if compensateErr != nil {
-					result = ErrSecretRollback
-				}
-			case current != parent:
-				// The ref changed to a third value. Do not compensate it; callers
-				// receive a typed conflict instead of an accidental overwrite.
-				result = ErrSecretRefConflict
-			}
-		}
-		if rollbackErr := rollback(); rollbackErr != nil {
-			return nil, rollbackErr
-		}
-		return nil, result
-	}
-	return report, nil // names the literal secrets excluded above (nil/empty when none)
-}
-
-func (s *Store) readRef(ctx context.Context, ref string) (string, error) {
-	if s.refRead != nil {
-		return s.refRead(ctx, ref)
-	}
-	return s.git.revParse(ctx, ref)
-}
-
-func (s *Store) updateRefCAS(ctx context.Context, ref, sha, old string) error {
-	if s.refUpdate != nil {
-		return s.refUpdate(ctx, ref, sha, old)
-	}
-	return s.git.updateRefCAS(ctx, ref, sha, old)
-}
-
-func (s *Store) deleteRefCAS(ctx context.Context, ref, old string) error {
-	if s.refDelete != nil {
-		return s.refDelete(ctx, ref, old)
-	}
-	return s.git.deleteRefCAS(ctx, ref, old)
+	outcome, commitErr := s.CommitIngest(ctx, authority.id, transaction.TransactionID, p, msg)
+	return adaptLegacyCommitOutcome(outcome, commitErr)
 }
 
 // Read reconstructs a model.Profile from a branch's profile.json, pulled straight
