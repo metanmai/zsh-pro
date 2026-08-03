@@ -1322,8 +1322,8 @@ func TestMainIngestOrderSensitiveDefinitionBeforeUse(t *testing.T) {
 	snapshot := fixture.startupSnapshot(t)
 	for _, want := range []string{
 		"order=definition,use\n",
-		"imperative=definition-before-use\n",
-		"function_result=function-ok\n",
+		"imperative=$'definition-before-use'\n",
+		"function_result=$'function-ok'\n",
 	} {
 		if !strings.Contains(snapshot, want) {
 			t.Fatalf("installed startup lacks order-sensitive evidence %q:\n%s", strings.TrimSpace(want), snapshot)
@@ -1442,10 +1442,9 @@ func newPhase6BuiltFixture(t *testing.T) *phase6BuiltFixture {
 			t.Fatal(err)
 		}
 	}
-	secretTool := "#!/bin/sh\ncase \"${1-}\" in\n  store) IFS= read -r phase6_value || :; phase6_value=; exit 0 ;;\n  clear) exit 0 ;;\n  lookup) exit 1 ;;\n  *) exit 1 ;;\nesac\n"
-	if err := os.WriteFile(filepath.Join(toolDir, "secret-tool"), []byte(secretTool), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	// Keep both platform keychain CLIs absent so the composition root selects
+	// its deterministic, isolated file-vault fallback. The vault stores encoded
+	// bytes under dataHome while the privacy assertions scan for the raw literal.
 	stubDir := t.TempDir()
 	executionCanary := filepath.Join(t.TempDir(), "source-executed")
 	subprocessCounter := filepath.Join(t.TempDir(), "subprocess-count")
