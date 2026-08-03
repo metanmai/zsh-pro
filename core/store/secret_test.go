@@ -21,7 +21,9 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os/exec"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -672,5 +674,362 @@ func TestCommitFailsClosedArraySecret(t *testing.T) {
 	assertCommitDidNotWrite(t, s, ctx, preTip)
 	if got, err := vault.Retrieve("SECRETS"); err == nil {
 		t.Errorf("vault captured SECRETS=%q on a fail-closed abort; nothing should have been stored", got)
+	}
+}
+
+type countingSecretRefKeychain struct {
+	kind          model.SecretRefKind
+	kindCalls     int
+	retrieveCalls int
+	storeCalls    int
+	deleteCalls   int
+	failStore     bool
+	values        map[string]string
+}
+
+func (k *countingSecretRefKeychain) Store(key, value string) error {
+	k.storeCalls++
+	if k.failStore {
+		return ErrSecretBackendUnavailable
+	}
+	if k.values == nil {
+		k.values = make(map[string]string)
+	}
+	k.values[key] = value
+	return nil
+}
+
+func (k *countingSecretRefKeychain) Retrieve(key string) (string, error) {
+	k.retrieveCalls++
+	value, ok := k.values[key]
+	if !ok {
+		return "", ErrSecretNotFound
+	}
+	return value, nil
+}
+
+func (k *countingSecretRefKeychain) Delete(key string) error {
+	k.deleteCalls++
+	delete(k.values, key)
+	return nil
+}
+
+func (k *countingSecretRefKeychain) Kind() model.SecretRefKind {
+	k.kindCalls++
+	return k.kind
+}
+
+func (k *countingSecretRefKeychain) resetCalls() {
+	k.kindCalls = 0
+	k.retrieveCalls = 0
+	k.storeCalls = 0
+	k.deleteCalls = 0
+}
+
+func persistedSecretRefProfile(kind model.SecretRefKind) model.Profile {
+	ref := &model.SecretRef{Kind: kind, Key: "API_KEY"}
+	placeholder := secretRefValue(*ref)
+	return model.Profile{Entries: []model.Entry{{
+		Text:                    "export API_KEY=" + placeholder,
+		StartLine:               7,
+		Category:                model.CatSecrets,
+		Kind:                    model.KindAssignment,
+		Names:                   []string{"API_KEY"},
+		Value:                   placeholder,
+		Exported:                true,
+		Managed:                 true,
+		StructuralFidelityKnown: true,
+		Secret:                  ref,
+		ValueMode:               model.ValueModeUnsupported,
+	}}}
+}
+
+func newCountingIngestStore(
+	t *testing.T,
+	keychain *countingSecretRefKeychain,
+) (*Store, InstallInitialization, model.IngestBeginOutcome) {
+	t.Helper()
+	root := t.TempDir() + "/store"
+	store, err := New(root, stubRegen{}, keychain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialization, err := store.InitForInstall(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	transaction := beginPhase6Ingest(t, store, initialization)
+	keychain.resetCalls()
+	return store, initialization, transaction
+}
+
+func TestCommitIngestExistingSecretRefPassThrough(t *testing.T) {
+	keychain := &countingSecretRefKeychain{kind: model.SecretRefFile, values: map[string]string{"API_KEY": "existing-value"}}
+	store, initialization, transaction := newCountingIngestStore(t, keychain)
+	profile := persistedSecretRefProfile(model.SecretRefFile)
+	outcome, err := commitPhase6Ingest(t, store, initialization, transaction, profile)
+	if err != nil || outcome.Status != model.IngestCommitCommitted {
+		t.Fatalf("CommitIngest persisted SecretRef = (%#v, %v)", outcome, err)
+	}
+	if keychain.kindCalls != 1 || keychain.retrieveCalls != 0 || keychain.storeCalls != 0 || keychain.deleteCalls != 0 {
+		t.Fatalf("backend calls = Kind:%d Retrieve:%d Store:%d Delete:%d",
+			keychain.kindCalls, keychain.retrieveCalls, keychain.storeCalls, keychain.deleteCalls)
+	}
+	if len(outcome.Withheld) != 0 {
+		t.Fatalf("persisted SecretRef produced withheld metadata: %#v", outcome.Withheld)
+	}
+	back, err := store.Read(context.Background(), "main")
+	if err != nil || !reflect.DeepEqual(back, profile) {
+		t.Fatalf("persisted SecretRef changed: got (%#v, %v), want %#v", back, err, profile)
+	}
+}
+
+func TestCommitIngestMalformedSecretRefCallAndEffectMatrix(t *testing.T) {
+	runtimeValue := "forbidden"
+	rows := []struct {
+		name     string
+		mutate   func(*model.Entry)
+		kind     model.SecretRefKind
+		wantKind int
+		valid    bool
+	}{
+		{name: "wrong category", mutate: func(entry *model.Entry) { entry.Category = model.CatEnvironment }},
+		{name: "missing name", mutate: func(entry *model.Entry) { entry.Names = nil }},
+		{name: "multiple names", mutate: func(entry *model.Entry) { entry.Names = []string{"API_KEY", "TOKEN"} }},
+		{name: "unsupported reference kind", mutate: func(entry *model.Entry) { entry.Secret.Kind = model.SecretRefCmd }},
+		{name: "blank key", mutate: func(entry *model.Entry) { entry.Secret.Key = "" }},
+		{name: "key name mismatch", mutate: func(entry *model.Entry) { entry.Secret.Key = "TOKEN" }},
+		{name: "wrong text", mutate: func(entry *model.Entry) { entry.Text = "export API_KEY=wrong" }},
+		{name: "wrong value", mutate: func(entry *model.Entry) { entry.Value = "wrong" }},
+		{name: "wrong value mode", mutate: func(entry *model.Entry) { entry.ValueMode = model.ValueModeLiteral }},
+		{name: "runtime value", mutate: func(entry *model.Entry) { entry.RuntimeValue = &runtimeValue }},
+		{name: "dynamic", mutate: func(entry *model.Entry) { entry.Dynamic = true }},
+		{
+			name:     "backend kind mismatch",
+			mutate:   func(entry *model.Entry) { entry.Secret.Kind = model.SecretRefKeychain },
+			kind:     model.SecretRefFile,
+			wantKind: 1,
+		},
+		{name: "valid", kind: model.SecretRefFile, wantKind: 1, valid: true},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			backendKind := row.kind
+			if backendKind == "" {
+				backendKind = model.SecretRefFile
+			}
+			keychain := &countingSecretRefKeychain{kind: backendKind, values: map[string]string{"API_KEY": "existing-value"}}
+			store, initialization, transaction := newCountingIngestStore(t, keychain)
+			profile := persistedSecretRefProfile(model.SecretRefFile)
+			if row.mutate != nil {
+				row.mutate(&profile.Entries[0])
+			}
+			gitStarts := 0
+			store.git.beforeStart = func([]string) { gitStarts++ }
+			before := *transaction.Baseline.ExpectedRevision
+			outcome, err := commitPhase6Ingest(t, store, initialization, transaction, profile)
+			if row.valid {
+				if err != nil || outcome.Status != model.IngestCommitCommitted {
+					t.Fatalf("valid pass-through = (%#v, %v)", outcome, err)
+				}
+				if gitStarts == 0 {
+					t.Fatal("valid pass-through wrote no candidate")
+				}
+			} else {
+				if !errors.Is(err, ErrUnsafeSecretShape) || outcome.Status == model.IngestCommitCommitted {
+					t.Fatalf("malformed reference = (%#v, %v)", outcome, err)
+				}
+				if gitStarts != 0 {
+					t.Fatalf("malformed reference started %d Git processes", gitStarts)
+				}
+				after, readErr := store.git.revParse(context.Background(), "refs/heads/main")
+				if readErr != nil || after != before {
+					t.Fatalf("malformed reference moved ref: %q, %v; want %q", after, readErr, before)
+				}
+			}
+			if keychain.kindCalls != row.wantKind || keychain.retrieveCalls != 0 ||
+				keychain.storeCalls != 0 || keychain.deleteCalls != 0 {
+				t.Fatalf("calls = Kind:%d Retrieve:%d Store:%d Delete:%d; want Kind:%d and no data methods",
+					keychain.kindCalls, keychain.retrieveCalls, keychain.storeCalls, keychain.deleteCalls, row.wantKind)
+			}
+		})
+	}
+}
+
+func TestPrepareSecretsLiteralRedactedBeforeObjects(t *testing.T) {
+	keychain := &countingSecretRefKeychain{kind: model.SecretRefFile, values: map[string]string{}}
+	const literal = "literal-must-not-reach-objects"
+	prepared, err := prepareSecrets(buildSecretProfile(t, "export API_KEY="+literal+"\n"), keychain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prepared.pending) != 1 || len(prepared.report) != 1 ||
+		strings.Contains(prepared.profile.Entries[0].Text, literal) || strings.Contains(prepared.profile.Entries[0].Value, literal) {
+		t.Fatalf("literal was not redacted before candidate preparation: %#v", prepared)
+	}
+	if keychain.retrieveCalls != 0 || keychain.storeCalls != 0 || keychain.deleteCalls != 0 {
+		t.Fatalf("prepareSecrets touched backend data methods: %#v", keychain)
+	}
+}
+
+func TestPrepareSecretsDynamicVerbatim(t *testing.T) {
+	keychain := &countingSecretRefKeychain{kind: model.SecretRefFile, values: map[string]string{}}
+	profile := buildSecretProfile(t, "export API_KEY=$(op read reference)\n")
+	prepared, err := prepareSecrets(profile, keychain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(prepared.profile, profile) || len(prepared.pending) != 0 || len(prepared.report) != 0 {
+		t.Fatalf("dynamic secret changed: %#v", prepared)
+	}
+	if keychain.kindCalls != 0 || keychain.retrieveCalls != 0 || keychain.storeCalls != 0 || keychain.deleteCalls != 0 {
+		t.Fatalf("dynamic secret touched backend: %#v", keychain)
+	}
+}
+
+func TestLegacyCommitAdapterPreservesRequestedBranch(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	if err := store.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+	mainBefore, err := store.git.revParse(ctx, "refs/heads/main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var argv [][]string
+	store.git.beforeStart = func(args []string) { argv = append(argv, append([]string(nil), args...)) }
+	if report, err := store.Commit(ctx, "feature/exact", phase6Profile("BRANCH", "exact"), "legacy adapter"); err != nil || len(report) != 0 {
+		t.Fatalf("Commit(feature/exact) = (%#v, %v)", report, err)
+	}
+	branch, err := store.Read(ctx, "feature/exact")
+	if err != nil || !reflect.DeepEqual(branch, phase6Profile("BRANCH", "exact")) {
+		t.Fatalf("feature/exact = (%#v, %v)", branch, err)
+	}
+	mainAfter, err := store.git.revParse(ctx, "refs/heads/main")
+	if err != nil || mainAfter != mainBefore {
+		t.Fatalf("legacy branch commit changed main: %q, %v; want %q", mainAfter, err, mainBefore)
+	}
+	if got := capturedUpdateRefTransactions(argv); !reflect.DeepEqual(got, [][]string{{"update-ref", "--no-deref", "--stdin"}}) {
+		t.Fatalf("legacy update-ref argv = %#v", got)
+	}
+}
+
+type committedStateError interface {
+	error
+	Committed() bool
+}
+
+func TestLegacyCommitAdapterOutcomeMatrix(t *testing.T) {
+	t.Run("committed", func(t *testing.T) {
+		store := newTestStore(t)
+		if err := store.Init(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.Commit(context.Background(), "main", phase6Profile("MATRIX", "committed"), "matrix"); err != nil {
+			t.Fatalf("committed adapter: %v", err)
+		}
+	})
+
+	t.Run("conflict", func(t *testing.T) {
+		store := newTestStore(t)
+		ctx := context.Background()
+		if err := store.Init(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.Commit(ctx, "main", phase6Profile("MATRIX", "older"), "older"); err != nil {
+			t.Fatal(err)
+		}
+		older, err := store.git.revParse(ctx, "refs/heads/main")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.Commit(ctx, "main", phase6Profile("MATRIX", "current"), "current"); err != nil {
+			t.Fatal(err)
+		}
+		injected := false
+		store.git.beforeStart = func(args []string) {
+			if injected || !reflect.DeepEqual(args, []string{"update-ref", "--no-deref", "--stdin"}) {
+				return
+			}
+			injected = true
+			store.git.beforeStart = nil
+			if err := store.git.updateRef(ctx, "refs/heads/main", older); err != nil {
+				t.Errorf("inject concurrent ref: %v", err)
+			}
+		}
+		if report, err := store.Commit(ctx, "main", phase6Profile("MATRIX", "loser"), "loser"); !errors.Is(err, ErrSecretRefConflict) || len(report) != 0 {
+			t.Fatalf("conflict adapter = (%#v, %v)", report, err)
+		}
+	})
+
+	t.Run("clean not committed", func(t *testing.T) {
+		keychain := &countingSecretRefKeychain{kind: model.SecretRefFile, failStore: true, values: map[string]string{}}
+		store, err := New(t.TempDir()+"/store", stubRegen{}, keychain)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Init(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if report, err := store.Commit(context.Background(), "main", buildSecretProfile(t, "export API_KEY=blocked\n"), "blocked"); !errors.Is(err, ErrIngestNotCommitted) || len(report) != 0 {
+			t.Fatalf("not-committed adapter = (%#v, %v)", report, err)
+		}
+	})
+
+	t.Run("recovery committed", func(t *testing.T) {
+		store := newTestStore(t)
+		if err := store.Init(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		store.cleanupDiscardLock = true
+		report, err := store.Commit(context.Background(), "main", phase6Profile("MATRIX", "recovery"), "recovery")
+		state, ok := err.(committedStateError)
+		if !errors.Is(err, ErrIngestRecoveryRequired) || !ok || !state.Committed() || len(report) != 0 {
+			t.Fatalf("committed recovery adapter = (%#v, %v, committed=%v)", report, err, ok && state.Committed())
+		}
+	})
+
+	t.Run("recovery not committed", func(t *testing.T) {
+		store := newTestStore(t)
+		if err := store.Init(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		store.commitSyncDir = func(string) error { return errors.New("injected durability uncertainty") }
+		report, err := store.Commit(context.Background(), "main", phase6Profile("MATRIX", "uncertain"), "uncertain")
+		state, ok := err.(committedStateError)
+		if !errors.Is(err, ErrIngestRecoveryRequired) || !ok || state.Committed() || len(report) != 0 {
+			t.Fatalf("not-committed recovery adapter = (%#v, %v, committed=%v)", report, err, ok && state.Committed())
+		}
+	})
+}
+
+func TestLegacyCommitAdapterReportContainsNoValues(t *testing.T) {
+	keychain := &countingSecretRefKeychain{kind: model.SecretRefFile, values: map[string]string{}}
+	store, err := New(t.TempDir()+"/store", stubRegen{}, keychain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	const literal = "report-must-not-contain-this-value"
+	report, err := store.Commit(context.Background(), "main", buildSecretProfile(t, "export API_KEY="+literal+"\n"), "report")
+	if err != nil || len(report) != 1 || report[0].Name != "API_KEY" || report[0].StartLine != 1 {
+		t.Fatalf("legacy report = (%#v, %v)", report, err)
+	}
+	if strings.Contains(fmt.Sprint(report), literal) || strings.Contains(fmt.Sprint(err), literal) {
+		t.Fatal("legacy adapter exposed a literal secret")
+	}
+}
+
+func TestWithheldReportContainsNoValues(t *testing.T) {
+	secretType := reflect.TypeOf(model.WithheldSecret{})
+	if secretType.NumField() != 2 || secretType.Field(0).Name != "Name" || secretType.Field(1).Name != "StartLine" {
+		t.Fatalf("WithheldSecret shape can carry more than name/line: %v", secretType)
+	}
+	report := WithheldReport{{Name: "API_KEY", StartLine: 3}}
+	if fmt.Sprint(report) != "[{API_KEY 3}]" {
+		t.Fatalf("value-free report changed: %v", report)
 	}
 }
