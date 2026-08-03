@@ -3,17 +3,27 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 
 	"zsh-pro/core/cli"
+	"zsh-pro/core/dto"
 	"zsh-pro/core/model"
 	"zsh-pro/core/shell/zsh"
 	"zsh-pro/core/store"
@@ -1047,4 +1057,687 @@ func setCompositionEnvironment(t *testing.T, values map[string]string) {
 			t.Fatal(err)
 		}
 	}
+}
+
+const phase6SecretPlaceholder = "__PHASE6_LITERAL_SECRET__"
+
+type phase6BuiltFixture struct {
+	binary            string
+	home              string
+	dataHome          string
+	storeRoot         string
+	target            string
+	zshPath           string
+	secret            string
+	sourceTemplate    []byte
+	source            []byte
+	expectedInstalled []byte
+	env               []string
+	executionCanary   string
+	subprocessCounter string
+}
+
+func TestMainIngestHumanAndJSON(t *testing.T) {
+	fixture := newPhase6BuiltFixture(t)
+	human, err := fixture.run("ingest")
+	if err != nil {
+		t.Fatalf("human ingest: %v\n%s", err, human)
+	}
+	lines := strings.Split(strings.TrimSuffix(human, "\n"), "\n")
+	wantPrefixes := []string{
+		"zsh-pro: ingest complete",
+		"profile committed: yes",
+		"startup installed: yes",
+		"recovery required: no",
+		"managed entries: ",
+		"unmanaged statements: ",
+		"unmanaged source lines: ",
+		"source statements: ",
+		"accounted statements: ",
+		"withheld: PHASE6_API_TOKEN (line ",
+	}
+	if len(lines) != len(wantPrefixes) {
+		t.Fatalf("human output lines = %d, want %d: %q", len(lines), len(wantPrefixes), human)
+	}
+	for index, prefix := range wantPrefixes {
+		if !strings.HasPrefix(lines[index], prefix) {
+			t.Fatalf("human output line %d = %q, want prefix %q", index+1, lines[index], prefix)
+		}
+	}
+
+	encoded, err := fixture.run("ingest", "--json")
+	if err != nil {
+		t.Fatalf("JSON ingest: %v\n%s", err, encoded)
+	}
+	result := decodePhase6IngestResult(t, encoded)
+	if !result.OK || result.ExitCode != int(model.ExitClean) || !result.ProfileCommitted ||
+		!result.StartupInstalled || result.RecoveryRequired {
+		t.Fatalf("JSON success evidence = %#v", result)
+	}
+	if result.ManagedEntries+result.UnmanagedStatements != result.AccountedStatements ||
+		result.AccountedStatements != result.SourceStatements || result.SourceStatements == 0 {
+		t.Fatalf("JSON statement accounting = %#v", result)
+	}
+	if len(result.Withheld) != 1 || result.Withheld[0].Name != "PHASE6_API_TOKEN" ||
+		result.Withheld[0].StartLine <= 0 || len(result.Warnings) != 0 {
+		t.Fatalf("JSON withheld/warning evidence = %#v", result)
+	}
+}
+
+func TestMainIngestUsageExitTwo(t *testing.T) {
+	fixture := newPhase6BuiltFixture(t)
+	before := append([]byte(nil), fixture.source...)
+
+	human, err := fixture.run("ingest", "one", "two")
+	if got := phase6ExitCode(err); got != int(model.ExitUsageErr) {
+		t.Fatalf("human usage exit = %d, want %d; output=%q", got, model.ExitUsageErr, human)
+	}
+	if human != "usage: zsh-pro ingest [path] [--json]\n" {
+		t.Fatalf("human usage output = %q", human)
+	}
+
+	encoded, err := fixture.run("ingest", "one", "two", "--json")
+	if got := phase6ExitCode(err); got != int(model.ExitUsageErr) {
+		t.Fatalf("JSON usage exit = %d, want %d; output=%q", got, model.ExitUsageErr, encoded)
+	}
+	result := decodePhase6IngestResult(t, encoded)
+	if result.ExitCode != int(model.ExitUsageErr) || result.OK || result.ProfileCommitted ||
+		result.StartupInstalled || result.RecoveryRequired {
+		t.Fatalf("JSON usage result = %#v", result)
+	}
+	after, readErr := os.ReadFile(fixture.target)
+	if readErr != nil || !bytes.Equal(after, before) {
+		t.Fatal("usage rejection changed the startup target")
+	}
+	for _, path := range []string{fixture.storeRoot, filepath.Join(fixture.home, ".zsh-pro")} {
+		if _, statErr := os.Lstat(path); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("usage rejection created %s: %v", path, statErr)
+		}
+	}
+}
+
+func TestMainIngestExplicitSharedRoot(t *testing.T) {
+	fixture := newPhase6BuiltFixture(t)
+	shared := filepath.Join(t.TempDir(), "shared-zsh-pro")
+	fixture.env = phase6ReplaceEnv(fixture.env, map[string]string{"ZSHPRO_HOME": shared}, "XDG_DATA_HOME")
+	fixture.storeRoot = shared
+
+	encoded, err := fixture.run("ingest", fixture.target, "--json")
+	if err != nil {
+		t.Fatalf("shared-root ingest: %v\n%s", err, encoded)
+	}
+	result := decodePhase6IngestResult(t, encoded)
+	if !result.OK || !result.ProfileCommitted || !result.StartupInstalled || result.RecoveryRequired {
+		t.Fatalf("shared-root result = %#v", result)
+	}
+	if info, statErr := os.Stat(shared); statErr != nil || info.Mode().Perm() != 0o700 {
+		t.Fatalf("shared root mode = %v, err=%v; want 0700", info, statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(shared, "loader.zsh")); statErr != nil {
+		t.Fatalf("shared root lacks installed loader: %v", statErr)
+	}
+	if got := gitRef(t, shared, "refs/heads/main"); got == "" {
+		t.Fatal("shared root main ref is empty")
+	}
+}
+
+func TestMainIngestPromotesTargetExactlyOnce(t *testing.T) {
+	root := phase6RepositoryRoot(t)
+	set := token.NewFileSet()
+	file, err := parser.ParseFile(set, filepath.Join(root, "core/cli/ingest.go"), nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var targetPromotions int
+	var targetPromotion, storeCommit, targetFinalize token.Pos
+	for _, declaration := range file.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if !ok || function.Name.Name != "runIngestWithSeams" || function.Body == nil {
+			continue
+		}
+		ast.Inspect(function.Body, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			selector, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			receiver, _ := selector.X.(*ast.Ident)
+			switch {
+			case receiver != nil && receiver.Name == "targetTransaction" && selector.Sel.Name == "promote":
+				targetPromotions++
+				targetPromotion = call.Pos()
+			case selector.Sel.Name == "CommitIngest":
+				storeCommit = call.Pos()
+			case receiver != nil && receiver.Name == "targetOutcome" && selector.Sel.Name == "Finalize":
+				targetFinalize = call.Pos()
+			}
+			return true
+		})
+	}
+	if targetPromotions != 1 || targetPromotion == token.NoPos || storeCommit == token.NoPos || targetFinalize == token.NoPos ||
+		targetPromotion >= storeCommit || storeCommit >= targetFinalize {
+		t.Fatalf("ingest target transition = promotions %d positions %d/%d/%d", targetPromotions, targetPromotion, storeCommit, targetFinalize)
+	}
+
+	fixture := newPhase6BuiltFixture(t)
+	if output, runErr := fixture.run("ingest", "--json"); runErr != nil {
+		t.Fatalf("built ingest: %v\n%s", runErr, output)
+	}
+	entries, err := os.ReadDir(filepath.Join(fixture.home, ".zsh-pro-transactions"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "lock" {
+		t.Fatalf("successful ingest retained target transaction state: %v", entries)
+	}
+}
+
+func TestMainIngestExpectedInstalledAndOutsideBytes(t *testing.T) {
+	fixture := newPhase6BuiltFixture(t)
+	if output, err := fixture.run("ingest", "--json"); err != nil {
+		t.Fatalf("ingest: %v\n%s", err, output)
+	}
+	installed, err := os.ReadFile(fixture.target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(installed, fixture.expectedInstalled) {
+		t.Fatal("actual installed bytes differ from the independently authored expected template")
+	}
+	if len(installed) <= len(fixture.source) || !bytes.Equal(installed[:len(fixture.source)], fixture.source) {
+		t.Fatal("first adoption changed an outside-marker byte")
+	}
+	if bytes.Count(installed, []byte("# >>> zsh-pro >>>")) != 1 ||
+		bytes.Count(installed, []byte("# <<< zsh-pro <<<")) != 1 {
+		t.Fatal("first adoption did not install exactly one marker pair")
+	}
+}
+
+func TestMainIngestIdempotent(t *testing.T) {
+	fixture := newPhase6BuiltFixture(t)
+	if output, err := fixture.run("ingest", "--json"); err != nil {
+		t.Fatalf("first ingest: %v\n%s", err, output)
+	}
+	first, err := os.ReadFile(fixture.target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if output, err := fixture.run("ingest", "--json"); err != nil {
+		t.Fatalf("second ingest: %v\n%s", err, output)
+	}
+	second, err := os.ReadFile(fixture.target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(first, second) || bytes.Count(second, []byte("# >>> zsh-pro >>>")) != 1 ||
+		bytes.Count(second, []byte("# <<< zsh-pro <<<")) != 1 {
+		t.Fatal("unchanged second ingest was not byte-identical with one marker pair")
+	}
+}
+
+func TestMainIngestAppendWarningPreservesAndPersists(t *testing.T) {
+	fixture := newPhase6BuiltFixture(t)
+	fixture.replaceTargetFromFixture(t, "installed-with-appends.zshrc")
+	original := append([]byte(nil), fixture.source...)
+
+	encoded, err := fixture.run("ingest", fixture.target, "--json")
+	if err != nil {
+		t.Fatalf("post-END ingest: %v\n%s", err, encoded)
+	}
+	result := decodePhase6IngestResult(t, encoded)
+	if len(result.Warnings) != 1 || result.Warnings[0] != "zsh-pro: ordinary startup content remains after the managed loader block" {
+		t.Fatalf("post-END warnings = %#v", result.Warnings)
+	}
+	installed, err := os.ReadFile(fixture.target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertPhase6OutsideMarkerBytes(t, original, installed)
+	profile := fixture.readMainProfile(t)
+	if !phase6ProfileContainsName(profile, "PHASE6_APPEND_AFTER") {
+		t.Fatal("eligible post-END declaration was not persisted in the complete Profile")
+	}
+}
+
+func TestMainIngestActualInstalledStartupEquivalent(t *testing.T) {
+	fixture := newPhase6BuiltFixture(t)
+	pristine := fixture.startupSnapshot(t)
+	if output, err := fixture.run("ingest", "--json"); err != nil {
+		t.Fatalf("ingest: %v\n%s", err, output)
+	}
+	installed := fixture.startupSnapshot(t)
+	if installed != pristine {
+		t.Fatalf("actual installed startup differs from pristine startup:\npristine:\n%s\ninstalled:\n%s", pristine, installed)
+	}
+}
+
+func TestMainIngestOrderSensitiveDefinitionBeforeUse(t *testing.T) {
+	fixture := newPhase6BuiltFixture(t)
+	if output, err := fixture.run("ingest", "--json"); err != nil {
+		t.Fatalf("ingest: %v\n%s", err, output)
+	}
+	snapshot := fixture.startupSnapshot(t)
+	for _, want := range []string{
+		"order=definition,use\n",
+		"imperative=definition-before-use\n",
+		"function_result=function-ok\n",
+	} {
+		if !strings.Contains(snapshot, want) {
+			t.Fatalf("installed startup lacks order-sensitive evidence %q:\n%s", strings.TrimSpace(want), snapshot)
+		}
+	}
+}
+
+func TestMainIngestSecretBehaviorWithoutDisclosure(t *testing.T) {
+	fixture := newPhase6BuiltFixture(t)
+	encoded, err := fixture.run("ingest", "--json")
+	if err != nil {
+		t.Fatalf("ingest: %v\n%s", err, encoded)
+	}
+	if strings.Contains(encoded, fixture.secret) {
+		t.Fatal("ingest output disclosed the runtime literal")
+	}
+	snapshot := fixture.startupSnapshot(t)
+	if !strings.Contains(snapshot, "secret_equal=1\n") || strings.Contains(snapshot, fixture.secret) {
+		t.Fatal("startup did not prove secret equality without disclosure")
+	}
+	matches := phase6LiteralBearingPaths(t, fixture.secret, fixture.home, fixture.dataHome)
+	want := []string{fixture.target}
+	if fmt.Sprint(matches) != fmt.Sprint(want) {
+		t.Fatalf("literal-bearing paths = %v, want only installed target", matches)
+	}
+	for _, relative := range []string{
+		"core/cli/testdata/ingest/real.zshrc",
+		"core/cli/testdata/ingest/expected-installed.zshrc",
+	} {
+		content, readErr := os.ReadFile(filepath.Join(phase6RepositoryRoot(t), relative))
+		if readErr != nil || bytes.Contains(content, []byte(fixture.secret)) {
+			t.Fatalf("authored fixture %s contains the runtime literal or is unreadable: %v", relative, readErr)
+		}
+	}
+}
+
+func TestMainIngestAllowsOnlyExactLoaderSymbols(t *testing.T) {
+	fixture := newPhase6BuiltFixture(t)
+	pristineParameters, pristineFunctions := fixture.symbolSnapshot(t)
+	if output, err := fixture.run("ingest", "--json"); err != nil {
+		t.Fatalf("ingest: %v\n%s", err, output)
+	}
+	installedParameters, installedFunctions := fixture.symbolSnapshot(t)
+
+	wantParameters := []string{"ZP_LAST_RUNTIME_ERROR", "ZP_LAST_RUNTIME_STATUS", "ZP_RUNTIME_TIMED_OUT"}
+	wantFunctions := []string{
+		"_zp_capture_scalar", "_zp_commit_restore_scalar", "_zp_commit_undo_slots", "_zp_emit",
+		"_zp_eval_block", "_zp_has_known_active_profile", "_zp_preflight_restore_scalar",
+		"_zp_preflight_undo_slots", "_zp_prepare_eval_state", "_zp_recover_failed_target",
+		"_zp_restore_scalar", "_zp_reverse_active_profile", "_zp_run_bounded", "_zp_run_payload",
+		"_zp_run_retained_reverse", "_zp_run_transient_reverse_payload", "_zp_runtime_error",
+		"_zp_runtime_ok", "_zp_switch", "_zp_validate_block", "activate", "checkout", "deactivate",
+		"list", "status", "zp_capture_env", "zp_restore_env",
+	}
+	sort.Strings(wantParameters)
+	sort.Strings(wantFunctions)
+	if got := phase6SetDifference(installedParameters, pristineParameters); fmt.Sprint(got) != fmt.Sprint(wantParameters) {
+		t.Fatalf("loader parameter delta = %v, want exact allowlist %v", got, wantParameters)
+	}
+	if got := phase6SetDifference(installedFunctions, pristineFunctions); fmt.Sprint(got) != fmt.Sprint(wantFunctions) {
+		t.Fatalf("loader function delta = %v, want exact allowlist %v", got, wantFunctions)
+	}
+}
+
+func TestMainIngestStartupHasNoSubprocess(t *testing.T) {
+	fixture := newPhase6BuiltFixture(t)
+	if output, err := fixture.run("ingest", "--json"); err != nil {
+		t.Fatalf("ingest: %v\n%s", err, output)
+	}
+	_ = fixture.startupSnapshot(t)
+	if content, err := os.ReadFile(fixture.subprocessCounter); err == nil && len(content) != 0 {
+		t.Fatalf("actual installed startup invoked a subprocess: %q", content)
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+}
+
+func newPhase6BuiltFixture(t *testing.T) *phase6BuiltFixture {
+	t.Helper()
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("guarded ingest requires Linux or Darwin")
+	}
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not installed")
+	}
+	zshPath, err := exec.LookPath("zsh")
+	if err != nil {
+		t.Skip("zsh not installed")
+	}
+
+	root := phase6RepositoryRoot(t)
+	sourceTemplate := phase6ReadFixture(t, root, "real.zshrc")
+	expectedTemplate := phase6ReadFixture(t, root, "expected-installed.zshrc")
+	if bytes.Count(sourceTemplate, []byte(phase6SecretPlaceholder)) != 1 ||
+		bytes.Count(expectedTemplate, []byte(phase6SecretPlaceholder)) != 1 {
+		t.Fatal("authored source and expected-installed fixtures must each contain exactly one reviewed placeholder")
+	}
+	secretBytes := make([]byte, 24)
+	if _, err := rand.Read(secretBytes); err != nil {
+		t.Fatal(err)
+	}
+	secret := "phase6_token_" + hex.EncodeToString(secretBytes)
+	source := bytes.Replace(sourceTemplate, []byte(phase6SecretPlaceholder), []byte(secret), 1)
+	expected := bytes.Replace(expectedTemplate, []byte(phase6SecretPlaceholder), []byte(secret), 1)
+
+	home := t.TempDir()
+	dataHome := t.TempDir()
+	target := filepath.Join(home, ".zshrc")
+	if err := os.WriteFile(target, source, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	toolDir := t.TempDir()
+	for name, path := range map[string]string{"git": gitPath, "zsh": zshPath} {
+		if err := os.Symlink(path, filepath.Join(toolDir, name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	secretTool := "#!/bin/sh\ncase \"${1-}\" in\n  store) IFS= read -r phase6_value || :; phase6_value=; exit 0 ;;\n  clear) exit 0 ;;\n  lookup) exit 1 ;;\n  *) exit 1 ;;\nesac\n"
+	if err := os.WriteFile(filepath.Join(toolDir, "secret-tool"), []byte(secretTool), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stubDir := t.TempDir()
+	executionCanary := filepath.Join(t.TempDir(), "source-executed")
+	subprocessCounter := filepath.Join(t.TempDir(), "subprocess-count")
+	stub := "#!/bin/sh\nprintf '%s\\n' \"$0\" >>\"$PHASE6_SUBPROCESS_COUNTER\"\nexit 97\n"
+	for _, name := range []string{"awk", "bash", "cat", "curl", "date", "git", "grep", "hostname", "node", "python", "python3", "security", "sed", "secret-tool", "sh", "touch", "uname", "wget", "zsh-pro"} {
+		if err := os.WriteFile(filepath.Join(stubDir, name), []byte(stub), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	env := []string{
+		"HOME=" + home,
+		"XDG_DATA_HOME=" + dataHome,
+		"PATH=" + toolDir,
+		"LC_ALL=C",
+		"LANG=C",
+		"PHASE6_STUB_BIN=" + stubDir,
+		"PHASE6_SOURCE_EXECUTION_CANARY=" + executionCanary,
+		"PHASE6_SUBPROCESS_COUNTER=" + subprocessCounter,
+		"PHASE6_EXPECTED_SECRET=" + secret,
+		"PHASE6_DYNAMIC_SOURCE=dynamic-runtime-value",
+	}
+	return &phase6BuiltFixture{
+		binary: buildInstalledBinary(t), home: home, dataHome: dataHome,
+		storeRoot: filepath.Join(dataHome, "zsh-pro"), target: target, zshPath: zshPath,
+		secret: secret, sourceTemplate: sourceTemplate, source: source, expectedInstalled: expected,
+		env: env, executionCanary: executionCanary, subprocessCounter: subprocessCounter,
+	}
+}
+
+func phase6RepositoryRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("could not find repository root")
+		}
+		dir = parent
+	}
+}
+
+func phase6ReadFixture(t *testing.T, root, name string) []byte {
+	t.Helper()
+	content, err := os.ReadFile(filepath.Join(root, "core/cli/testdata/ingest", name))
+	if err != nil {
+		t.Fatalf("read Phase 6 fixture %s: %v", name, err)
+	}
+	return content
+}
+
+func (fixture *phase6BuiltFixture) replaceTargetFromFixture(t *testing.T, name string) {
+	t.Helper()
+	fixture.sourceTemplate = phase6ReadFixture(t, phase6RepositoryRoot(t), name)
+	fixture.source = append([]byte(nil), fixture.sourceTemplate...)
+	if err := os.WriteFile(fixture.target, fixture.source, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (fixture *phase6BuiltFixture) run(args ...string) (string, error) {
+	cmd := exec.Command(fixture.binary, args...)
+	cmd.Env = fixture.env
+	out, err := cmd.CombinedOutput()
+	if bytes.Contains(out, []byte(fixture.secret)) {
+		return "", errors.New("command output disclosed the runtime literal")
+	}
+	return string(out), err
+}
+
+func decodePhase6IngestResult(t *testing.T, encoded string) dto.IngestResult {
+	t.Helper()
+	decoder := json.NewDecoder(strings.NewReader(encoded))
+	var result dto.IngestResult
+	if err := decoder.Decode(&result); err != nil {
+		t.Fatalf("decode ingest result: %v; output=%q", err, encoded)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		t.Fatalf("ingest JSON has trailing content: %q", encoded)
+	}
+	return result
+}
+
+func phase6ExitCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode()
+	}
+	return -1
+}
+
+func phase6ReplaceEnv(env []string, values map[string]string, remove ...string) []string {
+	blocked := make(map[string]bool, len(values)+len(remove))
+	for name := range values {
+		blocked[name] = true
+	}
+	for _, name := range remove {
+		blocked[name] = true
+	}
+	result := make([]string, 0, len(env)+len(values))
+	for _, entry := range env {
+		name, _, _ := strings.Cut(entry, "=")
+		if !blocked[name] {
+			result = append(result, entry)
+		}
+	}
+	for name, value := range values {
+		result = append(result, name+"="+value)
+	}
+	return result
+}
+
+func assertPhase6OutsideMarkerBytes(t *testing.T, before, after []byte) {
+	t.Helper()
+	begin := []byte("# >>> zsh-pro >>>")
+	end := []byte("# <<< zsh-pro <<<")
+	beforeStart, afterStart := bytes.Index(before, begin), bytes.Index(after, begin)
+	beforeEnd, afterEnd := bytes.Index(before, end), bytes.Index(after, end)
+	if beforeStart < 0 || afterStart < 0 || beforeEnd < beforeStart || afterEnd < afterStart {
+		t.Fatal("marker fixture or installed target lacks one ordered marker pair")
+	}
+	if !bytes.Equal(before[:beforeStart], after[:afterStart]) ||
+		!bytes.Equal(before[beforeEnd+len(end):], after[afterEnd+len(end):]) {
+		t.Fatal("ingest changed a byte outside the exact marker region")
+	}
+}
+
+func (fixture *phase6BuiltFixture) readMainProfile(t *testing.T) model.Profile {
+	t.Helper()
+	profileStore, err := store.New(fixture.storeRoot, zsh.Provider{}, &mainDeterministicKeychain{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := profileStore.Read(context.Background(), "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return profile
+}
+
+func phase6ProfileContainsName(profile model.Profile, name string) bool {
+	for _, entry := range profile.Entries {
+		for _, candidate := range entry.Names {
+			if candidate == name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (fixture *phase6BuiltFixture) startupSnapshot(t *testing.T) string {
+	t.Helper()
+	_ = os.Remove(fixture.executionCanary)
+	_ = os.Remove(fixture.subprocessCounter)
+	script := `
+source "$1" || exit 41
+phase6_function || exit 42
+typeset phase6_secret_equal=0
+[[ "$PHASE6_API_TOKEN" == "$PHASE6_EXPECTED_SECRET" ]] && phase6_secret_equal=1
+print -r -- "first=${(qqqq)PHASE6_FIRST}"
+print -r -- "order=${(j:,:)PHASE6_ORDER_LEDGER}"
+print -r -- "imperative=${(qqqq)PHASE6_IMPERATIVE_RESULT}"
+print -r -- "opaque=${(qqqq)PHASE6_OPAQUE_RESULT}"
+print -r -- "dynamic=${(qqqq)PHASE6_DYNAMIC_TOKEN}"
+print -r -- "alias_body=${(qqqq)aliases[phase6_alias]}"
+print -r -- "function_body=${(qqqq)functions[phase6_function]}"
+print -r -- "function_result=${(qqqq)PHASE6_FUNCTION_RESULT}"
+if [[ -o hist_ignore_dups ]]; then print -r -- 'hist_ignore_dups=1'; else print -r -- 'hist_ignore_dups=0'; fi
+print -r -- "path=${(j:,:)path}"
+print -r -- "secret_equal=$phase6_secret_equal"
+`
+	cmd := exec.Command(fixture.zshPath, "-f", "-c", script, "phase6-startup", fixture.target)
+	cmd.Env = fixture.env
+	out, err := cmd.CombinedOutput()
+	if bytes.Contains(out, []byte(fixture.secret)) {
+		t.Fatal("startup output disclosed the runtime literal")
+	}
+	if err != nil {
+		t.Fatalf("zsh -f startup oracle: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(fixture.executionCanary); err != nil {
+		t.Fatalf("explicit startup oracle did not source the actual target: %v", err)
+	}
+	if content, err := os.ReadFile(fixture.subprocessCounter); err == nil && len(content) != 0 {
+		t.Fatalf("startup subprocess counter is nonzero: %q", content)
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	return string(out)
+}
+
+func (fixture *phase6BuiltFixture) symbolSnapshot(t *testing.T) ([]string, []string) {
+	t.Helper()
+	_ = os.Remove(fixture.executionCanary)
+	_ = os.Remove(fixture.subprocessCounter)
+	script := `
+typeset -ga __phase6_before_parameters __phase6_before_functions
+phase6_emit_symbol_delta() {
+  local name
+  local -a added_parameters added_functions
+  for name in ${(k)parameters}; do
+    (( ${__phase6_before_parameters[(Ie)$name]} )) || added_parameters+=("$name")
+  done
+  for name in ${(k)functions}; do
+    (( ${__phase6_before_functions[(Ie)$name]} )) || added_functions+=("$name")
+  done
+  for name in ${(on)added_parameters}; do print -r -- "P:$name"; done
+  for name in ${(on)added_functions}; do print -r -- "F:$name"; done
+}
+__phase6_before_parameters=( ${(k)parameters} )
+__phase6_before_functions=( ${(k)functions} )
+source "$1" || exit 51
+phase6_emit_symbol_delta
+`
+	cmd := exec.Command(fixture.zshPath, "-f", "-c", script, "phase6-symbols", fixture.target)
+	cmd.Env = fixture.env
+	out, err := cmd.CombinedOutput()
+	if bytes.Contains(out, []byte(fixture.secret)) {
+		t.Fatal("symbol oracle disclosed the runtime literal")
+	}
+	if err != nil {
+		t.Fatalf("zsh -f symbol oracle: %v\n%s", err, out)
+	}
+	var parameters, functions []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		switch {
+		case strings.HasPrefix(line, "P:"):
+			parameters = append(parameters, strings.TrimPrefix(line, "P:"))
+		case strings.HasPrefix(line, "F:"):
+			functions = append(functions, strings.TrimPrefix(line, "F:"))
+		case line != "":
+			t.Fatalf("unexpected symbol-oracle output %q", line)
+		}
+	}
+	sort.Strings(parameters)
+	sort.Strings(functions)
+	return parameters, functions
+}
+
+func phase6SetDifference(left, right []string) []string {
+	rightSet := make(map[string]bool, len(right))
+	for _, value := range right {
+		rightSet[value] = true
+	}
+	var difference []string
+	for _, value := range left {
+		if !rightSet[value] {
+			difference = append(difference, value)
+		}
+	}
+	sort.Strings(difference)
+	return difference
+}
+
+func phase6LiteralBearingPaths(t *testing.T, secret string, roots ...string) []string {
+	t.Helper()
+	var matches []string
+	for _, root := range roots {
+		err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			info, err := entry.Info()
+			if err != nil {
+				return err
+			}
+			if !info.Mode().IsRegular() {
+				return nil
+			}
+			content, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			if bytes.Contains(content, []byte(secret)) {
+				matches = append(matches, path)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	sort.Strings(matches)
+	return matches
 }
