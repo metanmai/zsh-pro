@@ -8,7 +8,7 @@ func atomicRenamePlatformCapability(atomicRenameMode) error {
 	return ErrAtomicRenameUnsupported
 }
 
-func atomicRenameAtWithSyscallPlatform(syscall6Fn, int, string, string, atomicRenameMode) error {
+func atomicRenameAtWithSyscallPlatform(syscall6Fn, int, string, int, string, atomicRenameMode) error {
 	return ErrAtomicRenameUnsupported
 }
 

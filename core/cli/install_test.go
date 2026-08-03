@@ -3,13 +3,18 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1485,12 +1490,942 @@ func TestPrepareIngestRepairsBalancedDuplicates(t *testing.T) {
 	}
 }
 
-// The Task 3 RED gate names every recovery and identity axis before the
-// transaction implementation lands. GREEN replaces this temporary test-only
-// contract probe with scenario-specific filesystem assertions.
 func requireTask3InstallContract(t *testing.T, contract string) {
 	t.Helper()
-	t.Fatalf("Task 3 install transaction contract is not implemented: %s", contract)
+	switch contract {
+	case "pure check and filesystem probe ordering":
+		testTask3Ordering(t)
+	case "unsupported isolation":
+		testTask3UnsupportedIsolation(t)
+	case "probe cleanup uncertainty":
+		testTask3ProbeCleanupUncertainty(t)
+	case "candidate fsync barrier":
+		testTask3PreparationBarrier(t, "candidate", false)
+	case "artifact directory fsync barrier":
+		testTask3PreparationBarrier(t, "artifact-directory", false)
+	case "prepared journal directory fsync barrier":
+		testTask3PreparationBarrier(t, "journal-directory:prepared", true)
+	case "journal transition directory fsync":
+		testTask3PromotionSyncFailure(t, "journal-directory:exchanged")
+	case "late substitution reverse":
+		testTask3LateSubstitution(t, false)
+	case "unsafe reverse refusal":
+		testTask3LateSubstitution(t, true)
+	case "late absent-target creation":
+		testTask3LateAbsentTarget(t)
+	case "post-promotion fsync uncertainty":
+		testTask3PromotionSyncFailure(t, "target-parent:forward-exchange")
+	case "existing recovery before exchange":
+		testTask3RecoveryRow(t, true, "before")
+	case "existing recovery after exchange":
+		testTask3RecoveryRow(t, true, "after-namespace")
+	case "existing recovery after journal advance":
+		testTask3RecoveryRow(t, true, "after-journal")
+	case "existing recovery after parent sync":
+		testTask3RecoveryRow(t, true, "after-parent")
+	case "absent recovery before create":
+		testTask3RecoveryRow(t, false, "before")
+	case "absent recovery after no-replace":
+		testTask3RecoveryRow(t, false, "after-namespace")
+	case "absent recovery after journal advance":
+		testTask3RecoveryRow(t, false, "after-journal")
+	case "absent recovery after parent sync":
+		testTask3RecoveryRow(t, false, "after-parent")
+	case "in-place target mutation":
+		testTask3ChangedAxis(t, true)
+	case "adapter and filesystem unsupported":
+		testTask3UnsupportedRows(t)
+	case "cross-process root lock":
+		testTask3RootLock(t)
+	case "unsafe root lock entry":
+		testTask3UnsafeLock(t)
+	case "unauthenticated cleanup refusal":
+		testTask3UnauthenticatedCleanup(t)
+	case "changed parent identity":
+		testTask3ChangedParent(t)
+	case "journal identity and digest matrix":
+		testTask3ChangedJournal(t)
+	case "requested link topology":
+		testTask3ChangedLink(t)
+	case "one exchange peer":
+		testTask3OneExchangePeer(t)
+	case "secret peer finalize cleanup":
+		testTask3SecretPeer(t, false)
+	case "secret peer recovery retention":
+		testTask3SecretPeer(t, true)
+	case "absent rollback refusal":
+		testTask3AbsentRollback(t)
+	case "changed target rollback refusal":
+		testTask3ChangedRollback(t)
+	case "mutation surface AST audit":
+		testTask3MutationSurface(t)
+	case "filesystem-first stale compensation":
+		testTask3StaleCompensation(t)
+	case "expected target axis":
+		testTask3ChangedAxis(t, true)
+	case "expected candidate axis":
+		testTask3ChangedAxis(t, false)
+	case "post-swap independent axes":
+		testTask3PostSwapAxes(t)
+	default:
+		t.Fatalf("unknown Task 3 contract %q", contract)
+	}
+}
+
+type task3InstallFixture struct {
+	home      string
+	target    string
+	original  []byte
+	prepared  preparedIngestInstall
+	candidate []byte
+}
+
+func newTask3InstallFixture(t *testing.T, existing bool, block []byte) task3InstallFixture {
+	t.Helper()
+	home := t.TempDir()
+	if err := os.Chmod(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(home, ".zshrc")
+	original := []byte("export ORIGINAL=1\n")
+	if existing {
+		if err := os.WriteFile(target, original, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if block == nil {
+		block = renderInstallBlock()
+	}
+	prepared, err := prepareIngestInstallAt(target, block)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return task3InstallFixture{
+		home: home, target: target, original: original, prepared: prepared,
+		candidate: append([]byte(nil), prepared.candidate...),
+	}
+}
+
+func prepareTask3Transaction(
+	t *testing.T,
+	existing bool,
+	seams *installTransactionSeams,
+	block []byte,
+) (task3InstallFixture, *guardedInstallTransaction) {
+	t.Helper()
+	fixture := newTask3InstallFixture(t, existing, block)
+	if err := preflightAtomicRenameTarget(fixture.target, seams); err != nil {
+		t.Fatalf("atomic preflight: %v", err)
+	}
+	transaction, err := prepareGuardedInstallTransaction(fixture.prepared, seams)
+	if err != nil {
+		t.Fatalf("prepare guarded transaction: %v", err)
+	}
+	t.Cleanup(transaction.closeHandles)
+	return fixture, transaction
+}
+
+func targetAtomicCountingSeams(counter *atomic.Int32) *installTransactionSeams {
+	return &installTransactionSeams{
+		atomicRename: func(fromFD int, from string, toFD int, to string, mode atomicRenameMode) error {
+			if to == ".zshrc" {
+				counter.Add(1)
+			}
+			return atomicRenameBetweenAt(fromFD, from, toFD, to, mode)
+		},
+	}
+}
+
+func readTask3Target(t *testing.T, path string) []byte {
+	t.Helper()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return content
+}
+
+func testTask3Ordering(t *testing.T) {
+	home := t.TempDir()
+	setInstallHome(t, home)
+	if err := os.WriteFile(filepath.Join(home, ".zshrc"), []byte("export A=1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var events []string
+	seams := &installTransactionSeams{event: func(event string) { events = append(events, event) }}
+	initializer := func(context.Context) (StoreInitialization, error) {
+		return StoreInitialization{Finalize: func() error { return nil }}, nil
+	}
+	if err := runInstallWithStoreInitializationAndSeams(staticHooker("typeset -g TASK3_ORDER=1\n"), initializer, seams); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"capability:exchange", "capability:no-replace", "probe:locked", "probe:exchange",
+		"probe:no-replace", "probe:cleanup", "initializer", "transaction:prepared", "cache", "loader", "target:namespace",
+	}
+	if strings.Join(events, ",") != strings.Join(want, ",") {
+		t.Fatalf("transaction order = %v, want %v", events, want)
+	}
+}
+
+func testTask3UnsupportedIsolation(t *testing.T) {
+	home := t.TempDir()
+	setInstallHome(t, home)
+	target := filepath.Join(home, ".zshrc")
+	original := []byte("export SAFE=1\n")
+	if err := os.WriteFile(target, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	initializerCalls := 0
+	seams := &installTransactionSeams{capabilityCheck: func(atomicRenameMode) error { return ErrAtomicRenameUnsupported }}
+	err := runInstallWithStoreInitializationAndSeams(staticHooker("typeset -g NEVER=1\n"), func(context.Context) (StoreInitialization, error) {
+		initializerCalls++
+		return StoreInitialization{}, nil
+	}, seams)
+	if !errors.Is(err, ErrAtomicRenameUnsupported) {
+		t.Fatalf("unsupported install error = %v", err)
+	}
+	if initializerCalls != 0 {
+		t.Fatalf("initializer calls = %d, want 0", initializerCalls)
+	}
+	if got := readTask3Target(t, target); !bytes.Equal(got, original) {
+		t.Fatalf("unsupported preflight changed target: %q", got)
+	}
+	if _, err := os.Lstat(filepath.Join(home, ".zsh-pro")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unsupported preflight changed cache: %v", err)
+	}
+}
+
+func testTask3ProbeCleanupUncertainty(t *testing.T) {
+	fixture := newTask3InstallFixture(t, true, nil)
+	seams := &installTransactionSeams{syncDirectory: func(file *os.File, stage string) error {
+		if stage == "probe-entries-cleaned" {
+			return errors.New("injected probe cleanup uncertainty")
+		}
+		return file.Sync()
+	}}
+	err := preflightAtomicRenameTarget(fixture.target, seams)
+	if !errors.Is(err, ErrInstallRecoveryRequired) {
+		t.Fatalf("probe cleanup error = %v, want recovery required", err)
+	}
+	entries, err := os.ReadDir(filepath.Join(fixture.home, installTransactionNamespaceName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	probeCount := 0
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "probe-") {
+			probeCount++
+		}
+	}
+	if probeCount != 1 {
+		t.Fatalf("retained private probe directories = %d, want 1", probeCount)
+	}
+	if got := readTask3Target(t, fixture.target); !bytes.Equal(got, fixture.original) {
+		t.Fatalf("probe uncertainty changed target: %q", got)
+	}
+}
+
+func testTask3PreparationBarrier(t *testing.T, failStage string, wantJournal bool) {
+	fixture := newTask3InstallFixture(t, true, nil)
+	var targetCalls atomic.Int32
+	seams := targetAtomicCountingSeams(&targetCalls)
+	seams.syncFile = func(file *os.File, stage string) error {
+		if stage == failStage {
+			return errors.New("injected file sync failure")
+		}
+		return file.Sync()
+	}
+	seams.syncDirectory = func(file *os.File, stage string) error {
+		if stage == failStage {
+			return errors.New("injected directory sync failure")
+		}
+		return file.Sync()
+	}
+	if err := preflightAtomicRenameTarget(fixture.target, seams); err != nil {
+		t.Fatal(err)
+	}
+	targetCalls.Store(0)
+	transaction, err := prepareGuardedInstallTransaction(fixture.prepared, seams)
+	if !errors.Is(err, ErrInstallRecoveryRequired) || transaction == nil {
+		t.Fatalf("preparation barrier error = %v transaction=%v", err, transaction)
+	}
+	if targetCalls.Load() != 0 {
+		t.Fatalf("target namespace calls = %d, want 0", targetCalls.Load())
+	}
+	if got := readTask3Target(t, fixture.target); !bytes.Equal(got, fixture.original) {
+		t.Fatalf("preparation barrier changed target: %q", got)
+	}
+	_, journalErr := os.Lstat(filepath.Join(transaction.retainedTransactionPath(), journalBasename))
+	if wantJournal && journalErr != nil {
+		t.Fatalf("prepared journal was not retained: %v", journalErr)
+	}
+	if !wantJournal && !errors.Is(journalErr, os.ErrNotExist) {
+		t.Fatalf("journal exists before its durability gate: %v", journalErr)
+	}
+}
+
+func testTask3PromotionSyncFailure(t *testing.T, failStage string) {
+	var targetCalls atomic.Int32
+	seams := targetAtomicCountingSeams(&targetCalls)
+	fixture, transaction := prepareTask3Transaction(t, true, seams, nil)
+	targetCalls.Store(0)
+	seams.syncDirectory = func(file *os.File, stage string) error {
+		if stage == failStage {
+			return errors.New("injected promotion sync failure")
+		}
+		return file.Sync()
+	}
+	transaction.seams = normalizedInstallTransactionSeams(seams)
+	outcome, err := transaction.promote()
+	if !errors.Is(err, ErrInstallRecoveryRequired) || !outcome.RecoveryRequired {
+		t.Fatalf("promotion sync error = %v outcome=%+v", err, outcome)
+	}
+	if targetCalls.Load() != 1 {
+		t.Fatalf("target namespace calls = %d, want 1", targetCalls.Load())
+	}
+	if _, err := os.Stat(transaction.retainedTransactionPath()); err != nil {
+		t.Fatalf("recovery evidence was not retained: %v", err)
+	}
+	if bytes.Equal(readTask3Target(t, fixture.target), fixture.original) && failStage != "journal-directory:exchanged" {
+		t.Fatal("post-exchange failure unexpectedly reported untouched bytes")
+	}
+}
+
+func testTask3LateSubstitution(t *testing.T, unsafeReverse bool) {
+	var targetCalls atomic.Int32
+	seams := targetAtomicCountingSeams(&targetCalls)
+	fixture, transaction := prepareTask3Transaction(t, true, seams, nil)
+	targetCalls.Store(0)
+	late := []byte("export LATE=1\n")
+	seams.beforeNamespace = func(*guardedInstallTransaction, atomicRenameMode) error {
+		return os.WriteFile(fixture.target, late, 0o600)
+	}
+	if unsafeReverse {
+		seams.beforeReverse = func(*guardedInstallTransaction) error {
+			return os.WriteFile(fixture.target, []byte("candidate changed after swap"), 0o600)
+		}
+	}
+	transaction.seams = normalizedInstallTransactionSeams(seams)
+	outcome, err := transaction.promote()
+	if unsafeReverse {
+		if !errors.Is(err, ErrInstallRecoveryRequired) || !outcome.RecoveryRequired {
+			t.Fatalf("unsafe reverse error = %v outcome=%+v", err, outcome)
+		}
+		if targetCalls.Load() != 1 {
+			t.Fatalf("unsafe reverse calls = %d, want only forward exchange", targetCalls.Load())
+		}
+		return
+	}
+	if !errors.Is(err, ErrInstallTargetChanged) || !outcome.Restored {
+		t.Fatalf("late substitution error = %v outcome=%+v", err, outcome)
+	}
+	if targetCalls.Load() != 2 {
+		t.Fatalf("exchange calls = %d, want forward plus guarded reverse", targetCalls.Load())
+	}
+	if got := readTask3Target(t, fixture.target); !bytes.Equal(got, late) {
+		t.Fatalf("guarded reverse lost late occupant: %q", got)
+	}
+	if err := outcome.Finalize(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func testTask3LateAbsentTarget(t *testing.T) {
+	var targetCalls atomic.Int32
+	seams := targetAtomicCountingSeams(&targetCalls)
+	fixture, transaction := prepareTask3Transaction(t, false, seams, nil)
+	targetCalls.Store(0)
+	late := []byte("late target")
+	seams.beforeNamespace = func(*guardedInstallTransaction, atomicRenameMode) error {
+		return os.WriteFile(fixture.target, late, 0o600)
+	}
+	transaction.seams = normalizedInstallTransactionSeams(seams)
+	outcome, err := transaction.promote()
+	if !errors.Is(err, ErrInstallTargetChanged) || outcome.RecoveryRequired {
+		t.Fatalf("late no-replace error = %v outcome=%+v", err, outcome)
+	}
+	if targetCalls.Load() != 1 {
+		t.Fatalf("no-replace calls = %d, want 1", targetCalls.Load())
+	}
+	if got := readTask3Target(t, fixture.target); !bytes.Equal(got, late) {
+		t.Fatalf("late target changed: %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(transaction.retainedTransactionPath(), exchangePeerBasename)); err != nil {
+		t.Fatalf("candidate peer not preserved: %v", err)
+	}
+}
+
+func testTask3RecoveryRow(t *testing.T, existing bool, stage string) {
+	seams := &installTransactionSeams{}
+	fixture, transaction := prepareTask3Transaction(t, existing, seams, nil)
+	locator := transaction.recoveryLocator()
+	if stage != "before" {
+		switch stage {
+		case "after-namespace":
+			seams.afterNamespace = func(*guardedInstallTransaction, atomicRenameMode) error {
+				return errors.New("injected crash after namespace syscall")
+			}
+		case "after-journal":
+			seams.syncDirectory = func(file *os.File, syncStage string) error {
+				if syncStage == "target-parent:forward-exchange" || syncStage == "target-parent:forward-no-replace" {
+					return errors.New("injected crash before parent sync")
+				}
+				return file.Sync()
+			}
+		case "after-parent":
+			seams.syncDirectory = func(file *os.File, syncStage string) error {
+				if syncStage == "journal-directory:parent_synced" {
+					return errors.New("injected crash after parent sync")
+				}
+				return file.Sync()
+			}
+		default:
+			t.Fatalf("unknown recovery stage %q", stage)
+		}
+		transaction.seams = normalizedInstallTransactionSeams(seams)
+		outcome, err := transaction.promote()
+		if !errors.Is(err, ErrInstallRecoveryRequired) || !outcome.RecoveryRequired {
+			t.Fatalf("crash seam %s error=%v outcome=%+v", stage, err, outcome)
+		}
+	}
+	transaction.closeHandles()
+	recovered, err := recoverGuardedInstallTransaction(locator, nil)
+	if existing {
+		if err != nil || !recovered.Restored {
+			t.Fatalf("existing recovery %s = outcome=%+v err=%v", stage, recovered, err)
+		}
+		if got := readTask3Target(t, fixture.target); !bytes.Equal(got, fixture.original) {
+			t.Fatalf("existing recovery %s target=%q", stage, got)
+		}
+		return
+	}
+	if stage == "before" {
+		if err != nil || recovered.RecoveryRequired {
+			t.Fatalf("absent pre-create recovery = outcome=%+v err=%v", recovered, err)
+		}
+		if _, statErr := os.Lstat(fixture.target); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("absent pre-create recovery created target: %v", statErr)
+		}
+		return
+	}
+	if !errors.Is(err, ErrInstallRecoveryRequired) || !recovered.RecoveryRequired {
+		t.Fatalf("absent post-create recovery %s = outcome=%+v err=%v", stage, recovered, err)
+	}
+	if got := readTask3Target(t, fixture.target); !bytes.Equal(got, fixture.candidate) {
+		t.Fatalf("absent recovery %s changed installed candidate: %q", stage, got)
+	}
+}
+
+func testTask3ChangedAxis(t *testing.T, targetAxis bool) {
+	var targetCalls atomic.Int32
+	seams := targetAtomicCountingSeams(&targetCalls)
+	fixture, transaction := prepareTask3Transaction(t, true, seams, nil)
+	targetCalls.Store(0)
+	changed := []byte("changed axis")
+	if targetAxis {
+		if err := os.WriteFile(fixture.target, changed, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	} else if err := os.WriteFile(filepath.Join(transaction.retainedTransactionPath(), exchangePeerBasename), changed, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := transaction.promote()
+	if !errors.Is(err, ErrInstallTargetChanged) || outcome.Promoted || outcome.RecoveryRequired {
+		t.Fatalf("changed axis error=%v outcome=%+v", err, outcome)
+	}
+	if targetCalls.Load() != 0 {
+		t.Fatalf("changed axis target calls=%d, want 0", targetCalls.Load())
+	}
+	if targetAxis && !bytes.Equal(readTask3Target(t, fixture.target), changed) {
+		t.Fatal("changed target axis was not preserved")
+	}
+}
+
+func testTask3UnsupportedRows(t *testing.T) {
+	for _, row := range []struct {
+		name  string
+		seams *installTransactionSeams
+	}{
+		{name: "adapter", seams: &installTransactionSeams{capabilityCheck: func(atomicRenameMode) error { return ErrAtomicRenameUnsupported }}},
+		{name: "filesystem", seams: &installTransactionSeams{atomicRename: func(int, string, int, string, atomicRenameMode) error { return ErrAtomicRenameUnsupported }}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			fixture := newTask3InstallFixture(t, true, nil)
+			err := preflightAtomicRenameTarget(fixture.target, row.seams)
+			if !errors.Is(err, ErrAtomicRenameUnsupported) {
+				t.Fatalf("unsupported row error=%v", err)
+			}
+			if got := readTask3Target(t, fixture.target); !bytes.Equal(got, fixture.original) {
+				t.Fatalf("unsupported row changed target: %q", got)
+			}
+		})
+	}
+}
+
+func testTask3RootLock(t *testing.T) {
+	firstFixture := newTask3InstallFixture(t, true, nil)
+	seams := normalizedInstallTransactionSeams(nil)
+	first, err := openTargetTransactionGuard(firstFixture.target, seams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(first.close)
+	type guardResult struct {
+		guard *targetTransactionGuard
+		err   error
+	}
+	sameRoot := make(chan guardResult, 1)
+	go func() {
+		guard, err := openTargetTransactionGuard(firstFixture.target, seams)
+		sameRoot <- guardResult{guard: guard, err: err}
+	}()
+	select {
+	case result := <-sameRoot:
+		if result.guard != nil {
+			result.guard.close()
+		}
+		t.Fatalf("same-root lock did not block: %v", result.err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	secondFixture := newTask3InstallFixture(t, true, nil)
+	differentRoot := make(chan guardResult, 1)
+	go func() {
+		guard, err := openTargetTransactionGuard(secondFixture.target, seams)
+		differentRoot <- guardResult{guard: guard, err: err}
+	}()
+	select {
+	case result := <-differentRoot:
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		result.guard.close()
+	case <-time.After(2 * time.Second):
+		t.Fatal("different-root lock was serialized")
+	}
+	first.close()
+	select {
+	case result := <-sameRoot:
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		result.guard.close()
+	case <-time.After(2 * time.Second):
+		t.Fatal("same-root waiter did not acquire after holder release")
+	}
+}
+
+func testTask3UnsafeLock(t *testing.T) {
+	for _, row := range []string{"symlink", "wrong-mode", "nonregular"} {
+		t.Run(row, func(t *testing.T) {
+			fixture := newTask3InstallFixture(t, true, nil)
+			namespace := filepath.Join(fixture.home, installTransactionNamespaceName)
+			if err := os.Mkdir(namespace, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			lock := filepath.Join(namespace, installTransactionLockName)
+			switch row {
+			case "symlink":
+				if err := os.Symlink(fixture.target, lock); err != nil {
+					t.Fatal(err)
+				}
+			case "wrong-mode":
+				if err := os.WriteFile(lock, nil, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			case "nonregular":
+				if err := os.Mkdir(lock, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := preflightAtomicRenameTarget(fixture.target, nil); err == nil {
+				t.Fatal("unsafe lock entry was accepted")
+			}
+			if got := readTask3Target(t, fixture.target); !bytes.Equal(got, fixture.original) {
+				t.Fatalf("unsafe lock changed target: %q", got)
+			}
+		})
+	}
+}
+
+func testTask3UnauthenticatedCleanup(t *testing.T) {
+	_, transaction := prepareTask3Transaction(t, true, nil, nil)
+	evidencePath := filepath.Join(transaction.retainedTransactionPath(), candidateEvidenceBasename)
+	if err := os.Remove(evidencePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(evidencePath, []byte("attacker replacement"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := transaction.finalize(); !errors.Is(err, ErrInstallRecoveryRequired) {
+		t.Fatalf("unauthenticated cleanup error=%v", err)
+	}
+	if got, err := os.ReadFile(evidencePath); err != nil || string(got) != "attacker replacement" {
+		t.Fatalf("unauthenticated replacement was removed: bytes=%q err=%v", got, err)
+	}
+}
+
+func testTask3ChangedParent(t *testing.T) {
+	_, transaction := prepareTask3Transaction(t, true, nil, nil)
+	originalParent := transaction.guard.parentPath
+	movedParent := originalParent + "-moved"
+	if err := os.Rename(originalParent, movedParent); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(originalParent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := transaction.promote()
+	if !errors.Is(err, ErrInstallRecoveryRequired) || !outcome.RecoveryRequired {
+		t.Fatalf("changed parent error=%v outcome=%+v", err, outcome)
+	}
+}
+
+func testTask3ChangedJournal(t *testing.T) {
+	rows := []struct {
+		name   string
+		mutate func(*testing.T, *guardedInstallTransaction, string)
+	}{
+		{name: "descriptor identity", mutate: func(t *testing.T, _ *guardedInstallTransaction, path string) {
+			content, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, content, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "mode", mutate: func(t *testing.T, _ *guardedInstallTransaction, path string) {
+			if err := os.Chmod(path, 0o640); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "uid evidence", mutate: func(_ *testing.T, transaction *guardedInstallTransaction, _ string) { transaction.journalFile.UID++ }},
+		{name: "gid evidence", mutate: func(_ *testing.T, transaction *guardedInstallTransaction, _ string) { transaction.journalFile.GID++ }},
+		{name: "digest", mutate: func(t *testing.T, _ *guardedInstallTransaction, path string) {
+			if err := os.WriteFile(path, []byte("{}"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "schema", mutate: func(t *testing.T, _ *guardedInstallTransaction, path string) {
+			mutateTask3Journal(t, path, func(journal *installPromotionJournal) { journal.Schema++ })
+		}},
+		{name: "transaction id", mutate: func(t *testing.T, _ *guardedInstallTransaction, path string) {
+			mutateTask3Journal(t, path, func(journal *installPromotionJournal) { journal.TransactionID = "changed" })
+		}},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			_, transaction := prepareTask3Transaction(t, true, nil, nil)
+			journalPath := filepath.Join(transaction.retainedTransactionPath(), journalBasename)
+			row.mutate(t, transaction, journalPath)
+			outcome, err := transaction.promote()
+			if !errors.Is(err, ErrInstallRecoveryRequired) || !outcome.RecoveryRequired {
+				t.Fatalf("changed journal row error=%v outcome=%+v", err, outcome)
+			}
+		})
+	}
+}
+
+func mutateTask3Journal(t *testing.T, path string, mutate func(*installPromotionJournal)) {
+	t.Helper()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal, err := decodeInstallPromotionJournal(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutate(&journal)
+	content, err = json.Marshal(journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func testTask3ChangedLink(t *testing.T) {
+	fixture, transaction := prepareTask3Transaction(t, true, nil, nil)
+	backing := filepath.Join(fixture.home, "backing")
+	if err := os.Rename(fixture.target, backing); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Base(backing), fixture.target); err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := transaction.promote()
+	if !errors.Is(err, ErrInstallRecoveryRequired) || !outcome.RecoveryRequired {
+		t.Fatalf("changed link error=%v outcome=%+v", err, outcome)
+	}
+}
+
+func testTask3OneExchangePeer(t *testing.T) {
+	seams := &installTransactionSeams{}
+	fixture, transaction := prepareTask3Transaction(t, true, seams, nil)
+	assertTask3ArtifactNames(t, transaction.retainedTransactionPath())
+	late := []byte("late occupant")
+	seams.beforeNamespace = func(*guardedInstallTransaction, atomicRenameMode) error {
+		return os.WriteFile(fixture.target, late, 0o600)
+	}
+	transaction.seams = normalizedInstallTransactionSeams(seams)
+	outcome, err := transaction.promote()
+	if !errors.Is(err, ErrInstallTargetChanged) || !outcome.Restored {
+		t.Fatalf("one-peer reverse error=%v outcome=%+v", err, outcome)
+	}
+	assertTask3ArtifactNames(t, transaction.retainedTransactionPath())
+	peer := readTask3Target(t, filepath.Join(transaction.retainedTransactionPath(), exchangePeerBasename))
+	if !bytes.Equal(peer, fixture.candidate) {
+		t.Fatalf("same peer does not hold candidate after reverse: %q", peer)
+	}
+	if err := outcome.Finalize(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertTask3ArtifactNames(t *testing.T, path string) {
+	t.Helper()
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	want := []string{candidateEvidenceBasename, exchangePeerBasename, journalBasename}
+	if strings.Join(names, ",") != strings.Join(want, ",") {
+		t.Fatalf("transaction artifacts=%v, want %v", names, want)
+	}
+}
+
+func testTask3SecretPeer(t *testing.T, recovery bool) {
+	canary := "TASK3_LITERAL_CANARY_65c7b6"
+	fixture := newTask3InstallFixture(t, true, nil)
+	fixture.original = []byte("export TOKEN='" + canary + "'\n")
+	if err := os.WriteFile(fixture.target, fixture.original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := prepareIngestInstallAt(fixture.target, renderInstallBlock())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.prepared = prepared
+	fixture.candidate = append([]byte(nil), prepared.candidate...)
+	seams := &installTransactionSeams{}
+	if err := preflightAtomicRenameTarget(fixture.target, seams); err != nil {
+		t.Fatal(err)
+	}
+	transaction, err := prepareGuardedInstallTransaction(prepared, seams)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(transaction.closeHandles)
+	if got := task3CanaryArtifactMatches(t, transaction.retainedTransactionPath(), canary); strings.Join(got, ",") != exchangePeerBasename {
+		t.Fatalf("pre-promotion canary artifacts=%v, want only peer", got)
+	}
+	if recovery {
+		seams.syncDirectory = func(file *os.File, stage string) error {
+			if stage == "target-parent:forward-exchange" {
+				return errors.New("injected secret recovery")
+			}
+			return file.Sync()
+		}
+		transaction.seams = normalizedInstallTransactionSeams(seams)
+		outcome, err := transaction.promote()
+		if !errors.Is(err, ErrInstallRecoveryRequired) || !outcome.RecoveryRequired {
+			t.Fatalf("secret recovery error=%v outcome=%+v", err, outcome)
+		}
+		if strings.Contains(err.Error(), canary) {
+			t.Fatal("recovery error disclosed literal")
+		}
+		if got := task3CanaryArtifactMatches(t, transaction.retainedTransactionPath(), canary); strings.Join(got, ",") != exchangePeerBasename {
+			t.Fatalf("recovery canary artifacts=%v, want only peer", got)
+		}
+		return
+	}
+	outcome, err := transaction.promote()
+	if err != nil {
+		t.Fatal(err)
+	}
+	transactionPath := transaction.retainedTransactionPath()
+	if err := outcome.Finalize(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(transactionPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("finalize retained transaction artifacts: %v", err)
+	}
+}
+
+func task3CanaryArtifactMatches(t *testing.T, transactionPath, canary string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(transactionPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var matches []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		content, err := os.ReadFile(filepath.Join(transactionPath, entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Contains(content, []byte(canary)) {
+			matches = append(matches, entry.Name())
+		}
+	}
+	return matches
+}
+
+func testTask3AbsentRollback(t *testing.T) {
+	fixture, transaction := prepareTask3Transaction(t, false, nil, nil)
+	outcome, err := transaction.promote()
+	if err != nil || !outcome.Promoted {
+		t.Fatalf("absent promotion error=%v outcome=%+v", err, outcome)
+	}
+	if err := outcome.Rollback(); !errors.Is(err, ErrInstallRecoveryRequired) {
+		t.Fatalf("absent rollback error=%v, want recovery required", err)
+	}
+	if got := readTask3Target(t, fixture.target); !bytes.Equal(got, fixture.candidate) {
+		t.Fatalf("absent rollback removed candidate: %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(transaction.retainedTransactionPath(), journalBasename)); err != nil {
+		t.Fatalf("absent rollback did not retain journal: %v", err)
+	}
+}
+
+func testTask3ChangedRollback(t *testing.T) {
+	fixture, transaction := prepareTask3Transaction(t, true, nil, nil)
+	outcome, err := transaction.promote()
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := []byte("target changed after promotion")
+	if err := os.WriteFile(fixture.target, changed, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := outcome.Rollback(); !errors.Is(err, ErrInstallRecoveryRequired) {
+		t.Fatalf("changed rollback error=%v", err)
+	}
+	if got := readTask3Target(t, fixture.target); !bytes.Equal(got, changed) {
+		t.Fatalf("changed rollback destroyed external bytes: %q", got)
+	}
+}
+
+func testTask3MutationSurface(t *testing.T) {
+	root := repositoryRoot(t)
+	for _, relative := range []string{"core/cli/install.go", "core/cli/install_transaction.go"} {
+		path := filepath.Join(root, relative)
+		set := token.NewFileSet()
+		file, err := parser.ParseFile(set, path, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, declaration := range file.Decls {
+			function, ok := declaration.(*ast.FuncDecl)
+			if !ok || function.Body == nil || function.Name.Name == "mutateInstallNamespace" {
+				continue
+			}
+			ast.Inspect(function.Body, func(node ast.Node) bool {
+				call, ok := node.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				forbidden := map[string]bool{
+					"Rename": true, "Remove": true, "RemoveAll": true, "Link": true, "Linkat": true,
+					"Symlink": true, "Mkdir": true, "MkdirAll": true, "CreateTemp": true,
+					"atomicRenameAt": true, "atomicRenameBetweenAt": true,
+				}
+				name := ""
+				switch called := call.Fun.(type) {
+				case *ast.Ident:
+					name = called.Name
+				case *ast.SelectorExpr:
+					name = called.Sel.Name
+				}
+				if forbidden[name] {
+					t.Errorf("%s contains direct namespace mutation %s at %s", relative, name, set.Position(call.Pos()))
+				}
+				return true
+			})
+		}
+	}
+}
+
+func testTask3StaleCompensation(t *testing.T) {
+	home := t.TempDir()
+	setInstallHome(t, home)
+	target := filepath.Join(home, ".zshrc")
+	original := []byte("export ORIGINAL=1\n")
+	if err := os.WriteFile(target, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cache := filepath.Join(home, ".zsh-pro")
+	if err := os.Mkdir(cache, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	oldLoader := []byte("typeset -g OLD_LOADER=1\n")
+	if err := os.WriteFile(filepath.Join(cache, cacheLoaderName), oldLoader, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	late := []byte("export EXTERNAL=1\n")
+	rollbackCalls := 0
+	finalizeCalls := 0
+	err := runInstallWithStoreInitialization(callbackHooker{
+		script: "typeset -g NEW_LOADER=1\n",
+		before: func() {
+			if writeErr := os.WriteFile(target, late, 0o600); writeErr != nil {
+				t.Error(writeErr)
+			}
+		},
+	}, func(context.Context) (StoreInitialization, error) {
+		return StoreInitialization{
+			Rollback: func() error { rollbackCalls++; return nil },
+			Finalize: func() error { finalizeCalls++; return nil },
+		}, nil
+	})
+	if !errors.Is(err, ErrInstallTargetChanged) {
+		t.Fatalf("stale install error=%v", err)
+	}
+	if got := readTask3Target(t, target); !bytes.Equal(got, late) {
+		t.Fatalf("stale compensation changed external target: %q", got)
+	}
+	if got := readTask3Target(t, filepath.Join(cache, cacheLoaderName)); !bytes.Equal(got, oldLoader) {
+		t.Fatalf("stale compensation did not restore loader: %q", got)
+	}
+	if rollbackCalls != 1 || finalizeCalls != 0 {
+		t.Fatalf("initializer rollback/finalize=%d/%d, want 1/0", rollbackCalls, finalizeCalls)
+	}
+}
+
+func testTask3PostSwapAxes(t *testing.T) {
+	fixture, transaction := prepareTask3Transaction(t, true, nil, nil)
+	outcome, err := transaction.promote()
+	if err != nil || !outcome.Promoted || transaction.journal.DisplacedObserved == nil {
+		t.Fatalf("post-swap outcome=%+v err=%v", outcome, err)
+	}
+	targetEvidence, exists, err := captureInstallTargetEvidence(transaction.guard.parentRoot, transaction.guard.targetName)
+	if err != nil || !exists || !transaction.expectedCandidate.authenticatedEqual(targetEvidence) {
+		t.Fatalf("target is not expectedCandidate: evidence=%+v err=%v", targetEvidence, err)
+	}
+	peerEvidence, _, err := captureInstallFileEvidence(transaction.transactionRoot, exchangePeerBasename)
+	if err != nil || !transaction.journal.DisplacedObserved.authenticatedEqual(peerEvidence) ||
+		!evidenceMatchesSnapshot(peerEvidence, transaction.expectedTarget) {
+		t.Fatalf("peer is not displacedObserved/expectedTarget: evidence=%+v err=%v", peerEvidence, err)
+	}
+	if !bytes.Equal(readTask3Target(t, fixture.target), fixture.candidate) {
+		t.Fatal("post-swap target bytes are not the candidate")
+	}
+	if err := outcome.Rollback(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestAtomicRenameFilesystemProbePrecedesInitializerAndEffects(t *testing.T) {

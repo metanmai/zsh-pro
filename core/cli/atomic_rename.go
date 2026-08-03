@@ -33,10 +33,30 @@ func atomicRenameAt(dirFD int, from, to string, mode atomicRenameMode) error {
 }
 
 func atomicRenameAtWithSyscall(call syscall6Fn, dirFD int, from, to string, mode atomicRenameMode) error {
+	return atomicRenameBetweenAtWithSyscall(call, dirFD, from, dirFD, to, mode)
+}
+
+// atomicRenameBetweenAt performs the same audited operation across two
+// retained directory descriptors. atomicRenameAt remains the sibling wrapper
+// used by direct adapter tests; guarded install promotion needs this form
+// because its secret-bearing exchange peer lives in a private transaction
+// directory rather than beside the user-visible target.
+func atomicRenameBetweenAt(fromDirFD int, from string, toDirFD int, to string, mode atomicRenameMode) error {
+	return atomicRenameBetweenAtWithSyscall(syscall.Syscall6, fromDirFD, from, toDirFD, to, mode)
+}
+
+func atomicRenameBetweenAtWithSyscall(
+	call syscall6Fn,
+	fromDirFD int,
+	from string,
+	toDirFD int,
+	to string,
+	mode atomicRenameMode,
+) error {
 	if call == nil {
 		return errors.New("atomic rename syscall is unavailable")
 	}
-	if dirFD < 0 {
+	if fromDirFD < 0 || toDirFD < 0 {
 		return errors.New("atomic rename directory descriptor is invalid")
 	}
 	if err := validateAtomicRenameBasename(from); err != nil {
@@ -51,7 +71,7 @@ func atomicRenameAtWithSyscall(call syscall6Fn, dirFD int, from, to string, mode
 	if err := atomicRenameCapabilityCheck(mode); err != nil {
 		return err
 	}
-	return atomicRenameAtWithSyscallPlatform(call, dirFD, from, to, mode)
+	return atomicRenameAtWithSyscallPlatform(call, fromDirFD, from, toDirFD, to, mode)
 }
 
 func validAtomicRenameMode(mode atomicRenameMode) bool {

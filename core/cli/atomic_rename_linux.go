@@ -41,7 +41,14 @@ func atomicRenamePlatformCapability(mode atomicRenameMode) error {
 	return nil
 }
 
-func atomicRenameAtWithSyscallPlatform(call syscall6Fn, dirFD int, from, to string, mode atomicRenameMode) error {
+func atomicRenameAtWithSyscallPlatform(
+	call syscall6Fn,
+	fromDirFD int,
+	from string,
+	toDirFD int,
+	to string,
+	mode atomicRenameMode,
+) error {
 	trap, ok := linuxRenameat2TrapByArch[runtime.GOARCH]
 	if !ok {
 		return ErrAtomicRenameUnsupported
@@ -58,7 +65,7 @@ func atomicRenameAtWithSyscallPlatform(call syscall6Fn, dirFD int, from, to stri
 	if mode == atomicRenameNoReplace {
 		flag = linuxRenameNoReplaceFlag
 	}
-	_, _, errno := call(trap, uintptr(dirFD), uintptr(unsafe.Pointer(fromPointer)), uintptr(dirFD), uintptr(unsafe.Pointer(toPointer)), flag, 0)
+	_, _, errno := call(trap, uintptr(fromDirFD), uintptr(unsafe.Pointer(fromPointer)), uintptr(toDirFD), uintptr(unsafe.Pointer(toPointer)), flag, 0)
 	runtime.KeepAlive(fromPointer)
 	runtime.KeepAlive(toPointer)
 	return classifyAtomicRenameErrno(errno)

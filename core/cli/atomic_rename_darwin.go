@@ -22,7 +22,14 @@ func atomicRenamePlatformCapability(mode atomicRenameMode) error {
 	return nil
 }
 
-func atomicRenameAtWithSyscallPlatform(call syscall6Fn, dirFD int, from, to string, mode atomicRenameMode) error {
+func atomicRenameAtWithSyscallPlatform(
+	call syscall6Fn,
+	fromDirFD int,
+	from string,
+	toDirFD int,
+	to string,
+	mode atomicRenameMode,
+) error {
 	fromPointer, err := syscall.BytePtrFromString(from)
 	if err != nil {
 		return err
@@ -35,7 +42,7 @@ func atomicRenameAtWithSyscallPlatform(call syscall6Fn, dirFD int, from, to stri
 	if mode == atomicRenameNoReplace {
 		flag = darwinRenameExclusiveFlag
 	}
-	_, _, errno := call(darwinRenameatxNPTrap, uintptr(dirFD), uintptr(unsafe.Pointer(fromPointer)), uintptr(dirFD), uintptr(unsafe.Pointer(toPointer)), flag, 0)
+	_, _, errno := call(darwinRenameatxNPTrap, uintptr(fromDirFD), uintptr(unsafe.Pointer(fromPointer)), uintptr(toDirFD), uintptr(unsafe.Pointer(toPointer)), flag, 0)
 	return classifyAtomicRenameErrno(errno)
 }
 
