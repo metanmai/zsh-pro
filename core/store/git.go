@@ -6,7 +6,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"time"
+
+	"zsh-pro/core/model"
 )
 
 // emptyTreeSHA is git's well-known empty-tree object id (`git hash-object -t tree
@@ -33,12 +37,168 @@ type gitRunner struct {
 	// directory preserves the authenticated object even if its old pathname is
 	// replaced meanwhile.
 	runtimeRoot *os.File
+
+	// Candidate runners use a transaction-private index and object directory.
+	// The alternate object directory is always the authenticated bare store's
+	// object database, never an inherited GIT_* setting.
+	privateIndexFile       string
+	privateObjectDirectory string
+	privateAlternateObject string
 }
 
-func (g gitRunner) ownedEnvironment() []string { return os.Environ() }
+// ownedEnvironment is the complete Git environment owned by zsh-pro. It starts
+// from the process environment only after removing every GIT_* variable: Git
+// treats several of those variables as higher precedence than command-line
+// repository selection, so carrying one through could redirect a supposedly
+// bare-store operation into a caller-controlled worktree or object database.
+func (g gitRunner) ownedEnvironment() []string {
+	environment := make([]string, 0, len(os.Environ())+6)
+	for _, entry := range os.Environ() {
+		name, _, ok := strings.Cut(entry, "=")
+		if ok && strings.HasPrefix(name, "GIT_") {
+			continue
+		}
+		environment = append(environment, entry)
+	}
+	gitDir := g.repoDir
+	if g.runtimeRoot != nil {
+		// command anchors the child in its authenticated descriptor and GIT_DIR
+		// stays relative to that descriptor. No source path is re-opened.
+		gitDir = "."
+	}
+	environment = append(environment,
+		"GIT_DIR="+gitDir,
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_GLOBAL="+os.DevNull,
+	)
+	if g.privateIndexFile != "" {
+		environment = append(environment, "GIT_INDEX_FILE="+g.privateIndexFile)
+	}
+	if g.privateObjectDirectory != "" {
+		environment = append(environment, "GIT_OBJECT_DIRECTORY="+g.privateObjectDirectory)
+	}
+	if g.privateAlternateObject != "" {
+		environment = append(environment, "GIT_ALTERNATE_OBJECT_DIRECTORIES="+g.privateAlternateObject)
+	}
+	return environment
+}
+
+// withPrivateQuarantine returns a copy of g whose writes are isolated to a
+// transaction-owned index and object directory. The source object directory is
+// available read-only to Git through a controlled alternate, so candidates can
+// read their baseline without mutating the real bare store.
+func (g gitRunner) candidate(indexFile, objectDirectory string) gitRunner {
+	candidate := g
+	candidate.privateIndexFile = indexFile
+	candidate.privateObjectDirectory = objectDirectory
+	if g.runtimeRoot == nil {
+		candidate.privateAlternateObject = filepath.Join(g.repoDir, "objects")
+	} else {
+		candidate.privateAlternateObject = "objects"
+	}
+	return candidate
+}
 
 func validateGitArgv(args []string) error {
-	_ = args
+	if len(args) == 0 {
+		return ErrGitCommand
+	}
+	for _, arg := range args {
+		// These are global options, not plumbing arguments. Reject them even
+		// for an otherwise allow-listed subcommand, before a process can start.
+		if arg == "-C" || arg == "-c" || arg == "--git-dir" || arg == "--work-tree" ||
+			arg == "--config-env" || strings.HasPrefix(arg, "--git-dir=") ||
+			strings.HasPrefix(arg, "--work-tree=") || strings.HasPrefix(arg, "--config-env=") {
+			return ErrGitCommand
+		}
+	}
+
+	validAtom := func(value string) bool {
+		return value != "" && !strings.HasPrefix(value, "-") && !strings.ContainsRune(value, '\x00')
+	}
+	allAtoms := func(values []string) bool {
+		for _, value := range values {
+			if !validAtom(value) {
+				return false
+			}
+		}
+		return true
+	}
+
+	switch args[0] {
+	case "init":
+		return validInitArgv(args)
+	case "rev-parse":
+		if len(args) == 2 && (args[1] == "--is-bare-repository" || validAtom(args[1])) {
+			return nil
+		}
+	case "cat-file":
+		if len(args) == 3 && args[1] == "-e" && validAtom(args[2]) {
+			return nil
+		}
+	case "show":
+		if len(args) == 2 && validAtom(args[1]) {
+			return nil
+		}
+	case "for-each-ref":
+		if len(args) == 3 && strings.HasPrefix(args[1], "--format=") && validAtom(args[2]) {
+			return nil
+		}
+	case "hash-object":
+		if len(args) == 3 && args[1] == "-w" && args[2] == "--stdin" {
+			return nil
+		}
+	case "update-ref":
+		if len(args) == 4 && args[1] == "-d" && allAtoms(args[2:]) {
+			return nil
+		}
+		if (len(args) == 3 || len(args) == 4) && allAtoms(args[1:]) {
+			return nil
+		}
+	case "read-tree":
+		if len(args) == 2 && (args[1] == "--empty" || validAtom(args[1])) {
+			return nil
+		}
+	case "update-index":
+		if len(args) == 4 && args[1] == "--add" && args[2] == "--cacheinfo" &&
+			strings.HasPrefix(args[3], "100644,") && !strings.ContainsRune(args[3], '\x00') {
+			return nil
+		}
+	case "write-tree":
+		if len(args) == 1 {
+			return nil
+		}
+	case "commit-tree":
+		if len(args) >= 4 && validAtom(args[1]) {
+			for index := 2; index < len(args); {
+				switch args[index] {
+				case "-m", "-p":
+					if index+1 >= len(args) || !validAtom(args[index+1]) {
+						return ErrGitCommand
+					}
+					index += 2
+				default:
+					return ErrGitCommand
+				}
+			}
+			return nil
+		}
+	case "ls-tree":
+		if len(args) == 5 && args[1] == "-z" && validAtom(args[2]) && args[3] == "--" && args[4] == "profile.json" {
+			return nil
+		}
+	case "show-ref":
+		if len(args) == 4 && args[1] == "--verify" && args[2] == "--hash" && validAtom(args[3]) {
+			return nil
+		}
+	}
+	return ErrGitCommand
+}
+
+func validInitArgv(args []string) error {
+	if len(args) != 4 || args[1] != "--bare" || args[2] != "-b" || args[3] != "main" {
+		return ErrGitCommand
+	}
 	return nil
 }
 
@@ -49,7 +209,11 @@ func newGitRunner(dir string) (gitRunner, error) {
 	if _, err := exec.LookPath("git"); err != nil {
 		return gitRunner{}, ErrGitAbsent
 	}
-	return gitRunner{repoDir: dir}, nil
+	canonical, err := filepath.Abs(filepath.Clean(dir))
+	if err != nil {
+		return gitRunner{}, ErrGitCommand
+	}
+	return gitRunner{repoDir: canonical}, nil
 }
 
 // newRuntimeGitRunner anchors all git operations to root rather than a path.
@@ -66,14 +230,43 @@ func newRuntimeGitRunner(root *os.File) (gitRunner, error) {
 	return gitRunner{repoDir: ".", runtimeRoot: root}, nil
 }
 
-func (g gitRunner) command(ctx context.Context, args ...string) *exec.Cmd {
-	if g.runtimeRoot == nil {
-		return exec.CommandContext(ctx, "git", append([]string{"-C", g.repoDir}, args...)...)
+func (g gitRunner) command(ctx context.Context, args ...string) (*exec.Cmd, error) {
+	if err := validateGitArgv(args); err != nil {
+		return nil, err
 	}
-	cmd := exec.CommandContext(ctx, "git", append([]string{"--git-dir=."}, args...)...)
+	if g.runtimeRoot == nil {
+		cmd := exec.CommandContext(ctx, "git", args...)
+		cmd.Env = g.ownedEnvironment()
+		return cmd, nil
+	}
+	cmd := exec.CommandContext(ctx, "git", args...)
+	// os/exec changes directory before the ExtraFiles descriptors are installed
+	// at their child numbers. Use the already-authenticated parent descriptor for
+	// that pre-exec chdir, then retain the same object as child fd 3 for Git's
+	// lifetime. No mutable source pathname is reopened.
 	cmd.Dir = fmt.Sprintf("/dev/fd/%d", g.runtimeRoot.Fd())
 	cmd.ExtraFiles = []*os.File{g.runtimeRoot}
-	return cmd
+	cmd.Env = g.ownedEnvironment()
+	return cmd, nil
+}
+
+func (g gitRunner) runRaw(ctx context.Context, stdin []byte, args ...string) ([]byte, string, error) {
+	cmd, err := g.command(ctx, args...)
+	if err != nil {
+		return nil, "", err
+	}
+	if stdin != nil {
+		cmd.Stdin = bytes.NewReader(stdin)
+	}
+	var out, errb bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &errb
+	if g.beforeStart != nil {
+		g.beforeStart(args)
+	}
+	if err := cmd.Run(); err != nil {
+		return nil, errb.String(), err
+	}
+	return out.Bytes(), errb.String(), nil
 }
 
 // run executes `git -C <repoDir> <args...>` with a timeout, returning stdout on
@@ -84,13 +277,11 @@ func (g gitRunner) run(ctx context.Context, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, gitTimeout)
 	defer cancel()
 
-	cmd := g.command(ctx, args...)
-	var out, errb bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &out, &errb
-	if err := cmd.Run(); err != nil {
-		return nil, mapGitError(err, errb.String())
+	out, errb, err := g.runRaw(ctx, nil, args...)
+	if err != nil {
+		return nil, mapGitError(err, errb)
 	}
-	return out.Bytes(), nil
+	return out, nil
 }
 
 // runStdin is run with content piped to git's stdin (needed for
@@ -99,14 +290,11 @@ func (g gitRunner) runStdin(ctx context.Context, stdin []byte, args ...string) (
 	ctx, cancel := context.WithTimeout(ctx, gitTimeout)
 	defer cancel()
 
-	cmd := g.command(ctx, args...)
-	cmd.Stdin = bytes.NewReader(stdin)
-	var out, errb bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &out, &errb
-	if err := cmd.Run(); err != nil {
-		return nil, mapGitError(err, errb.String())
+	out, errb, err := g.runRaw(ctx, stdin, args...)
+	if err != nil {
+		return nil, mapGitError(err, errb)
 	}
-	return out.Bytes(), nil
+	return out, nil
 }
 
 // runCommit runs git with a deterministic commit environment so commit SHAs are
@@ -118,13 +306,11 @@ func (g gitRunner) runCommit(ctx context.Context, tmpIndex, ts string, args ...s
 	ctx, cancel := context.WithTimeout(ctx, gitTimeout)
 	defer cancel()
 
-	cmd := g.command(ctx, args...)
-	gitDir := g.repoDir
-	if g.runtimeRoot != nil {
-		gitDir = "."
+	cmd, err := g.command(ctx, args...)
+	if err != nil {
+		return nil, mapGitError(err, "")
 	}
-	cmd.Env = append(os.Environ(),
-		"GIT_DIR="+gitDir,
+	cmd.Env = replaceGitEnvironment(cmd.Env,
 		"GIT_INDEX_FILE="+tmpIndex,
 		"GIT_AUTHOR_NAME=zsh-pro",
 		"GIT_AUTHOR_EMAIL=zsh-pro@local",
@@ -135,10 +321,39 @@ func (g gitRunner) runCommit(ctx context.Context, tmpIndex, ts string, args ...s
 	)
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
+	if g.beforeStart != nil {
+		g.beforeStart(args)
+	}
 	if err := cmd.Run(); err != nil {
 		return nil, mapGitError(err, errb.String())
 	}
 	return out.Bytes(), nil
+}
+
+// replaceGitEnvironment replaces owned GIT values rather than appending a
+// duplicate assignment. exec accepts duplicates but their resolution varies by
+// consumer, which would undermine the transaction-private index guarantee.
+func replaceGitEnvironment(environment []string, replacements ...string) []string {
+	result := make([]string, 0, len(environment)+len(replacements))
+	for _, entry := range environment {
+		name, _, ok := strings.Cut(entry, "=")
+		if !ok {
+			result = append(result, entry)
+			continue
+		}
+		replaced := false
+		for _, replacement := range replacements {
+			replacementName, _, _ := strings.Cut(replacement, "=")
+			if name == replacementName {
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			result = append(result, entry)
+		}
+	}
+	return append(result, replacements...)
 }
 
 // mapGitError translates a git subprocess failure into a zsh-pro-phrased typed
@@ -224,4 +439,54 @@ func (g gitRunner) isBareRepo(ctx context.Context) bool {
 		return false
 	}
 	return string(bytes.TrimSpace(out)) == "true"
+}
+
+// observeRef distinguishes a genuinely absent ref from a failed Git probe.
+// for-each-ref exits successfully with empty output for absence, while repository
+// or subprocess failures stay operational errors; this avoids conflating the
+// implementation-dependent show-ref missing-ref exit with a corrupt repository.
+func (g gitRunner) observeRef(ctx context.Context, ref string) (string, bool, error) {
+	out, err := g.run(ctx, "for-each-ref", "--format=%(refname)%00%(objectname)", ref)
+	if err != nil {
+		return "", false, err
+	}
+	for _, line := range bytes.Split(bytes.TrimSpace(out), []byte{'\n'}) {
+		name, value, ok := bytes.Cut(line, []byte{0})
+		if !ok || string(name) != ref {
+			continue
+		}
+		objectID := string(bytes.TrimSpace(value))
+		if objectID == "" || strings.ContainsAny(objectID, "\r\n") {
+			return "", false, ErrGitCommand
+		}
+		return objectID, true, nil
+	}
+	return "", false, nil
+}
+
+// profileAtRevision reads profile.json from one exact commit. ls-tree establishes
+// whether the object is present before show reads it, so an initialized empty
+// baseline remains distinguishable from a committed empty profile.
+func (g gitRunner) profileAtRevision(ctx context.Context, revision string) (model.Profile, bool, error) {
+	tree, err := g.run(ctx, "ls-tree", "-z", revision, "--", "profile.json")
+	if err != nil {
+		return model.Profile{}, false, err
+	}
+	if len(tree) == 0 {
+		return model.Profile{}, false, nil
+	}
+	// Git's -z form is `<mode> <type> <oid>\tpath\x00`; do not accept an
+	// unexpected path merely because a future call-site changed its argv.
+	if !bytes.HasSuffix(tree, []byte("\tprofile.json\x00")) {
+		return model.Profile{}, false, ErrGitCommand
+	}
+	payload, err := g.show(ctx, revision+":profile.json")
+	if err != nil {
+		return model.Profile{}, false, err
+	}
+	profile, err := UnmarshalProfile(payload)
+	if err != nil {
+		return model.Profile{}, false, err
+	}
+	return profile, true, nil
 }

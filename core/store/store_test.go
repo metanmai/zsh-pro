@@ -1019,6 +1019,26 @@ func TestBeginIngestAbsentRefUsesNilExpectedAndZeroRevisionReads(t *testing.T) {
 	abortPhase6Ingest(t, store, initialization, outcome.TransactionID)
 }
 
+func TestBeginIngestExactMainObservationIgnoresPrefixRefs(t *testing.T) {
+	store, initialization, _ := newPhase6IngestStore(t)
+	ctx := context.Background()
+	tip, err := store.git.revParse(ctx, "refs/heads/main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.git.deleteRefCAS(ctx, "refs/heads/main", tip); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.git.updateRef(ctx, "refs/heads/main/nested", tip); err != nil {
+		t.Fatal(err)
+	}
+	outcome := beginPhase6Ingest(t, store, initialization)
+	if outcome.Baseline.RefPresent || outcome.Baseline.ExpectedRevision != nil {
+		t.Fatalf("main prefix ref was misclassified as exact main: %#v", outcome.Baseline)
+	}
+	abortPhase6Ingest(t, store, initialization, outcome.TransactionID)
+}
+
 func TestBeginIngestInitOnlyBaseline(t *testing.T) {
 	store, initialization, _ := newPhase6IngestStore(t)
 	outcome := beginPhase6Ingest(t, store, initialization)

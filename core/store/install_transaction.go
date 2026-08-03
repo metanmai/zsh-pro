@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -21,9 +23,6 @@ const (
 	// ErrInitializerRollbackUnsafe means a transaction is still provisional,
 	// active/finalizing, published, or has retained/uncertain cleanup evidence.
 	ErrInitializerRollbackUnsafe errStore = "zsh-pro: profile store rollback is unsafe while ingest evidence is unresolved"
-	// ErrIngestUnavailable is the temporary fail-closed result until the baseline
-	// and quarantine implementation activates a valid reserved transaction.
-	ErrIngestUnavailable errStore = "zsh-pro: ingest transaction setup is unavailable"
 	// ErrStoreTransactionLockUnavailable is returned before private namespace
 	// mutation when the authenticated per-root lock cannot be established.
 	ErrStoreTransactionLockUnavailable errStore = "zsh-pro: profile store transaction lock is unavailable"
@@ -220,7 +219,24 @@ type ingestTransactionRecord struct {
 	commitStatus     model.IngestCommitStatus
 	cleanup          model.QuarantineCleanupState
 	recoveryRequired bool
+	baseline         model.IngestBaseline
+	quarantine       *ingestQuarantine
 	beginOutcome     model.IngestBeginOutcome
+	abortOutcome     model.IngestAbortOutcome
+	abortOutcomeSet  bool
+}
+
+// ingestQuarantine retains the authenticated top-level identity and descriptor
+// issued during Begin. Paths are internal locators only; callers can never
+// supply one to Abort.
+type ingestQuarantine struct {
+	namespacePath string
+	basename      string
+	path          string
+	indexPath     string
+	objectsPath   string
+	root          *os.Root
+	info          os.FileInfo
 }
 
 type quarantineCleanupSeam struct {
@@ -261,8 +277,72 @@ func (s *Store) reserveIngestTransaction(id model.InstallInitializationID) (*ing
 	return record, record.beginOutcome, nil
 }
 
-func (s *Store) beginIngestReserved(_ context.Context, record *ingestTransactionRecord) (model.IngestBeginOutcome, error) {
-	return s.terminalizeBeginFailure(record, model.IngestFailureQuarantine, model.QuarantineCleanupRemoved, false), ErrIngestUnavailable
+func (s *Store) beginIngestReserved(ctx context.Context, record *ingestTransactionRecord) (model.IngestBeginOutcome, error) {
+	observe := s.git.observeRef
+	if s.beginObserveMain != nil {
+		observe = func(ctx context.Context, _ string) (string, bool, error) {
+			return s.beginObserveMain(ctx)
+		}
+	}
+	revision, present, err := observe(ctx, "refs/heads/main")
+	if err != nil {
+		return s.terminalizeBeginFailure(record, model.IngestFailureBaselineRead, model.QuarantineCleanupRemoved, false), err
+	}
+
+	var (
+		expected       *string
+		profile        model.Profile
+		profilePresent bool
+	)
+	if present {
+		expected, err = model.NewExpectedRevision(revision)
+		if err != nil {
+			return s.terminalizeBeginFailure(record, model.IngestFailureBaselineRead, model.QuarantineCleanupRemoved, false), err
+		}
+		profile, profilePresent, err = s.git.profileAtRevision(ctx, revision)
+		if err != nil {
+			return s.terminalizeBeginFailure(record, model.IngestFailureBaselineRead, model.QuarantineCleanupRemoved, false), err
+		}
+	}
+	baseline, err := model.NewIngestBaseline(
+		record.initializationID,
+		record.transactionID,
+		present,
+		expected,
+		profile,
+		profilePresent,
+	)
+	if err != nil {
+		return s.terminalizeBeginFailure(record, model.IngestFailureBaselineRead, model.QuarantineCleanupRemoved, false), err
+	}
+	record.baseline = baseline
+
+	cleanup, recoveryRequired, setupErr := s.createIngestQuarantine(ctx, record)
+	if setupErr != nil {
+		return s.terminalizeBeginFailure(record, model.IngestFailureQuarantine, cleanup, recoveryRequired), setupErr
+	}
+
+	s.transactionMu.Lock()
+	current, ok := s.ingestTransactions[record.transactionID]
+	if !ok || current != record || record.lifecycle != model.IngestLifecycleProvisional {
+		s.transactionMu.Unlock()
+		return s.terminalizeBeginFailure(record, model.IngestFailureInvalidAuthority, model.QuarantineCleanupRetained, true), ErrInvalidIngestAuthority
+	}
+	record.lifecycle = model.IngestLifecycleActive
+	record.cleanup = model.QuarantineCleanupRetained
+	record.beginOutcome = model.IngestBeginOutcome{
+		InitializationID:        record.initializationID,
+		TransactionID:           record.transactionID,
+		Baseline:                record.baseline,
+		Lifecycle:               model.IngestLifecycleActive,
+		Cleanup:                 model.QuarantineCleanupRetained,
+		FailureCode:             model.IngestFailureNone,
+		RecoveryRequired:        false,
+		InitializerRollbackSafe: false,
+	}
+	outcome := record.beginOutcome
+	s.transactionMu.Unlock()
+	return outcome, nil
 }
 
 // AbortIngest cleans one Store-owned transaction quarantine.
@@ -271,13 +351,458 @@ func (s *Store) AbortIngest(
 	initializationID model.InstallInitializationID,
 	transactionID model.IngestTransactionID,
 ) (model.IngestAbortOutcome, error) {
-	_, _, _ = ctx, initializationID, transactionID
-	return model.IngestAbortOutcome{}, ErrInvalidIngestAuthority
+	s.transactionMu.Lock()
+	initialization, validInitialization := s.validInstallInitializationLocked(initializationID)
+	record, ok := s.ingestTransactions[transactionID]
+	if !validInitialization || !ok || record == nil || record.initializationID != initializationID ||
+		record.storeNonce != s.storeNonce {
+		s.transactionMu.Unlock()
+		return model.IngestAbortOutcome{}, ErrInvalidIngestAuthority
+	}
+	if record.lifecycle == model.IngestLifecycleTerminal && record.abortOutcomeSet {
+		outcome := record.abortOutcome
+		s.transactionMu.Unlock()
+		return outcome, nil
+	}
+	if initialization.closing || initialization.terminal || record.lifecycle != model.IngestLifecycleActive {
+		s.transactionMu.Unlock()
+		return model.IngestAbortOutcome{}, ErrInvalidIngestAuthority
+	}
+	record.lifecycle = model.IngestLifecycleFinalizing
+	s.transactionMu.Unlock()
+
+	cleanup, recoveryRequired := s.cleanupIngestQuarantine(record)
+
+	s.transactionMu.Lock()
+	record.lifecycle = model.IngestLifecycleTerminal
+	record.cleanup = cleanup
+	record.recoveryRequired = recoveryRequired
+	rollbackSafe := s.initializerRollbackSafeLocked(initialization)
+	failure := model.IngestFailureNone
+	if cleanup != model.QuarantineCleanupRemoved || recoveryRequired {
+		failure = model.IngestFailureCleanup
+	}
+	record.abortOutcome = model.IngestAbortOutcome{
+		InitializationID:        record.initializationID,
+		TransactionID:           record.transactionID,
+		Lifecycle:               model.IngestLifecycleTerminal,
+		Cleanup:                 cleanup,
+		FailureCode:             failure,
+		RecoveryRequired:        recoveryRequired,
+		InitializerRollbackSafe: rollbackSafe,
+	}
+	record.abortOutcomeSet = true
+	outcome := record.abortOutcome
+	s.transactionMu.Unlock()
+	return outcome, nil
 }
 
 func (s *Store) transactionQuarantinePath(transactionID model.IngestTransactionID) string {
-	_ = transactionID
-	return ""
+	s.transactionMu.Lock()
+	defer s.transactionMu.Unlock()
+	record := s.ingestTransactions[transactionID]
+	if record == nil || record.storeNonce != s.storeNonce || record.quarantine == nil {
+		return ""
+	}
+	return record.quarantine.path
+}
+
+func (s *Store) createIngestQuarantine(
+	ctx context.Context,
+	record *ingestTransactionRecord,
+) (model.QuarantineCleanupState, bool, error) {
+	var (
+		setupErr         error
+		cleanup          = model.QuarantineCleanupRemoved
+		recoveryRequired bool
+	)
+	err := withStoreRootTransactionLock(s.dir, func(guard *storeRootTransactionGuard) error {
+		return guard.withAuthenticatedMutation(func(namespace *os.Root) error {
+			name, err := newQuarantineBasename()
+			if err != nil {
+				setupErr = err
+				return err
+			}
+			namespacePath, err := storeTransactionNamespacePath(s.dir)
+			if err != nil {
+				setupErr = err
+				return err
+			}
+			if err := namespace.Mkdir(name, 0o700); err != nil {
+				setupErr = err
+				return err
+			}
+			info, err := namespace.Lstat(name)
+			if err != nil || !validTransactionNamespaceInfo(info) {
+				if err == nil {
+					err = errors.New("transaction quarantine is not private")
+				}
+				setupErr = err
+				return err
+			}
+			quarantine := &ingestQuarantine{
+				namespacePath: namespacePath,
+				basename:      name,
+				path:          filepath.Join(namespacePath, name),
+				indexPath:     filepath.Join(namespacePath, name, "index"),
+				objectsPath:   filepath.Join(namespacePath, name, "objects"),
+				info:          info,
+			}
+			record.quarantine = quarantine
+
+			failAfterCreation := func(cause error) error {
+				setupErr = cause
+				cleanup, recoveryRequired = s.cleanupIngestQuarantineWithGuard(guard, record)
+				return cause
+			}
+			if s.beginAfterQuarantineCreate != nil {
+				if err := s.beginAfterQuarantineCreate(quarantine.path); err != nil {
+					return failAfterCreation(err)
+				}
+			}
+
+			root, err := namespace.OpenRoot(name)
+			if err != nil {
+				return failAfterCreation(err)
+			}
+			quarantine.root = root
+			if s.beginAfterQuarantineOpen != nil {
+				if err := s.beginAfterQuarantineOpen(quarantine.path); err != nil {
+					return failAfterCreation(err)
+				}
+			}
+			openedInfo, err := root.Stat(".")
+			if err != nil || !sameQuarantineEntry(info, openedInfo) || !validTransactionNamespaceInfo(openedInfo) {
+				if err == nil {
+					err = errors.New("transaction quarantine identity changed")
+				}
+				return failAfterCreation(err)
+			}
+			if s.beginAfterQuarantineStat != nil {
+				if err := s.beginAfterQuarantineStat(quarantine.path); err != nil {
+					return failAfterCreation(err)
+				}
+			}
+
+			if err := root.Mkdir("objects", 0o700); err != nil {
+				return failAfterCreation(err)
+			}
+			objectsInfo, err := root.Lstat("objects")
+			if err != nil || !validTransactionNamespaceInfo(objectsInfo) {
+				if err == nil {
+					err = errors.New("candidate object directory is not private")
+				}
+				return failAfterCreation(err)
+			}
+
+			candidate := s.git.candidate(quarantine.indexPath, quarantine.objectsPath)
+			if record.baseline.ExpectedRevision == nil {
+				_, err = candidate.run(ctx, "read-tree", "--empty")
+			} else {
+				_, err = candidate.run(ctx, "read-tree", *record.baseline.ExpectedRevision)
+			}
+			if err != nil {
+				return failAfterCreation(err)
+			}
+			index, err := root.OpenFile("index", os.O_RDWR|syscall.O_CLOEXEC|syscall.O_NOFOLLOW, 0)
+			if err != nil {
+				return failAfterCreation(err)
+			}
+			if err := index.Chmod(0o600); err != nil {
+				_ = index.Close()
+				return failAfterCreation(err)
+			}
+			indexInfo, statErr := index.Stat()
+			currentIndexInfo, lstatErr := root.Lstat("index")
+			if statErr != nil || lstatErr != nil || !validTransactionLockInfo(indexInfo) ||
+				!sameQuarantineEntry(indexInfo, currentIndexInfo) {
+				_ = index.Close()
+				if statErr != nil {
+					return failAfterCreation(statErr)
+				}
+				if lstatErr != nil {
+					return failAfterCreation(lstatErr)
+				}
+				return failAfterCreation(errors.New("candidate index is not private"))
+			}
+			if err := index.Sync(); err != nil {
+				_ = index.Close()
+				return failAfterCreation(err)
+			}
+			if err := index.Close(); err != nil {
+				return failAfterCreation(err)
+			}
+			objects, err := root.OpenRoot("objects")
+			if err != nil {
+				return failAfterCreation(err)
+			}
+			objectsSyncErr := syncTransactionRoot(objects)
+			objectsCloseErr := objects.Close()
+			if objectsSyncErr != nil {
+				return failAfterCreation(objectsSyncErr)
+			}
+			if objectsCloseErr != nil {
+				return failAfterCreation(objectsCloseErr)
+			}
+			if err := syncTransactionRoot(root); err != nil {
+				return failAfterCreation(err)
+			}
+			if err := syncTransactionRoot(namespace); err != nil {
+				return failAfterCreation(err)
+			}
+			return nil
+		})
+	})
+	if err != nil {
+		if setupErr == nil {
+			setupErr = err
+			if record.quarantine != nil {
+				cleanup = model.QuarantineCleanupRetained
+				recoveryRequired = true
+			} else if errors.Is(err, ErrStoreTransactionLockUnavailable) {
+				cleanup = model.QuarantineCleanupRetained
+				recoveryRequired = true
+			}
+		}
+		return cleanup, recoveryRequired, setupErr
+	}
+	return model.QuarantineCleanupRetained, false, nil
+}
+
+func newQuarantineBasename() (string, error) {
+	var random [16]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return "", err
+	}
+	return "ingest-" + hex.EncodeToString(random[:]), nil
+}
+
+func (s *Store) cleanupIngestQuarantine(record *ingestTransactionRecord) (model.QuarantineCleanupState, bool) {
+	if record == nil || record.quarantine == nil {
+		return model.QuarantineCleanupRemoved, false
+	}
+	cleanup := model.QuarantineCleanupRetained
+	recoveryRequired := true
+	err := withStoreRootTransactionLock(s.dir, func(guard *storeRootTransactionGuard) error {
+		if s.cleanupDiscardLock {
+			guard.discardForTest()
+		}
+		cleanup, recoveryRequired = s.cleanupIngestQuarantineWithGuard(guard, record)
+		if cleanup != model.QuarantineCleanupRemoved || recoveryRequired {
+			return errors.New("transaction quarantine cleanup retained state")
+		}
+		return nil
+	})
+	if err != nil && cleanup == model.QuarantineCleanupRemoved {
+		return model.QuarantineCleanupRetained, true
+	}
+	return cleanup, recoveryRequired
+}
+
+// cleanupIngestQuarantineWithGuard implements the cooperating-process boundary:
+// every zsh-pro process holds the per-root advisory lock for the complete
+// authenticate, remove, and parent-sync interval. A non-cooperating same-UID or
+// privileged process can still mutate this private namespace; every observed
+// identity substitution is therefore retained for explicit recovery.
+func (s *Store) cleanupIngestQuarantineWithGuard(
+	guard *storeRootTransactionGuard,
+	record *ingestTransactionRecord,
+) (model.QuarantineCleanupState, bool) {
+	quarantine := record.quarantine
+	if quarantine == nil {
+		return model.QuarantineCleanupRemoved, false
+	}
+	err := guard.withAuthenticatedMutation(func(namespace *os.Root) error {
+		current, err := namespace.Lstat(quarantine.basename)
+		if err != nil || !sameQuarantineEntry(quarantine.info, current) {
+			if err != nil {
+				return err
+			}
+			return errQuarantineIdentityChanged
+		}
+		root := quarantine.root
+		if root == nil {
+			root, err = namespace.OpenRoot(quarantine.basename)
+			if err != nil {
+				return err
+			}
+			quarantine.root = root
+		}
+		opened, err := root.Stat(".")
+		if err != nil || !sameQuarantineEntry(quarantine.info, opened) {
+			if err != nil {
+				return err
+			}
+			return errQuarantineIdentityChanged
+		}
+
+		entries, err := fs.ReadDir(root.FS(), ".")
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			if err := s.removeAuthenticatedQuarantineEntry(root, entry.Name(), entry.Name()); err != nil {
+				return err
+			}
+		}
+		if err := syncTransactionRoot(root); err != nil {
+			return err
+		}
+		seam := quarantineCleanupSeam{Parent: namespace, Name: quarantine.basename, Relative: ".", Directory: true}
+		if s.cleanupBeforeFinalCheck != nil {
+			if err := s.cleanupBeforeFinalCheck(seam); err != nil {
+				return err
+			}
+		}
+		current, err = namespace.Lstat(quarantine.basename)
+		if err != nil || !sameQuarantineEntry(quarantine.info, current) {
+			if err != nil {
+				return err
+			}
+			return errQuarantineIdentityChanged
+		}
+		if s.cleanupAfterFinalCheck != nil {
+			if err := s.cleanupAfterFinalCheck(seam); err != nil {
+				return err
+			}
+		}
+		current, err = namespace.Lstat(quarantine.basename)
+		if err != nil || !sameQuarantineEntry(quarantine.info, current) {
+			if err != nil {
+				return err
+			}
+			return errQuarantineIdentityChanged
+		}
+		if err := namespace.Remove(quarantine.basename); err != nil {
+			return err
+		}
+		if err := syncTransactionRoot(namespace); err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return model.QuarantineCleanupRetained, true
+	}
+	if quarantine.root != nil {
+		_ = quarantine.root.Close()
+		quarantine.root = nil
+	}
+	return model.QuarantineCleanupRemoved, false
+}
+
+var errQuarantineIdentityChanged = errors.New("transaction quarantine identity changed")
+
+func (s *Store) removeAuthenticatedQuarantineEntry(parent *os.Root, name, relative string) error {
+	original, err := parent.Lstat(name)
+	if err != nil || !validQuarantineChildInfo(original) {
+		if err != nil {
+			return err
+		}
+		return errQuarantineIdentityChanged
+	}
+	directory := original.IsDir()
+	if directory {
+		child, err := parent.OpenRoot(name)
+		if err != nil {
+			return err
+		}
+		// Keep the descriptor open through the final seams and unlink. Besides
+		// anchoring recursion, this prevents a removed replacement from reusing
+		// the original directory inode before the final identity comparison.
+		defer func() { _ = child.Close() }()
+		opened, statErr := child.Stat(".")
+		if statErr != nil || !sameQuarantineEntry(original, opened) {
+			if statErr != nil {
+				return statErr
+			}
+			return errQuarantineIdentityChanged
+		}
+		entries, readErr := fs.ReadDir(child.FS(), ".")
+		if readErr != nil {
+			return readErr
+		}
+		for _, entry := range entries {
+			childRelative := filepath.Join(relative, entry.Name())
+			if err := s.removeAuthenticatedQuarantineEntry(child, entry.Name(), childRelative); err != nil {
+				return err
+			}
+		}
+		if err := syncTransactionRoot(child); err != nil {
+			return err
+		}
+	} else if original.Mode().IsRegular() {
+		file, err := parent.OpenFile(name, os.O_RDONLY|syscall.O_CLOEXEC|syscall.O_NOFOLLOW, 0)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = file.Close() }()
+		opened, statErr := file.Stat()
+		if statErr != nil || !sameQuarantineEntry(original, opened) {
+			if statErr != nil {
+				return statErr
+			}
+			return errQuarantineIdentityChanged
+		}
+	} else if original.Mode()&os.ModeSymlink != 0 {
+		// 0x200000 is O_PATH on Linux and O_SYMLINK on Darwin. Combined with
+		// O_NOFOLLOW it retains the symlink object itself across the final-check
+		// seams, preventing same-inode reuse from defeating replacement detection.
+		link, err := parent.OpenFile(name, os.O_RDONLY|syscall.O_CLOEXEC|syscall.O_NOFOLLOW|0x200000, 0)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = link.Close() }()
+		opened, statErr := link.Stat()
+		if statErr != nil || !sameQuarantineEntry(original, opened) {
+			if statErr != nil {
+				return statErr
+			}
+			return errQuarantineIdentityChanged
+		}
+	}
+
+	seam := quarantineCleanupSeam{Parent: parent, Name: name, Relative: relative, Directory: directory}
+	if s.cleanupBeforeFinalCheck != nil {
+		if err := s.cleanupBeforeFinalCheck(seam); err != nil {
+			return err
+		}
+	}
+	current, err := parent.Lstat(name)
+	if err != nil || !sameQuarantineEntry(original, current) {
+		if err != nil {
+			return err
+		}
+		return errQuarantineIdentityChanged
+	}
+	if s.cleanupAfterFinalCheck != nil {
+		if err := s.cleanupAfterFinalCheck(seam); err != nil {
+			return err
+		}
+	}
+	current, err = parent.Lstat(name)
+	if err != nil || !sameQuarantineEntry(original, current) {
+		if err != nil {
+			return err
+		}
+		return errQuarantineIdentityChanged
+	}
+	if err := parent.Remove(name); err != nil {
+		return err
+	}
+	return syncTransactionRoot(parent)
+}
+
+func validQuarantineChildInfo(info os.FileInfo) bool {
+	if info == nil || !fileInfoOwnedByCurrentEUID(info) {
+		return false
+	}
+	return info.IsDir() || info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0
+}
+
+func sameQuarantineEntry(expected, actual os.FileInfo) bool {
+	return expected != nil && actual != nil && os.SameFile(expected, actual) &&
+		expected.Mode() == actual.Mode() && fileInfoOwnedByCurrentEUID(actual)
 }
 
 func (s *Store) terminalizeBeginFailure(
@@ -301,6 +826,7 @@ func (s *Store) terminalizeBeginFailure(
 	record.beginOutcome = model.IngestBeginOutcome{
 		InitializationID:        record.initializationID,
 		TransactionID:           record.transactionID,
+		Baseline:                record.baseline,
 		Lifecycle:               model.IngestLifecycleTerminal,
 		Cleanup:                 cleanup,
 		FailureCode:             failure,
