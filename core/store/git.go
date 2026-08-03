@@ -1,13 +1,18 @@
 package store
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"zsh-pro/core/model"
@@ -44,6 +49,42 @@ type gitRunner struct {
 	privateIndexFile       string
 	privateObjectDirectory string
 	privateAlternateObject string
+
+	// refEvent is a per-runner test seam for the staged update-ref protocol. It
+	// never receives object IDs, refs, backend keys, or other caller data.
+	refEvent func(string)
+}
+
+// validatedHeadRef is the only value accepted by direct-ref reads and staged
+// mutations. Its field is intentionally private: public ingest can obtain only
+// mainHeadRef, while the legacy adapter must validate a branch before calling
+// validatedHeadRefForBranch.
+type validatedHeadRef struct {
+	name string
+}
+
+func mainHeadRef() validatedHeadRef {
+	return validatedHeadRef{name: "refs/heads/main"}
+}
+
+func validatedHeadRefForBranch(branch string) (validatedHeadRef, error) {
+	if err := validBranchName(branch); err != nil {
+		return validatedHeadRef{}, err
+	}
+	return validatedHeadRef{name: "refs/heads/" + branch}, nil
+}
+
+func (ref validatedHeadRef) valid() bool {
+	if !strings.HasPrefix(ref.name, "refs/heads/") {
+		return false
+	}
+	return validBranchName(strings.TrimPrefix(ref.name, "refs/heads/")) == nil
+}
+
+func (g gitRunner) emitRefEvent(event string) {
+	if g.refEvent != nil {
+		g.refEvent(event)
+	}
 }
 
 // ownedEnvironment is the complete Git environment owned by zsh-pro. It starts
@@ -149,6 +190,9 @@ func validateGitArgv(args []string) error {
 			return nil
 		}
 	case "update-ref":
+		if len(args) == 3 && args[1] == "--no-deref" && args[2] == "--stdin" {
+			return nil
+		}
 		if len(args) == 4 && args[1] == "-d" && allAtoms(args[2:]) {
 			return nil
 		}
@@ -441,27 +485,328 @@ func (g gitRunner) isBareRepo(ctx context.Context) bool {
 	return string(bytes.TrimSpace(out)) == "true"
 }
 
-// observeRef distinguishes a genuinely absent ref from a failed Git probe.
-// for-each-ref exits successfully with empty output for absence, while repository
-// or subprocess failures stay operational errors; this avoids conflating the
-// implementation-dependent show-ref missing-ref exit with a corrupt repository.
-func (g gitRunner) observeRef(ctx context.Context, ref string) (string, bool, error) {
-	out, err := g.run(ctx, "for-each-ref", "--format=%(refname)%00%(objectname)", ref)
+func validGitObjectID(value string) bool {
+	if len(value) != 40 && len(value) != 64 {
+		return false
+	}
+	for _, char := range value {
+		switch {
+		case char >= '0' && char <= '9':
+		case char >= 'a' && char <= 'f':
+		case char >= 'A' && char <= 'F':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// validateDirectRef rejects every loose-ref redirection before Git is allowed
+// to inspect the ref backend. Missing loose components are safe: the ref may be
+// absent or stored directly in packed-refs. Existing components are checked with
+// Lstat, and an existing leaf is opened O_NOFOLLOW and required to contain one
+// direct object ID rather than symbolic-ref metadata.
+func (g gitRunner) validateDirectRef(ref validatedHeadRef) error {
+	if !ref.valid() || g.runtimeRoot != nil {
+		return ErrGitCommand
+	}
+	rootInfo, err := os.Lstat(g.repoDir)
+	if err != nil || !rootInfo.IsDir() || rootInfo.Mode()&os.ModeSymlink != 0 {
+		return ErrGitCommand
+	}
+	root, err := os.OpenRoot(g.repoDir)
+	if err != nil {
+		return ErrGitCommand
+	}
+	defer func() { _ = root.Close() }()
+
+	parts := strings.Split(ref.name, "/")
+	for index := range parts {
+		relative := filepath.Join(parts[:index+1]...)
+		info, statErr := root.Lstat(relative)
+		if errors.Is(statErr, os.ErrNotExist) {
+			return nil
+		}
+		if statErr != nil || info.Mode()&os.ModeSymlink != 0 {
+			return ErrGitCommand
+		}
+		if index < len(parts)-1 {
+			if !info.IsDir() {
+				return ErrGitCommand
+			}
+			continue
+		}
+		if info.IsDir() {
+			// A directory at the exact leaf means the requested ref is absent while
+			// nested refs (for example main/topic) may exist. It is not a redirect.
+			return nil
+		}
+		if !info.Mode().IsRegular() {
+			return ErrGitCommand
+		}
+		file, openErr := root.OpenFile(relative, os.O_RDONLY|syscall.O_CLOEXEC|syscall.O_NOFOLLOW, 0)
+		if openErr != nil {
+			return ErrGitCommand
+		}
+		opened, openedErr := file.Stat()
+		contents, readErr := io.ReadAll(io.LimitReader(file, 256))
+		closeErr := file.Close()
+		if openedErr != nil || readErr != nil || closeErr != nil || !os.SameFile(info, opened) {
+			return ErrGitCommand
+		}
+		value := strings.TrimSpace(string(contents))
+		if strings.HasPrefix(value, "ref:") || !validGitObjectID(value) {
+			return ErrGitCommand
+		}
+	}
+	return nil
+}
+
+func (g gitRunner) observeDirectRef(ctx context.Context, ref validatedHeadRef) (string, bool, error) {
+	if err := g.validateDirectRef(ref); err != nil {
+		return "", false, err
+	}
+	out, err := g.run(ctx, "for-each-ref", "--format=%(refname)%00%(objectname)", ref.name)
 	if err != nil {
 		return "", false, err
 	}
 	for _, line := range bytes.Split(bytes.TrimSpace(out), []byte{'\n'}) {
 		name, value, ok := bytes.Cut(line, []byte{0})
-		if !ok || string(name) != ref {
+		if !ok || string(name) != ref.name {
 			continue
 		}
 		objectID := string(bytes.TrimSpace(value))
-		if objectID == "" || strings.ContainsAny(objectID, "\r\n") {
+		if !validGitObjectID(objectID) {
 			return "", false, ErrGitCommand
 		}
 		return objectID, true, nil
 	}
 	return "", false, nil
+}
+
+// encodeRefMutation is the sole update-ref mutation encoder. It accepts only an
+// opaque validated head ref and validated object IDs; callers cannot inject a
+// verb, raw ref, newline, or additional transaction frame.
+func encodeRefMutation(
+	ref validatedHeadRef,
+	candidate string,
+	refPresent bool,
+	expected *string,
+) ([]byte, error) {
+	if !ref.valid() || !validGitObjectID(candidate) || refPresent != (expected != nil) {
+		return nil, ErrGitCommand
+	}
+	if expected == nil {
+		return []byte("create " + ref.name + " " + candidate + "\n"), nil
+	}
+	if !validGitObjectID(*expected) {
+		return nil, ErrGitCommand
+	}
+	return []byte("update " + ref.name + " " + candidate + " " + *expected + "\n"), nil
+}
+
+// encodeRefGuard prepares a no-change expected-ref mutation. Holding its
+// prepared transaction is the only authority to compensate backend state after
+// a lost commit response whose authoritative ref still equals expected.
+func encodeRefGuard(ref validatedHeadRef, expected *string, objectIDLength int) ([]byte, error) {
+	if !ref.valid() || (objectIDLength != 40 && objectIDLength != 64) {
+		return nil, ErrGitCommand
+	}
+	old := strings.Repeat("0", objectIDLength)
+	if expected != nil {
+		if !validGitObjectID(*expected) || len(*expected) != objectIDLength {
+			return nil, ErrGitCommand
+		}
+		old = *expected
+	}
+	return []byte("verify " + ref.name + " " + old + "\n"), nil
+}
+
+type updateRefSession struct {
+	runner gitRunner
+	cancel context.CancelFunc
+	cmd    *exec.Cmd
+	stdin  io.WriteCloser
+	writer *bufio.Writer
+	reader *bufio.Reader
+	stderr bytes.Buffer
+
+	mu            sync.Mutex
+	live          bool
+	locked        bool
+	waited        bool
+	commitWritten bool
+}
+
+func (g gitRunner) startUpdateRefSession(ctx context.Context) (*updateRefSession, error) {
+	processContext, cancel := context.WithTimeout(ctx, gitTimeout)
+	cmd, err := g.command(processContext, "update-ref", "--no-deref", "--stdin")
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		cancel()
+		return nil, ErrGitCommand
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		_ = stdin.Close()
+		cancel()
+		return nil, ErrGitCommand
+	}
+	session := &updateRefSession{
+		runner: g,
+		cancel: cancel,
+		cmd:    cmd,
+		stdin:  stdin,
+		writer: bufio.NewWriter(stdin),
+		reader: bufio.NewReader(stdout),
+	}
+	cmd.Stderr = &session.stderr
+	if g.beforeStart != nil {
+		g.beforeStart([]string{"update-ref", "--no-deref", "--stdin"})
+	}
+	if err := cmd.Start(); err != nil {
+		_ = stdin.Close()
+		cancel()
+		return nil, ErrGitCommand
+	}
+	if err := session.writeFrame("start\n", "start-write"); err != nil {
+		_ = session.finish()
+		return nil, err
+	}
+	if err := session.readAcknowledgement("start"); err != nil {
+		_ = session.finish()
+		return nil, err
+	}
+	session.live = true
+	g.emitRefEvent("start-ok-live-unlocked")
+	return session, nil
+}
+
+func (session *updateRefSession) writeFrame(frame, event string) error {
+	if _, err := session.writer.WriteString(frame); err != nil {
+		return ErrGitCommand
+	}
+	if err := session.writer.Flush(); err != nil {
+		return ErrGitCommand
+	}
+	session.runner.emitRefEvent(event)
+	return nil
+}
+
+func (session *updateRefSession) readAcknowledgement(command string) error {
+	line, err := session.reader.ReadString('\n')
+	if err != nil || line != command+": ok\n" {
+		return ErrGitCommand
+	}
+	return nil
+}
+
+func (session *updateRefSession) Prepare(mutation []byte) error {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if !session.live || session.locked || len(mutation) == 0 || mutation[len(mutation)-1] != '\n' ||
+		bytes.Count(mutation, []byte{'\n'}) != 1 {
+		return ErrGitCommand
+	}
+	if _, err := session.writer.Write(mutation); err != nil {
+		_ = session.finishLocked()
+		return ErrGitCommand
+	}
+	session.runner.emitRefEvent("typed-mutation-write")
+	if err := session.writeFrame("prepare\n", "prepare-write"); err != nil {
+		_ = session.finishLocked()
+		return err
+	}
+	if err := session.readAcknowledgement("prepare"); err != nil {
+		// Git aborts and exits automatically when prepare cannot lock the ref.
+		// Closing/waiting observes that terminal process; no explicit abort frame
+		// may be written on this path.
+		_ = session.finishLocked()
+		return ErrSecretRefConflict
+	}
+	session.locked = true
+	session.runner.emitRefEvent("prepare-ok-locked")
+	return nil
+}
+
+func (session *updateRefSession) Commit() error {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if !session.live || !session.locked {
+		return ErrGitCommand
+	}
+	session.commitWritten = true
+	if err := session.writeFrame("commit\n", "commit-write"); err != nil {
+		_ = session.finishLocked()
+		return err
+	}
+	if err := session.readAcknowledgement("commit"); err != nil {
+		_ = session.finishLocked()
+		return ErrGitCommand
+	}
+	if err := session.finishLocked(); err != nil {
+		return err
+	}
+	session.runner.emitRefEvent("commit-result")
+	return nil
+}
+
+func (session *updateRefSession) Abort() error {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if !session.live {
+		return nil
+	}
+	if !session.locked {
+		return ErrGitCommand
+	}
+	if err := session.writeFrame("abort\n", "abort-write"); err != nil {
+		_ = session.finishLocked()
+		return err
+	}
+	if err := session.readAcknowledgement("abort"); err != nil {
+		_ = session.finishLocked()
+		return ErrGitCommand
+	}
+	return session.finishLocked()
+}
+
+func (session *updateRefSession) finish() error {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	return session.finishLocked()
+}
+
+func (session *updateRefSession) finishLocked() error {
+	if session.waited {
+		return nil
+	}
+	session.waited = true
+	_ = session.stdin.Close()
+	err := session.cmd.Wait()
+	session.cancel()
+	session.live = false
+	session.locked = false
+	if err != nil {
+		return mapGitError(err, session.stderr.String())
+	}
+	return nil
+}
+
+// observeRef distinguishes a genuinely absent ref from a failed Git probe.
+// for-each-ref exits successfully with empty output for absence, while repository
+// or subprocess failures stay operational errors; this avoids conflating the
+// implementation-dependent show-ref missing-ref exit with a corrupt repository.
+func (g gitRunner) observeRef(ctx context.Context, ref string) (string, bool, error) {
+	main := mainHeadRef()
+	if ref != main.name {
+		return "", false, ErrGitCommand
+	}
+	return g.observeDirectRef(ctx, main)
 }
 
 // profileAtRevision reads profile.json from one exact commit. ls-tree establishes

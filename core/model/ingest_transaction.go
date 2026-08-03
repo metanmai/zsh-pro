@@ -204,6 +204,12 @@ const (
 	IngestFailureInvalidAuthority IngestFailureCode = "invalid_authority"
 	IngestFailureBaselineRead     IngestFailureCode = "baseline_read"
 	IngestFailureQuarantine       IngestFailureCode = "quarantine"
+	IngestFailureInvalidBaseline  IngestFailureCode = "invalid_baseline"
+	IngestFailureCandidate        IngestFailureCode = "candidate"
+	IngestFailureRefPrepare       IngestFailureCode = "ref_prepare"
+	IngestFailureBackend          IngestFailureCode = "backend"
+	IngestFailureObjectPublish    IngestFailureCode = "object_publish"
+	IngestFailureRefCommit        IngestFailureCode = "ref_commit"
 	IngestFailureCleanup          IngestFailureCode = "cleanup"
 )
 

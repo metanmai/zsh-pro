@@ -14,10 +14,19 @@
 package store
 
 import (
+	"compress/zlib"
 	"context"
+	"crypto/sha1"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"io"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 
 	"zsh-pro/core/ir"
 	"zsh-pro/core/model"
@@ -30,6 +39,15 @@ import (
 // across machines and runs, so history-sensitive tests assert on content rather
 // than racing wall-clock SHAs (T-03-05). Authorship identity is pinned in runCommit.
 const commitTS = "1700000000 +0000"
+
+const (
+	// ErrIngestNotCommitted is the stable legacy-compatible classification for
+	// a transaction whose ref is known not to have published.
+	ErrIngestNotCommitted errStore = "zsh-pro: profile ingest was not committed"
+	// ErrIngestRecoveryRequired reports retained evidence or an effect whose
+	// state cannot be safely compensated without operator recovery.
+	ErrIngestRecoveryRequired errStore = "zsh-pro: profile ingest requires recovery"
+)
 
 // KeychainDriver is the keychain seam — Store/Retrieve/Delete move a name-scoped
 // secret value to/from a backend; Kind() reports which backend this driver is (so
@@ -98,6 +116,20 @@ type Store struct {
 	cleanupBeforeFinalCheck    func(quarantineCleanupSeam) error
 	cleanupAfterFinalCheck     func(quarantineCleanupSeam) error
 	cleanupDiscardLock         bool
+
+	// CommitIngest terminal outcomes are immutable and replayable by token.
+	ingestCommitOutcomes map[model.IngestTransactionID]ingestCommitTerminal
+
+	// Per-Store test seams for deterministic publication/durability failures and
+	// value-free event ordering. Production leaves these nil.
+	commitPublishLink func(string, string) error
+	commitSyncDir     func(string) error
+	commitEvent       func(string)
+}
+
+type ingestCommitTerminal struct {
+	outcome model.IngestCommitOutcome
+	err     error
 }
 
 // New constructs a Store after a one-time git-presence guard (an absent git binary
@@ -258,6 +290,628 @@ func (s *Store) Create(ctx context.Context, name string) error {
 	return s.git.updateRef(ctx, "refs/heads/"+name, mainSHA)
 }
 
+type claimedIngestCommit struct {
+	record     *ingestTransactionRecord
+	baseline   model.IngestBaseline
+	quarantine *ingestQuarantine
+	ref        validatedHeadRef
+}
+
+func (s *Store) claimIngestCommit(
+	initializationID model.InstallInitializationID,
+	transactionID model.IngestTransactionID,
+) (claimedIngestCommit, *ingestCommitTerminal, error) {
+	s.transactionMu.Lock()
+	defer s.transactionMu.Unlock()
+	initialization, validInitialization := s.validInstallInitializationLocked(initializationID)
+	record, ok := s.ingestTransactions[transactionID]
+	if !validInitialization || !ok || record == nil ||
+		record.initializationID != initializationID || record.transactionID != transactionID ||
+		record.storeNonce != s.storeNonce {
+		return claimedIngestCommit{}, nil, ErrInvalidIngestAuthority
+	}
+	if terminal, terminalOK := s.ingestCommitOutcomes[transactionID]; terminalOK &&
+		record.lifecycle == model.IngestLifecycleTerminal {
+		copy := terminal
+		return claimedIngestCommit{}, &copy, nil
+	}
+	if initialization.closing || initialization.terminal || record.lifecycle != model.IngestLifecycleActive ||
+		record.quarantine == nil {
+		return claimedIngestCommit{}, nil, ErrInvalidIngestAuthority
+	}
+	if s.ingestCommitOutcomes == nil {
+		s.ingestCommitOutcomes = make(map[model.IngestTransactionID]ingestCommitTerminal)
+	}
+	record.lifecycle = model.IngestLifecycleCommitting
+	baseline := record.baseline
+	if baseline.ExpectedRevision != nil {
+		expected := *baseline.ExpectedRevision
+		baseline.ExpectedRevision = &expected
+	}
+	return claimedIngestCommit{
+		record:     record,
+		baseline:   baseline,
+		quarantine: record.quarantine,
+		ref:        mainHeadRef(),
+	}, nil, nil
+}
+
+func invalidAuthorityCommitOutcome(
+	initializationID model.InstallInitializationID,
+	transactionID model.IngestTransactionID,
+) model.IngestCommitOutcome {
+	return model.IngestCommitOutcome{
+		InitializationID: initializationID,
+		TransactionID:    transactionID,
+		Status:           model.IngestCommitNotCommitted,
+		RefState:         model.IngestRefUnknown,
+		Backend:          model.IngestBackendUnchanged,
+		Objects:          model.IngestObjectsQuarantined,
+		Cleanup:          model.QuarantineCleanupRetained,
+		FailureCode:      model.IngestFailureInvalidAuthority,
+		RecoveryRequired: false,
+	}
+}
+
+func (s *Store) terminalizeIngestCommit(
+	claim claimedIngestCommit,
+	outcome model.IngestCommitOutcome,
+	commitErr error,
+) (model.IngestCommitOutcome, error) {
+	s.transactionMu.Lock()
+	defer s.transactionMu.Unlock()
+	record := claim.record
+	current, ok := s.ingestTransactions[record.transactionID]
+	if !ok || current != record || record.storeNonce != s.storeNonce {
+		outcome.RecoveryRequired = true
+		outcome.Status = model.IngestCommitRecoveryRequired
+		outcome.FailureCode = model.IngestFailureInvalidAuthority
+		return outcome, ErrIngestRecoveryRequired
+	}
+	record.lifecycle = model.IngestLifecycleTerminal
+	if outcome.Status == model.IngestCommitCommitted {
+		record.commitStatus = model.IngestCommitCommitted
+	} else {
+		// The initializer rollback predicate treats every clean non-publication
+		// result alike. Conflict remains visible in the immutable public outcome.
+		record.commitStatus = model.IngestCommitNotCommitted
+	}
+	record.cleanup = outcome.Cleanup
+	record.recoveryRequired = outcome.RecoveryRequired
+	initialization := s.installInitializations[record.initializationID]
+	outcome.InitializerRollbackSafe = initialization != nil && s.initializerRollbackSafeLocked(initialization)
+	terminal := ingestCommitTerminal{outcome: outcome, err: commitErr}
+	if s.ingestCommitOutcomes == nil {
+		s.ingestCommitOutcomes = make(map[model.IngestTransactionID]ingestCommitTerminal)
+	}
+	s.ingestCommitOutcomes[record.transactionID] = terminal
+	return outcome, commitErr
+}
+
+func (s *Store) emitCommitEvent(event string) {
+	if s.commitEvent != nil {
+		s.commitEvent(event)
+	}
+}
+
+func (s *Store) authenticateClaimedQuarantine(
+	guard *storeRootTransactionGuard,
+	claim claimedIngestCommit,
+	fn func() error,
+) error {
+	return guard.withAuthenticatedMutation(func(namespace *os.Root) error {
+		current, err := namespace.Lstat(claim.quarantine.basename)
+		if err != nil || !sameQuarantineEntry(claim.quarantine.info, current) {
+			return errQuarantineIdentityChanged
+		}
+		root, err := namespace.OpenRoot(claim.quarantine.basename)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = root.Close() }()
+		opened, err := root.Stat(".")
+		if err != nil || !sameQuarantineEntry(claim.quarantine.info, opened) {
+			return errQuarantineIdentityChanged
+		}
+		for _, relative := range []string{"index", "objects"} {
+			info, statErr := root.Lstat(relative)
+			if statErr != nil || info.Mode()&os.ModeSymlink != 0 {
+				return errQuarantineIdentityChanged
+			}
+		}
+		return fn()
+	})
+}
+
+func (s *Store) prepareIngestCandidate(
+	ctx context.Context,
+	claim claimedIngestCommit,
+	profile model.Profile,
+	message string,
+) (string, error) {
+	jsonBytes, err := MarshalProfile(profile)
+	if err != nil {
+		return "", err
+	}
+	zshBytes := ir.Regenerate(profile, s.regen)
+	candidate := s.git.candidate(claim.quarantine.indexPath, claim.quarantine.objectsPath)
+	blobJSON, err := candidate.hashObject(ctx, jsonBytes)
+	if err != nil {
+		return "", err
+	}
+	blobZSH, err := candidate.hashObject(ctx, zshBytes)
+	if err != nil {
+		return "", err
+	}
+	if _, err := candidate.runCommit(ctx, claim.quarantine.indexPath, commitTS,
+		"update-index", "--add", "--cacheinfo", "100644,"+blobJSON+",profile.json"); err != nil {
+		return "", err
+	}
+	if _, err := candidate.runCommit(ctx, claim.quarantine.indexPath, commitTS,
+		"update-index", "--add", "--cacheinfo", "100644,"+blobZSH+",profile.zsh"); err != nil {
+		return "", err
+	}
+	treeOut, err := candidate.runCommit(ctx, claim.quarantine.indexPath, commitTS, "write-tree")
+	if err != nil {
+		return "", err
+	}
+	tree := strings.TrimSpace(string(treeOut))
+	args := []string{"commit-tree", tree, "-m", message}
+	if claim.baseline.ExpectedRevision != nil {
+		args = []string{"commit-tree", tree, "-p", *claim.baseline.ExpectedRevision, "-m", message}
+	}
+	commitOut, err := candidate.runCommit(ctx, claim.quarantine.indexPath, commitTS, args...)
+	if err != nil {
+		return "", err
+	}
+	commit := strings.TrimSpace(string(commitOut))
+	if !validGitObjectID(commit) {
+		return "", ErrGitCommand
+	}
+	return commit, nil
+}
+
+type secretPrior struct {
+	key    string
+	value  string
+	exists bool
+}
+
+func snapshotSecretPriors(prepared preparedSecrets, keychain KeychainDriver) ([]secretPrior, error) {
+	priors := make([]secretPrior, 0, len(prepared.pending))
+	for _, mutation := range prepared.pending {
+		value, err := keychain.Retrieve(mutation.key)
+		if err != nil && !errors.Is(err, ErrSecretNotFound) {
+			return nil, err
+		}
+		priors = append(priors, secretPrior{key: mutation.key, value: value, exists: err == nil})
+	}
+	return priors, nil
+}
+
+func restoreSecretPriors(keychain KeychainDriver, priors []secretPrior) error {
+	failed := false
+	for index := len(priors) - 1; index >= 0; index-- {
+		prior := priors[index]
+		var err error
+		if prior.exists {
+			err = keychain.Store(prior.key, prior.value)
+		} else {
+			err = keychain.Delete(prior.key)
+			if errors.Is(err, ErrSecretNotFound) {
+				err = nil
+			}
+		}
+		if err != nil {
+			failed = true
+		}
+	}
+	if failed {
+		return ErrSecretRollback
+	}
+	return nil
+}
+
+func applyPreparedSecrets(prepared preparedSecrets, keychain KeychainDriver) ([]secretPrior, error) {
+	if len(prepared.pending) == 0 {
+		return nil, nil
+	}
+	priors, err := snapshotSecretPriors(prepared, keychain)
+	if err != nil {
+		return nil, err
+	}
+	for _, mutation := range prepared.pending {
+		if err := keychain.Store(mutation.key, mutation.value); err != nil {
+			if rollbackErr := restoreSecretPriors(keychain, priors); rollbackErr != nil {
+				return priors, rollbackErr
+			}
+			return priors, err
+		}
+	}
+	return priors, nil
+}
+
+type objectPublication struct {
+	created   int
+	uncertain bool
+	dirs      map[string]struct{}
+}
+
+func (s *Store) linkCandidateObject(source, destination string) error {
+	if s.commitPublishLink != nil {
+		return s.commitPublishLink(source, destination)
+	}
+	return os.Link(source, destination)
+}
+
+func (s *Store) syncObjectDirectory(path string) error {
+	if s.commitSyncDir != nil {
+		return s.commitSyncDir(path)
+	}
+	directory, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	syncErr := directory.Sync()
+	closeErr := directory.Close()
+	if syncErr != nil {
+		return syncErr
+	}
+	return closeErr
+}
+
+func verifyLooseObject(path, objectID string) error {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return ErrGitCommand
+	}
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_CLOEXEC|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return ErrGitCommand
+	}
+	defer func() { _ = file.Close() }()
+	opened, err := file.Stat()
+	if err != nil || !os.SameFile(info, opened) {
+		return ErrGitCommand
+	}
+	reader, err := zlib.NewReader(file)
+	if err != nil {
+		return ErrGitCommand
+	}
+	defer func() { _ = reader.Close() }()
+	var digest []byte
+	switch len(objectID) {
+	case 40:
+		hash := sha1.New() //nolint:gosec // SHA-1 is Git's repository object format, not a security choice.
+		if _, err := io.Copy(hash, reader); err != nil {
+			return ErrGitCommand
+		}
+		digest = hash.Sum(nil)
+	case 64:
+		hash := sha256.New()
+		if _, err := io.Copy(hash, reader); err != nil {
+			return ErrGitCommand
+		}
+		digest = hash.Sum(nil)
+	default:
+		return ErrGitCommand
+	}
+	if !strings.EqualFold(hex.EncodeToString(digest), objectID) {
+		return ErrGitCommand
+	}
+	return nil
+}
+
+func (s *Store) publishCandidateObjects(claim claimedIngestCommit) (objectPublication, error) {
+	publication := objectPublication{dirs: make(map[string]struct{})}
+	objectRoot := filepath.Join(s.git.repoDir, "objects")
+	err := filepath.WalkDir(claim.quarantine.objectsPath, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if path == claim.quarantine.objectsPath || entry.IsDir() {
+			return nil
+		}
+		relative, err := filepath.Rel(claim.quarantine.objectsPath, path)
+		if err != nil {
+			return err
+		}
+		parts := strings.Split(filepath.ToSlash(relative), "/")
+		if len(parts) != 2 || len(parts[0]) != 2 || (len(parts[1]) != 38 && len(parts[1]) != 62) {
+			return ErrGitCommand
+		}
+		objectID := parts[0] + parts[1]
+		if !validGitObjectID(objectID) {
+			return ErrGitCommand
+		}
+		info, err := os.Lstat(path)
+		if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			return ErrGitCommand
+		}
+		if err := verifyLooseObject(path, objectID); err != nil {
+			return err
+		}
+		fanout := filepath.Join(objectRoot, parts[0])
+		if err := os.Mkdir(fanout, 0o755); err != nil && !errors.Is(err, os.ErrExist) {
+			return err
+		}
+		fanoutInfo, err := os.Lstat(fanout)
+		if err != nil || !fanoutInfo.IsDir() || fanoutInfo.Mode()&os.ModeSymlink != 0 {
+			return ErrGitCommand
+		}
+		destination := filepath.Join(fanout, parts[1])
+		if err := s.linkCandidateObject(path, destination); err != nil {
+			if !errors.Is(err, os.ErrExist) {
+				return err
+			}
+			return verifyLooseObject(destination, objectID)
+		}
+		publication.created++
+		publication.dirs[fanout] = struct{}{}
+		return nil
+	})
+	if err != nil {
+		return publication, err
+	}
+	s.emitCommitEvent("object-publication")
+	directories := make([]string, 0, len(publication.dirs))
+	for directory := range publication.dirs {
+		directories = append(directories, directory)
+	}
+	sortStrings(directories)
+	for _, directory := range directories {
+		if err := s.syncObjectDirectory(directory); err != nil {
+			publication.uncertain = true
+			return publication, err
+		}
+		s.emitCommitEvent("fanout-fsync")
+	}
+	if err := s.syncObjectDirectory(objectRoot); err != nil {
+		publication.uncertain = true
+		return publication, err
+	}
+	s.emitCommitEvent("object-root-fsync")
+	return publication, nil
+}
+
+func defaultCommitOutcome(claim claimedIngestCommit) model.IngestCommitOutcome {
+	refState := model.IngestRefExpected
+	if !claim.baseline.RefPresent {
+		refState = model.IngestRefExpected
+	}
+	return model.IngestCommitOutcome{
+		InitializationID: claim.record.initializationID,
+		TransactionID:    claim.record.transactionID,
+		Status:           model.IngestCommitNotCommitted,
+		RefState:         refState,
+		Backend:          model.IngestBackendUnchanged,
+		Objects:          model.IngestObjectsQuarantined,
+		Cleanup:          model.QuarantineCleanupRetained,
+		FailureCode:      model.IngestFailureNone,
+	}
+}
+
+func (s *Store) cleanupCommittedTransaction(
+	claim claimedIngestCommit,
+	outcome *model.IngestCommitOutcome,
+	commitErr error,
+) error {
+	if outcome.RecoveryRequired || outcome.Status == model.IngestCommitRecoveryRequired {
+		return ErrIngestRecoveryRequired
+	}
+	s.transactionMu.Lock()
+	if claim.record.lifecycle == model.IngestLifecycleCommitting {
+		claim.record.lifecycle = model.IngestLifecycleFinalizing
+	}
+	s.transactionMu.Unlock()
+	cleanup, recovery := s.cleanupIngestQuarantine(claim.record)
+	outcome.Cleanup = cleanup
+	if cleanup == model.QuarantineCleanupRemoved {
+		if outcome.Status != model.IngestCommitCommitted {
+			outcome.Objects = model.IngestObjectsRemoved
+		}
+		return commitErr
+	}
+	outcome.RecoveryRequired = recovery || cleanup != model.QuarantineCleanupRemoved
+	if outcome.FailureCode == model.IngestFailureNone {
+		outcome.FailureCode = model.IngestFailureCleanup
+	}
+	return ErrIngestRecoveryRequired
+}
+
+// CommitIngest publishes one Store-issued main transaction. The caller supplies
+// no branch, ref, path, Git verb, or cleanup locator: all authority is claimed
+// atomically from the Store registry before any candidate/backend/ref effect.
+func (s *Store) CommitIngest(
+	ctx context.Context,
+	initializationID model.InstallInitializationID,
+	transactionID model.IngestTransactionID,
+	profile model.Profile,
+	message string,
+) (model.IngestCommitOutcome, error) {
+	claim, terminal, err := s.claimIngestCommit(initializationID, transactionID)
+	if err != nil {
+		return invalidAuthorityCommitOutcome(initializationID, transactionID), err
+	}
+	if terminal != nil {
+		return terminal.outcome, terminal.err
+	}
+	outcome := defaultCommitOutcome(claim)
+	if err := claim.baseline.Validate(); err != nil {
+		outcome.FailureCode = model.IngestFailureInvalidBaseline
+		commitErr := s.cleanupCommittedTransaction(claim, &outcome, ErrIngestNotCommitted)
+		return s.terminalizeIngestCommit(claim, outcome, commitErr)
+	}
+	if err := s.git.validateDirectRef(claim.ref); err != nil {
+		outcome.Status = model.IngestCommitRecoveryRequired
+		outcome.RefState = model.IngestRefUnknown
+		outcome.FailureCode = model.IngestFailureRefPrepare
+		outcome.RecoveryRequired = true
+		return s.terminalizeIngestCommit(claim, outcome, ErrIngestRecoveryRequired)
+	}
+	prepared, err := prepareSecrets(profile, s.keychain)
+	if err != nil {
+		outcome.FailureCode = model.IngestFailureBackend
+		commitErr := s.cleanupCommittedTransaction(claim, &outcome, err)
+		return s.terminalizeIngestCommit(claim, outcome, commitErr)
+	}
+	outcome.Withheld = append(model.WithheldReport(nil), prepared.report...)
+
+	var commitErr error
+	err = withStoreRootTransactionLock(s.dir, func(guard *storeRootTransactionGuard) error {
+		return s.authenticateClaimedQuarantine(guard, claim, func() error {
+			candidateOID, candidateErr := s.prepareIngestCandidate(ctx, claim, prepared.profile, message)
+			if candidateErr != nil {
+				outcome.FailureCode = model.IngestFailureCandidate
+				commitErr = candidateErr
+				return nil
+			}
+			mutation, mutationErr := encodeRefMutation(claim.ref, candidateOID, claim.baseline.RefPresent, claim.baseline.ExpectedRevision)
+			if mutationErr != nil {
+				outcome.FailureCode = model.IngestFailureInvalidBaseline
+				commitErr = mutationErr
+				return nil
+			}
+			if directErr := s.git.validateDirectRef(claim.ref); directErr != nil {
+				outcome.Status = model.IngestCommitRecoveryRequired
+				outcome.RefState = model.IngestRefUnknown
+				outcome.FailureCode = model.IngestFailureRefPrepare
+				outcome.RecoveryRequired = true
+				commitErr = ErrIngestRecoveryRequired
+				return nil
+			}
+			candidateRunner := s.git.candidate(claim.quarantine.indexPath, claim.quarantine.objectsPath)
+			candidateRunner.refEvent = s.commitEvent
+			session, sessionErr := candidateRunner.startUpdateRefSession(ctx)
+			if sessionErr != nil {
+				outcome.FailureCode = model.IngestFailureRefPrepare
+				commitErr = sessionErr
+				return nil
+			}
+			if prepareErr := session.Prepare(mutation); prepareErr != nil {
+				outcome.Status = model.IngestCommitConflict
+				outcome.RefState = model.IngestRefExpected
+				outcome.FailureCode = model.IngestFailureRefPrepare
+				commitErr = ErrSecretRefConflict
+				return nil
+			}
+
+			priors, backendErr := applyPreparedSecrets(prepared, s.keychain)
+			if backendErr != nil {
+				outcome.FailureCode = model.IngestFailureBackend
+				outcome.Backend = model.IngestBackendRestored
+				if errors.Is(backendErr, ErrSecretRollback) {
+					outcome.Backend = model.IngestBackendUncertain
+					outcome.RecoveryRequired = true
+				}
+				if abortErr := session.Abort(); abortErr != nil {
+					outcome.RecoveryRequired = true
+				}
+				commitErr = backendErr
+				return nil
+			}
+			if len(prepared.pending) > 0 {
+				outcome.Backend = model.IngestBackendApplied
+				s.emitCommitEvent("backend-effects")
+			}
+
+			publication, publishErr := s.publishCandidateObjects(claim)
+			if publishErr != nil {
+				outcome.FailureCode = model.IngestFailureObjectPublish
+				if publication.created > 0 || publication.uncertain {
+					outcome.Objects = model.IngestObjectsUncertain
+					outcome.RecoveryRequired = true
+				}
+				if restoreErr := restoreSecretPriors(s.keychain, priors); restoreErr != nil {
+					outcome.Backend = model.IngestBackendUncertain
+					outcome.RecoveryRequired = true
+				} else if len(prepared.pending) > 0 {
+					outcome.Backend = model.IngestBackendRestored
+				}
+				if abortErr := session.Abort(); abortErr != nil {
+					outcome.RecoveryRequired = true
+				}
+				commitErr = publishErr
+				return nil
+			}
+			outcome.Objects = model.IngestObjectsPublished
+
+			if commitSessionErr := session.Commit(); commitSessionErr == nil {
+				outcome.Status = model.IngestCommitCommitted
+				outcome.RefState = model.IngestRefCandidate
+				outcome.FailureCode = model.IngestFailureNone
+				commitErr = nil
+				return nil
+			}
+
+			// Only a lost response after the standalone commit write reaches this
+			// observation boundary. Every deterministic pre-commit error returned
+			// above after writing abort instead.
+			observed, present, observeErr := s.git.observeDirectRef(ctx, claim.ref)
+			switch {
+			case observeErr == nil && present && observed == candidateOID:
+				outcome.Status = model.IngestCommitCommitted
+				outcome.RefState = model.IngestRefCandidate
+				outcome.FailureCode = model.IngestFailureNone
+				commitErr = nil
+				return nil
+			case observeErr == nil && ((claim.baseline.RefPresent && present &&
+				claim.baseline.ExpectedRevision != nil && observed == *claim.baseline.ExpectedRevision) ||
+				(!claim.baseline.RefPresent && !present)):
+				outcome.RefState = model.IngestRefExpected
+				guardMutation, guardErr := encodeRefGuard(claim.ref, claim.baseline.ExpectedRevision, len(candidateOID))
+				if guardErr == nil {
+					var guardSession *updateRefSession
+					guardSession, guardErr = s.git.startUpdateRefSession(ctx)
+					if guardErr == nil {
+						guardErr = guardSession.Prepare(guardMutation)
+					}
+					if guardErr == nil {
+						guardErr = restoreSecretPriors(s.keychain, priors)
+						if guardErr == nil && len(prepared.pending) > 0 {
+							outcome.Backend = model.IngestBackendRestored
+						}
+					}
+					if guardSession != nil && guardSession.locked {
+						if abortErr := guardSession.Abort(); guardErr == nil {
+							guardErr = abortErr
+						}
+					}
+				}
+				if guardErr == nil {
+					outcome.Status = model.IngestCommitNotCommitted
+					outcome.Objects = model.IngestObjectsRetained
+					outcome.FailureCode = model.IngestFailureRefCommit
+					commitErr = ErrIngestNotCommitted
+					return nil
+				}
+				outcome.Backend = model.IngestBackendUncertain
+			default:
+				if observeErr != nil || !present {
+					outcome.RefState = model.IngestRefUnknown
+				} else {
+					outcome.RefState = model.IngestRefOther
+				}
+			}
+			outcome.Status = model.IngestCommitRecoveryRequired
+			outcome.FailureCode = model.IngestFailureRefCommit
+			outcome.RecoveryRequired = true
+			commitErr = ErrIngestRecoveryRequired
+			return nil
+		})
+	})
+	if err != nil {
+		outcome.Status = model.IngestCommitRecoveryRequired
+		outcome.FailureCode = model.IngestFailureQuarantine
+		outcome.RecoveryRequired = true
+		commitErr = ErrIngestRecoveryRequired
+	}
+	if !outcome.RecoveryRequired {
+		commitErr = s.cleanupCommittedTransaction(claim, &outcome, commitErr)
+	}
+	return s.terminalizeIngestCommit(claim, outcome, commitErr)
+}
+
 // Commit writes a profile to a target branch purely via plumbing — no checkout,
 // no working-tree mutation anywhere (D-12, critical decision #4; the conda race
 // avoided by construction). It stages exactly two blobs: profile.json (the
@@ -279,7 +933,8 @@ func (s *Store) Create(ctx context.Context, name string) error {
 // WithheldReport names what was withheld (success-criterion #4, surfaced by the CLI
 // in Phase 5). The signature is unchanged from Plan 02.
 func (s *Store) Commit(ctx context.Context, branch string, p model.Profile, msg string) (WithheldReport, error) {
-	if err := validBranchName(branch); err != nil {
+	headRef, err := validatedHeadRefForBranch(branch)
+	if err != nil {
 		return nil, err
 	}
 
@@ -323,7 +978,7 @@ func (s *Store) Commit(ctx context.Context, branch string, p model.Profile, msg 
 	_ = idxFile.Close()
 	defer func() { _ = os.Remove(idx) }()
 
-	ref := "refs/heads/" + branch
+	ref := headRef.name
 	var parent string
 	if s.git.catFileExists(ctx, ref) {
 		// Seed the temp index from the branch's current tree and parent on its tip.
