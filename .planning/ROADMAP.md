@@ -258,7 +258,7 @@ Plans:
   3. First adoption appends the canonical Phase 5 loader region; installed/re-ingest replaces or collapses only exact marker regions. Re-running ingest/install is idempotent, every byte outside those regions remains exact and in order, and post-END appends are warned about rather than clobbered.
   4. Three linked proofs hold: `Store.Read(main) → ir.Regenerate` preserves the full redacted profile's non-secret order/text/semantics; activation applies only `EffectiveManaged` entries and resolves `SecretRef`s; and a built-binary `zsh -f` comparison of the pristine source with the actual installed `.zshrc` is behavior-equivalent apart from exact zsh-pro-owned loader symbols, with no startup subprocess.
 
-**Plans**: 1/5 plans executed
+**Plans**: 2/5 plans executed
 
 Plans:
 **Wave 1**
@@ -267,7 +267,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 06-02-PLAN.md — Prepare/lock expected refs before backend/object publication with typed recovery and SecretRef-safe reruns
+- [x] 06-02-PLAN.md — Prepare/lock expected refs before backend/object publication with typed recovery and SecretRef-safe reruns
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
@@ -293,7 +293,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 | 3. Git-Backed Store | 3/3 | Complete   | 2026-06-27 |
 | 4. Manifest Builder + Emit | 19/19 | Complete    | 2026-07-27 |
 | 5. Runtime Loader + CLI + Bootstrap | 8/8 | Complete    | 2026-07-30 |
-| 6. Ingest End-to-End | 1/5 | In Progress | - |
+| 6. Ingest End-to-End | 2/5 | In Progress | - |
 
 ## Requirement Coverage
 

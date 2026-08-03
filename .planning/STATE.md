@@ -5,16 +5,16 @@ milestone_name: Branchable Shell Environments
 current_phase: 06
 current_phase_name: Ingest End-to-End
 status: executing
-stopped_at: Completed 06-01-PLAN.md
-last_updated: "2026-08-03T09:30:50.585Z"
+stopped_at: Completed 06-02-PLAN.md
+last_updated: "2026-08-03T10:13:14.192Z"
 last_activity: 2026-08-03
-last_activity_desc: Completed Phase 06 Plan 01 transaction foundation
+last_activity_desc: Completed Phase 06 Plan 02 prepared ingest publication
 progress:
   total_phases: 6
   completed_phases: 5
   total_plans: 40
-  completed_plans: 36
-  percent: 90
+  completed_plans: 37
+  percent: 93
 ---
 
 # Project State
@@ -29,11 +29,11 @@ See: .planning/PROJECT.md (updated 2026-06-25)
 ## Current Position
 
 Phase: 06 (Ingest End-to-End) — EXECUTING
-Plan: 2 of 5
+Plan: 3 of 5
 Status: Ready to execute
-Last activity: 2026-08-03 — Completed Phase 06 Plan 01 transaction foundation
+Last activity: 2026-08-03 — Completed Phase 06 Plan 02 prepared ingest publication
 
-Progress: [█████████░] 90%
+Progress: [█████████░] 93%
 
 ## Performance Metrics
 
@@ -91,6 +91,7 @@ Progress: [█████████░] 90%
 | Phase 05 P04 | 36 min | 2 tasks | 4 files |
 | Phase 05 P05 | 9min | 2 tasks | 7 files |
 | Phase 06 P01 | 585min | 3 tasks | 10 files |
+| Phase 06 P02 | 38m | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -159,6 +160,10 @@ Recent decisions affecting current work:
 - [Phase ?]: The runtime emitter owns the complete executable transition, so the loader validates and evaluates one deactivate-then-apply source exactly once.
 - [Phase ?]: Runtime SecretRefs resolve only on an activation copy after backend-kind validation, preserving persisted redaction.
 - [Phase ?]: Nil-like runtime dependencies are normalized at CLI constructors so public verbs fail through cli.fail instead of panicking.
+- [Phase ?]: Only update-ref prepare acknowledgement establishes the expected-ref lock; backend and final-object effects occur afterward, and commit is a separate final write.
+- [Phase ?]: Publication truth and cleanup evidence remain independent, including when commit-response observation or authenticated cleanup requires recovery.
+- [Phase ?]: Persisted SecretRefs are structurally validated before one backend-kind comparison and never trigger Retrieve, Store, or Delete.
+- [Phase ?]: Legacy branch commits use a private validated-ref constructor and the shared ingest state machine without widening public main-only BeginIngest.
 
 ### Pending Todos
 
@@ -187,6 +192,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-08-03T09:30:50.578Z
-Stopped at: Completed 06-01-PLAN.md
+Last session: 2026-08-03T10:13:14.185Z
+Stopped at: Completed 06-02-PLAN.md
 Resume file: None
