@@ -5,16 +5,16 @@ milestone_name: Branchable Shell Environments
 current_phase: 06
 current_phase_name: Ingest End-to-End
 status: executing
-stopped_at: Completed 06-02-PLAN.md
-last_updated: "2026-08-03T10:13:14.192Z"
+stopped_at: Completed 06-03-PLAN.md
+last_updated: "2026-08-03T21:46:58.071Z"
 last_activity: 2026-08-03
-last_activity_desc: Completed Phase 06 Plan 02 prepared ingest publication
+last_activity_desc: Completed Phase 06 Plan 03 guarded startup promotion
 progress:
   total_phases: 6
   completed_phases: 5
   total_plans: 40
-  completed_plans: 37
-  percent: 93
+  completed_plans: 38
+  percent: 95
 ---
 
 # Project State
@@ -29,11 +29,11 @@ See: .planning/PROJECT.md (updated 2026-06-25)
 ## Current Position
 
 Phase: 06 (Ingest End-to-End) — EXECUTING
-Plan: 3 of 5
+Plan: 4 of 5
 Status: Ready to execute
-Last activity: 2026-08-03 — Completed Phase 06 Plan 02 prepared ingest publication
+Last activity: 2026-08-03 — Completed Phase 06 Plan 03 guarded startup promotion
 
-Progress: [█████████░] 93%
+Progress: [██████████] 95%
 
 ## Performance Metrics
 
@@ -92,6 +92,7 @@ Progress: [█████████░] 93%
 | Phase 05 P05 | 9min | 2 tasks | 7 files |
 | Phase 06 P01 | 585min | 3 tasks | 10 files |
 | Phase 06 P02 | 38m | 2 tasks | 6 files |
+| Phase 06 P03 | 48m | 3 tasks | 12 files |
 
 ## Accumulated Context
 
@@ -164,6 +165,9 @@ Recent decisions affecting current work:
 - [Phase ?]: Publication truth and cleanup evidence remain independent, including when commit-response observation or authenticated cleanup requires recovery.
 - [Phase ?]: Persisted SecretRefs are structurally validated before one backend-kind comparison and never trigger Retrieve, Store, or Delete.
 - [Phase ?]: Legacy branch commits use a private validated-ref constructor and the shared ingest state machine without widening public main-only BeginIngest.
+- [Phase ?]: 06-03: expectedTarget remains the original bounded snapshot while expectedCandidate comes only from independently durable peer evidence.
+- [Phase ?]: 06-03: one private exchange peer owns candidate, displaced occupant, and guarded reverse states; absent post-create rollback remains recovery-required.
+- [Phase ?]: 06-03: pure adapter checks and a real same-filesystem exchange/no-replace probe precede Store, cache, loader, and target effects.
 
 ### Pending Todos
 
@@ -192,6 +196,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-08-03T10:13:14.185Z
-Stopped at: Completed 06-02-PLAN.md
+Last session: 2026-08-03T21:46:58.064Z
+Stopped at: Completed 06-03-PLAN.md
 Resume file: None
