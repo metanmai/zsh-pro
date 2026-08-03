@@ -1187,3 +1187,341 @@ func envValue(env []string, name string) string {
 	}
 	return ""
 }
+
+// Task 1 RED scaffolding keeps the behavior-first tests buildable before the
+// production transaction types exist. GREEN removes these test-only declarations
+// when install_transaction.go supplies the real contracts.
+type markerTopology uint8
+
+const (
+	markerTopologyNone markerTopology = iota
+	markerTopologySingle
+	markerTopologyMultiple
+	ingestPostEndWarning = "zsh-pro: ordinary startup content remains after the managed loader block"
+)
+
+type markerRegion struct{}
+
+type zshrcMarkerLayout struct {
+	topology markerTopology
+	regions  []markerRegion
+}
+
+type installSnapshot struct{}
+
+func (installSnapshot) matchesCurrent() (bool, error) {
+	return false, errors.New("Task 1 install snapshot is not implemented")
+}
+
+type preparedIngestInstall struct {
+	originalSnapshot installSnapshot
+	eligibleSource   []byte
+	candidate        []byte
+	appendWarning    string
+	layout           zshrcMarkerLayout
+}
+
+func prepareIngestInstallAt(string, []byte) (preparedIngestInstall, error) {
+	return preparedIngestInstall{}, errors.New("Task 1 ingest preparation is not implemented")
+}
+
+func scanZshrcMarkerTopology([]byte) (zshrcMarkerLayout, error) {
+	return zshrcMarkerLayout{}, errors.New("Task 1 marker topology is not implemented")
+}
+
+func TestInstallInitializesStoreBeforeCache(t *testing.T) {
+	home := t.TempDir()
+	setInstallHome(t, home)
+	runtimeDir := filepath.Join(home, ".zsh-pro")
+	var events []string
+
+	initializer := func(context.Context) (StoreInitialization, error) {
+		if _, err := os.Lstat(runtimeDir); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("runtime cache existed before Store initialization: %v", err)
+		}
+		events = append(events, "initializer")
+		return StoreInitialization{
+			CreatedPath: filepath.Join(home, ".local", "share", "zsh-pro", "profiles"),
+		}, nil
+	}
+	hooker := callbackHooker{script: "typeset -g ZP_INSTALL_ORDER=1\n", before: func() {
+		if _, err := os.Stat(runtimeDir); err != nil {
+			t.Fatalf("runtime cache was not ready before loader preparation: %v", err)
+		}
+		events = append(events, "cache")
+	}}
+
+	if err := runInstallWithStoreInitialization(hooker, initializer); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if got, want := strings.Join(events, ","), "initializer,cache"; got != want {
+		t.Fatalf("install order = %q, want %q", got, want)
+	}
+}
+
+func TestInstallExplicitSharedRootOrdersStoreBeforeCache(t *testing.T) {
+	home := t.TempDir()
+	setInstallHome(t, home)
+	shared := filepath.Join(home, "shared-zsh-pro")
+	t.Setenv("ZSHPRO_HOME", shared)
+	before := []byte("export KEEP_SHARED_ROOT=1\n")
+	if err := os.WriteFile(filepath.Join(home, ".zshrc"), before, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var events []string
+	initializer := func(context.Context) (StoreInitialization, error) {
+		events = append(events, "initializer")
+		if err := os.Mkdir(shared, 0o700); err != nil {
+			return StoreInitialization{}, err
+		}
+		return StoreInitialization{
+			CreatedPath: shared,
+			Rollback: func() error {
+				events = append(events, "initializer-rollback")
+				entries, err := os.ReadDir(shared)
+				if err == nil && len(entries) != 0 {
+					return fmt.Errorf("runtime cache was not rolled back before initializer: %v", entries)
+				}
+				return os.Remove(shared)
+			},
+		}, nil
+	}
+
+	err := runInstallWithStoreInitialization(staticHooker("if then\n"), initializer)
+	if err == nil || !strings.Contains(err.Error(), "install cached loader") {
+		t.Fatalf("install error = %v, want injected loader failure", err)
+	}
+	if got, want := strings.Join(events, ","), "initializer,initializer-rollback"; got != want {
+		t.Fatalf("shared-root compensation order = %q, want %q", got, want)
+	}
+	if got, readErr := os.ReadFile(filepath.Join(home, ".zshrc")); readErr != nil || !bytes.Equal(got, before) {
+		t.Fatalf("shared-root failure changed target: %q, err=%v", got, readErr)
+	}
+	if _, err := os.Lstat(shared); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("shared-root compensation retained runtime/store state: %v", err)
+	}
+}
+
+func TestInstallRejectsAncestorStoreCacheOverlap(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		storeRoot func(string) string
+	}{
+		{name: "store contains cache", storeRoot: func(home string) string { return filepath.Join(home, "overlap") }},
+		{name: "cache contains store", storeRoot: func(home string) string { return filepath.Join(home, "overlap", "store") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			setInstallHome(t, home)
+			cacheRoot := filepath.Join(home, "overlap", "cache")
+			if tc.name == "cache contains store" {
+				cacheRoot = filepath.Join(home, "overlap")
+			}
+			t.Setenv("ZSHPRO_HOME", cacheRoot)
+			before := []byte("export KEEP_OVERLAP=1\n")
+			if err := os.WriteFile(filepath.Join(home, ".zshrc"), before, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			rollbackCalls := 0
+			err := runInstallWithStoreInitialization(staticHooker("typeset -g ZP_OVERLAP=1\n"), func(context.Context) (StoreInitialization, error) {
+				return StoreInitialization{
+					CreatedPath: tc.storeRoot(home),
+					Rollback: func() error {
+						rollbackCalls++
+						return nil
+					},
+				}, nil
+			})
+			if err == nil || !strings.Contains(err.Error(), "overlap") {
+				t.Fatalf("install error = %v, want ancestor-overlap refusal", err)
+			}
+			if rollbackCalls != 1 {
+				t.Fatalf("initializer rollback calls = %d, want 1", rollbackCalls)
+			}
+			if _, err := os.Lstat(cacheRoot); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("ancestor-overlap refusal created cache: %v", err)
+			}
+			if got, readErr := os.ReadFile(filepath.Join(home, ".zshrc")); readErr != nil || !bytes.Equal(got, before) {
+				t.Fatalf("ancestor-overlap refusal changed target: %q, err=%v", got, readErr)
+			}
+		})
+	}
+}
+
+func TestInstallSnapshotMatchesBoundedFields(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "zshrc")
+	if err := os.WriteFile(target, []byte("export SNAPSHOT=1\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	requested := filepath.Join(dir, ".zshrc")
+	if err := os.Symlink(target, requested); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := prepareIngestInstallAt(requested, renderInstallBlock())
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := prepared.originalSnapshot
+	if matches, err := snapshot.matchesCurrent(); err != nil || !matches {
+		t.Fatalf("fresh snapshot match = (%v, %v), want true", matches, err)
+	}
+
+	changedTime := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(target, changedTime, changedTime); err != nil {
+		t.Fatal(err)
+	}
+	if matches, err := snapshot.matchesCurrent(); err != nil || !matches {
+		t.Fatalf("timestamp-only change rejected bounded snapshot: (%v, %v)", matches, err)
+	}
+	if err := os.Chmod(target, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if matches, err := snapshot.matchesCurrent(); err != nil || matches {
+		t.Fatalf("permission change match = (%v, %v), want false", matches, err)
+	}
+	if err := os.Chmod(target, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("export SNAPSHOT=2\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if matches, err := snapshot.matchesCurrent(); err != nil || matches {
+		t.Fatalf("content change match = (%v, %v), want false", matches, err)
+	}
+}
+
+func TestScanZshrcMarkerTopologyTable(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		input   string
+		want    markerTopology
+		regions int
+		bad     bool
+	}{
+		{name: "none", input: "export A=1\n", want: markerTopologyNone},
+		{name: "one balanced", input: installBegin + "\nold\n" + installEnd + "\n", want: markerTopologySingle, regions: 1},
+		{name: "multiple balanced", input: installBegin + "\na\n" + installEnd + "\nkeep\n" + installBegin + "\nb\n" + installEnd + "\n", want: markerTopologyMultiple, regions: 2},
+		{name: "orphan end", input: installEnd + "\n", bad: true},
+		{name: "unterminated start", input: installBegin + "\n", bad: true},
+		{name: "nested", input: installBegin + "\n" + installBegin + "\n" + installEnd + "\n", bad: true},
+		{name: "interleaved", input: installBegin + "\n" + installEnd + "\n" + installEnd + "\n", bad: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			layout, err := scanZshrcMarkerTopology([]byte(tc.input))
+			if tc.bad {
+				if err == nil {
+					t.Fatalf("malformed topology accepted: %#v", layout)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if layout.topology != tc.want || len(layout.regions) != tc.regions {
+				t.Fatalf("layout = (%v, %d regions), want (%v, %d)", layout.topology, len(layout.regions), tc.want, tc.regions)
+			}
+		})
+	}
+}
+
+func TestPrepareIngestPreservesEveryOutsideMarkerByte(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".zshrc")
+	input := []byte("export MANAGED=1\r\n" +
+		"if true; then print imperative; fi\r\n" +
+		"opaque syntax ???\r\n" +
+		"# gap follows\r\n\r\n" +
+		installBegin + "\r\nold managed bytes\r\n" + installEnd + "\r\n" +
+		"export POST_END=1")
+	if err := os.WriteFile(path, input, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	block := []byte(installBegin + "\ncanonical\n" + installEnd)
+	prepared, err := prepareIngestInstallAt(path, block)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSource := []byte("export MANAGED=1\r\nif true; then print imperative; fi\r\nopaque syntax ???\r\n# gap follows\r\n\r\n\r\nexport POST_END=1")
+	if !bytes.Equal(prepared.eligibleSource, wantSource) {
+		t.Fatalf("eligible source = %q, want %q", prepared.eligibleSource, wantSource)
+	}
+	wantCandidate := []byte("export MANAGED=1\r\nif true; then print imperative; fi\r\nopaque syntax ???\r\n# gap follows\r\n\r\n" + string(block) + "\r\nexport POST_END=1")
+	if !bytes.Equal(prepared.candidate, wantCandidate) {
+		t.Fatalf("candidate = %q, want %q", prepared.candidate, wantCandidate)
+	}
+	if prepared.appendWarning == "" {
+		t.Fatal("post-END ordinary content produced no warning")
+	}
+}
+
+func TestPrepareIngestTopologyModes(t *testing.T) {
+	block := []byte(installBegin + "\nnew\n" + installEnd)
+	for _, tc := range []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "empty", input: "", want: string(block) + "\n"},
+		{name: "no marker without final newline", input: "export A=1", want: "export A=1\n\n" + string(block)},
+		{name: "one balanced", input: "before\n" + installBegin + "\nold\n" + installEnd + "\nafter\n", want: "before\n" + string(block) + "\nafter\n"},
+		{name: "balanced duplicates", input: installBegin + "\na\n" + installEnd + "\n" + installBegin + "\nb\n" + installEnd + "\n", want: string(block) + "\n\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), ".zshrc")
+			if err := os.WriteFile(path, []byte(tc.input), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			prepared, err := prepareIngestInstallAt(path, block)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := string(prepared.candidate); got != tc.want {
+				t.Fatalf("candidate = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPrepareIngestAppendWarningRetainsEligibleSource(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".zshrc")
+	post := "alias after_end='kept'\n"
+	input := "before\n" + installBegin + "\nold\n" + installEnd + "\n# comment only\n\n" + post
+	if err := os.WriteFile(path, []byte(input), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := prepareIngestInstallAt(path, renderInstallBlock())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.appendWarning != ingestPostEndWarning {
+		t.Fatalf("warning = %q, want %q", prepared.appendWarning, ingestPostEndWarning)
+	}
+	if !bytes.Contains(prepared.eligibleSource, []byte(post)) || !bytes.Contains(prepared.candidate, []byte(post)) {
+		t.Fatal("post-END source was not retained in both logical and physical products")
+	}
+}
+
+func TestPrepareIngestRepairsBalancedDuplicates(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".zshrc")
+	input := installBegin + "\nold-a\n" + installEnd + "\n" + installBegin + "\nold-b\n" + installEnd + "\n"
+	if err := os.WriteFile(path, []byte(input), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := prepareIngestInstallAt(path, renderInstallBlock())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.layout.topology != markerTopologyMultiple {
+		t.Fatalf("topology = %v, want duplicate repair", prepared.layout.topology)
+	}
+	if got := strings.Count(string(prepared.candidate), installBegin); got != 1 {
+		t.Fatalf("candidate BEGIN markers = %d, want 1", got)
+	}
+	if bytes.Contains(prepared.eligibleSource, []byte("old-a")) || bytes.Contains(prepared.eligibleSource, []byte("old-b")) {
+		t.Fatal("tool-owned duplicate-region bytes entered eligible source")
+	}
+	if prepared.appendWarning != "" {
+		t.Fatalf("duplicate region was misclassified as post-END ordinary content: %q", prepared.appendWarning)
+	}
+}
