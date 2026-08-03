@@ -105,7 +105,7 @@ status: complete
 - Removed all inherited `GIT_*` controls before setting the canonical bare repository, private index, private object directory, and controlled alternate.
 - Treated a held advisory-lock descriptor as the cooperating-process authority and retained recovery evidence whenever identity or durability could not be proven.
 
-## Verification
+## Validation Results
 
 - Immutable execution-base equality and commit existence — PASS.
 - All 28 exact Task 3 selectors — PASS.
