@@ -25,12 +25,21 @@ const gitTimeout = 5 * time.Second
 type gitRunner struct {
 	repoDir string // path to the bare git repo ($ZSHPRO_HOME)
 
+	beforeStart func([]string)
+
 	// runtimeRoot is non-nil only for a sourced-loader capture. Every git
 	// subprocess starts from this descriptor's /dev/fd spelling before exec and
 	// inherits it as fd 3 with a relative GIT_DIR. The resulting working
 	// directory preserves the authenticated object even if its old pathname is
 	// replaced meanwhile.
 	runtimeRoot *os.File
+}
+
+func (g gitRunner) ownedEnvironment() []string { return os.Environ() }
+
+func validateGitArgv(args []string) error {
+	_ = args
+	return nil
 }
 
 // newGitRunner constructs a gitRunner after a one-time exec.LookPath("git") guard,

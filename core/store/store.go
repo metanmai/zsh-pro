@@ -90,7 +90,14 @@ type Store struct {
 
 	// beginAfterReserve is a per-Store test seam used to prove that authority is
 	// reserved before any baseline or filesystem I/O. Production leaves it nil.
-	beginAfterReserve func() error
+	beginAfterReserve          func() error
+	beginObserveMain           func(context.Context) (string, bool, error)
+	beginAfterQuarantineCreate func(string) error
+	beginAfterQuarantineOpen   func(string) error
+	beginAfterQuarantineStat   func(string) error
+	cleanupBeforeFinalCheck    func(quarantineCleanupSeam) error
+	cleanupAfterFinalCheck     func(quarantineCleanupSeam) error
+	cleanupDiscardLock         bool
 }
 
 // New constructs a Store after a one-time git-presence guard (an absent git binary

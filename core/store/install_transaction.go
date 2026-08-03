@@ -223,6 +223,13 @@ type ingestTransactionRecord struct {
 	beginOutcome     model.IngestBeginOutcome
 }
 
+type quarantineCleanupSeam struct {
+	Parent    *os.Root
+	Name      string
+	Relative  string
+	Directory bool
+}
+
 func (s *Store) reserveIngestTransaction(id model.InstallInitializationID) (*ingestTransactionRecord, model.IngestBeginOutcome, error) {
 	s.transactionMu.Lock()
 	defer s.transactionMu.Unlock()
@@ -256,6 +263,21 @@ func (s *Store) reserveIngestTransaction(id model.InstallInitializationID) (*ing
 
 func (s *Store) beginIngestReserved(_ context.Context, record *ingestTransactionRecord) (model.IngestBeginOutcome, error) {
 	return s.terminalizeBeginFailure(record, model.IngestFailureQuarantine, model.QuarantineCleanupRemoved, false), ErrIngestUnavailable
+}
+
+// AbortIngest cleans one Store-owned transaction quarantine.
+func (s *Store) AbortIngest(
+	ctx context.Context,
+	initializationID model.InstallInitializationID,
+	transactionID model.IngestTransactionID,
+) (model.IngestAbortOutcome, error) {
+	_, _, _ = ctx, initializationID, transactionID
+	return model.IngestAbortOutcome{}, ErrInvalidIngestAuthority
+}
+
+func (s *Store) transactionQuarantinePath(transactionID model.IngestTransactionID) string {
+	_ = transactionID
+	return ""
 }
 
 func (s *Store) terminalizeBeginFailure(

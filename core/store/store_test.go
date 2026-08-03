@@ -18,6 +18,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -918,4 +920,720 @@ func TestStoreTransactionRootLockUnavailableOrDiscarded(t *testing.T) {
 	if mutations != 0 {
 		t.Fatalf("discarded lock performed %d namespace mutations", mutations)
 	}
+}
+
+func newPhase6IngestStore(t *testing.T) (*Store, InstallInitialization, string) {
+	t.Helper()
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("transactional ingest is unsupported on this platform")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed; skipping ingest transaction tests")
+	}
+	root := filepath.Join(t.TempDir(), "store")
+	store, err := New(root, stubRegen{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialization, err := store.InitForInstall(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store, initialization, root
+}
+
+func beginPhase6Ingest(t *testing.T, store *Store, initialization InstallInitialization) model.IngestBeginOutcome {
+	t.Helper()
+	outcome, err := store.BeginIngest(context.Background(), initialization.ID())
+	if err != nil {
+		t.Fatalf("BeginIngest: %v (%#v)", err, outcome)
+	}
+	if outcome.Lifecycle != model.IngestLifecycleActive || outcome.TransactionID.IsZero() {
+		t.Fatalf("BeginIngest outcome = %#v, want active nonzero token", outcome)
+	}
+	return outcome
+}
+
+func abortPhase6Ingest(t *testing.T, store *Store, initialization InstallInitialization, token model.IngestTransactionID) model.IngestAbortOutcome {
+	t.Helper()
+	outcome, err := store.AbortIngest(context.Background(), initialization.ID(), token)
+	if err != nil {
+		t.Fatalf("AbortIngest: %v (%#v)", err, outcome)
+	}
+	return outcome
+}
+
+func TestBeginIngestTargetsMainWithoutBranchInput(t *testing.T) {
+	method := reflect.TypeOf((*Store).BeginIngest)
+	if method.NumIn() != 3 {
+		t.Fatalf("BeginIngest accepts %d inputs including receiver, want receiver+context+initialization ID", method.NumIn())
+	}
+	store, initialization, _ := newPhase6IngestStore(t)
+	outcome := beginPhase6Ingest(t, store, initialization)
+	mainTip, err := store.git.revParse(context.Background(), "refs/heads/main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.Baseline.ExpectedRevision == nil || *outcome.Baseline.ExpectedRevision != mainTip {
+		t.Fatalf("baseline revision = %v, want main %s", outcome.Baseline.ExpectedRevision, mainTip)
+	}
+	abortPhase6Ingest(t, store, initialization, outcome.TransactionID)
+}
+
+func TestBeginIngestPresentRefCarriesExpectedRevision(t *testing.T) {
+	store, initialization, _ := newPhase6IngestStore(t)
+	want, err := store.git.revParse(context.Background(), "refs/heads/main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	outcome := beginPhase6Ingest(t, store, initialization)
+	if !outcome.Baseline.RefPresent || outcome.Baseline.ExpectedRevision == nil || *outcome.Baseline.ExpectedRevision != want {
+		t.Fatalf("present baseline = %#v, want exact revision %s", outcome.Baseline, want)
+	}
+	abortPhase6Ingest(t, store, initialization, outcome.TransactionID)
+}
+
+func TestBeginIngestAbsentRefUsesNilExpectedAndZeroRevisionReads(t *testing.T) {
+	store, initialization, _ := newPhase6IngestStore(t)
+	ctx := context.Background()
+	tip, err := store.git.revParse(ctx, "refs/heads/main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.git.deleteRefCAS(ctx, "refs/heads/main", tip); err != nil {
+		t.Fatal(err)
+	}
+	revisionReads := 0
+	store.git.beforeStart = func(args []string) {
+		if len(args) > 0 && (args[0] == "ls-tree" || args[0] == "cat-file" || args[0] == "show") {
+			revisionReads++
+		}
+	}
+	outcome := beginPhase6Ingest(t, store, initialization)
+	if outcome.Baseline.RefPresent || outcome.Baseline.ExpectedRevision != nil || outcome.Baseline.ProfileObjectPresent {
+		t.Fatalf("absent baseline = %#v", outcome.Baseline)
+	}
+	if revisionReads != 0 {
+		t.Fatalf("absent ref performed %d exact-revision/object reads", revisionReads)
+	}
+	abortPhase6Ingest(t, store, initialization, outcome.TransactionID)
+}
+
+func TestBeginIngestInitOnlyBaseline(t *testing.T) {
+	store, initialization, _ := newPhase6IngestStore(t)
+	outcome := beginPhase6Ingest(t, store, initialization)
+	if !outcome.Baseline.RefPresent || outcome.Baseline.ProfileObjectPresent || len(outcome.Baseline.Profile.Entries) != 0 {
+		t.Fatalf("Init-only baseline = %#v", outcome.Baseline)
+	}
+	abortPhase6Ingest(t, store, initialization, outcome.TransactionID)
+}
+
+func TestBeginIngestCommittedEmptyBaseline(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("transactional ingest is unsupported on this platform")
+	}
+	root := filepath.Join(t.TempDir(), "store")
+	store, err := New(root, stubRegen{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := store.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Commit(ctx, "main", model.Profile{}, "empty"); err != nil {
+		t.Fatal(err)
+	}
+	initialization, err := store.InitForInstall(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outcome := beginPhase6Ingest(t, store, initialization)
+	if !outcome.Baseline.RefPresent || !outcome.Baseline.ProfileObjectPresent || len(outcome.Baseline.Profile.Entries) != 0 {
+		t.Fatalf("committed-empty baseline = %#v", outcome.Baseline)
+	}
+	abortPhase6Ingest(t, store, initialization, outcome.TransactionID)
+}
+
+func TestBeginIngestPresentProbeFailureIsNotAbsence(t *testing.T) {
+	store, initialization, _ := newPhase6IngestStore(t)
+	store.beginObserveMain = func(context.Context) (string, bool, error) { return "", false, ErrGitCommand }
+	outcome, err := store.BeginIngest(context.Background(), initialization.ID())
+	if !errors.Is(err, ErrGitCommand) {
+		t.Fatalf("BeginIngest = (%#v, %v), want probe failure", outcome, err)
+	}
+	if outcome.TransactionID.IsZero() || outcome.Lifecycle != model.IngestLifecycleTerminal ||
+		outcome.FailureCode != model.IngestFailureBaselineRead || outcome.Baseline.RefPresent {
+		t.Fatalf("probe failure was misclassified as absence: %#v", outcome)
+	}
+}
+
+func TestBeginIngestReservesTokenBeforeGitOrFilesystemIO(t *testing.T) {
+	store, initialization, root := newPhase6IngestStore(t)
+	reached := make(chan struct{})
+	release := make(chan struct{})
+	store.beginAfterReserve = func() error {
+		close(reached)
+		<-release
+		return nil
+	}
+	gitStarts := 0
+	store.git.beforeStart = func([]string) { gitStarts++ }
+	type result struct {
+		outcome model.IngestBeginOutcome
+		err     error
+	}
+	done := make(chan result, 1)
+	go func() {
+		outcome, err := store.BeginIngest(context.Background(), initialization.ID())
+		done <- result{outcome: outcome, err: err}
+	}()
+	<-reached
+	if got := store.installInitializationTransactionCount(initialization.ID()); got != 1 {
+		t.Fatalf("provisional token count = %d, want 1", got)
+	}
+	if err := initialization.Rollback(); !errors.Is(err, ErrInitializerRollbackUnsafe) {
+		t.Fatalf("rollback during provisional Begin = %v, want unsafe", err)
+	}
+	if gitStarts != 0 {
+		t.Fatalf("provisional reservation started %d Git commands", gitStarts)
+	}
+	namespace, err := storeTransactionNamespacePath(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(namespace); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("provisional reservation created namespace: %v", err)
+	}
+	close(release)
+	resultValue := <-done
+	if resultValue.err != nil {
+		t.Fatalf("Begin after release: %v", resultValue.err)
+	}
+	abortPhase6Ingest(t, store, initialization, resultValue.outcome.TransactionID)
+	if err := initialization.Rollback(); err != nil {
+		t.Fatalf("rollback after terminal cleanup: %v", err)
+	}
+}
+
+func TestBeginIngestProbeFailureRetainsTerminalEvidence(t *testing.T) {
+	store, initialization, _ := newPhase6IngestStore(t)
+	store.beginObserveMain = func(context.Context) (string, bool, error) { return "", false, ErrGitCommand }
+	outcome, err := store.BeginIngest(context.Background(), initialization.ID())
+	if !errors.Is(err, ErrGitCommand) {
+		t.Fatal(err)
+	}
+	if outcome.TransactionID.IsZero() || store.installInitializationTransactionCount(initialization.ID()) != 1 {
+		t.Fatal("failed probe lost its reserved token")
+	}
+	if outcome.Lifecycle != model.IngestLifecycleTerminal || outcome.Cleanup != model.QuarantineCleanupRemoved || outcome.RecoveryRequired {
+		t.Fatalf("failed probe terminal evidence = %#v", outcome)
+	}
+}
+
+func TestBeginIngestUncertainSetupRetainsLocatorAndTerminalEvidence(t *testing.T) {
+	store, initialization, _ := newPhase6IngestStore(t)
+	store.beginAfterQuarantineCreate = func(string) error { return errors.New("injected setup failure") }
+	store.cleanupBeforeFinalCheck = replacementTopLevelQuarantineSeam(t, false)
+	outcome, err := store.BeginIngest(context.Background(), initialization.ID())
+	if err == nil {
+		t.Fatal("injected setup failure returned nil")
+	}
+	path := store.transactionQuarantinePath(outcome.TransactionID)
+	if path == "" {
+		t.Fatal("uncertain setup lost its authenticated locator")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("retained quarantine missing: %v", err)
+	}
+	if outcome.Lifecycle != model.IngestLifecycleTerminal || outcome.Cleanup != model.QuarantineCleanupRetained || !outcome.RecoveryRequired {
+		t.Fatalf("uncertain setup evidence = %#v", outcome)
+	}
+}
+
+func environmentByName(environment []string) map[string]string {
+	result := make(map[string]string, len(environment))
+	for _, entry := range environment {
+		name, value, ok := strings.Cut(entry, "=")
+		if ok {
+			result[name] = value
+		}
+	}
+	return result
+}
+
+func TestGitRunnerUsesCanonicalBareEnvironment(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "store")
+	for name, value := range map[string]string{
+		"GIT_DIR":                          filepath.Join(t.TempDir(), "hostile-git"),
+		"GIT_WORK_TREE":                    filepath.Join(t.TempDir(), "hostile-worktree"),
+		"GIT_CONFIG_NOSYSTEM":              "0",
+		"GIT_CONFIG_GLOBAL":                filepath.Join(t.TempDir(), "config"),
+		"GIT_INDEX_FILE":                   filepath.Join(t.TempDir(), "index"),
+		"GIT_OBJECT_DIRECTORY":             filepath.Join(t.TempDir(), "objects"),
+		"GIT_ALTERNATE_OBJECT_DIRECTORIES": filepath.Join(t.TempDir(), "alternate"),
+	} {
+		t.Setenv(name, value)
+	}
+	runner, err := newGitRunner(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	environment := environmentByName(runner.ownedEnvironment())
+	want, err := filepath.Abs(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if environment["GIT_DIR"] != want || environment["GIT_CONFIG_NOSYSTEM"] != "1" || environment["GIT_CONFIG_GLOBAL"] != os.DevNull {
+		t.Fatalf(
+			"owned bare environment: GIT_DIR=%q GIT_CONFIG_NOSYSTEM=%q GIT_CONFIG_GLOBAL=%q",
+			environment["GIT_DIR"],
+			environment["GIT_CONFIG_NOSYSTEM"],
+			environment["GIT_CONFIG_GLOBAL"],
+		)
+	}
+	for _, name := range []string{"GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES"} {
+		if _, ok := environment[name]; ok {
+			t.Fatalf("owned base environment retained %s", name)
+		}
+	}
+}
+
+func TestBeginIngestHostileGitEnvironmentCannotWriteWorktree(t *testing.T) {
+	store, initialization, _ := newPhase6IngestStore(t)
+	decoy := t.TempDir()
+	sentinel := filepath.Join(decoy, "sentinel")
+	if err := os.WriteFile(sentinel, []byte("unchanged"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_DIR", filepath.Join(t.TempDir(), "hostile.git"))
+	t.Setenv("GIT_WORK_TREE", decoy)
+	t.Setenv("GIT_INDEX_FILE", filepath.Join(decoy, "index"))
+	t.Setenv("GIT_OBJECT_DIRECTORY", filepath.Join(decoy, "objects"))
+	outcome := beginPhase6Ingest(t, store, initialization)
+	if got, err := os.ReadFile(sentinel); err != nil || string(got) != "unchanged" {
+		t.Fatalf("hostile worktree changed: %q, %v", got, err)
+	}
+	abortPhase6Ingest(t, store, initialization, outcome.TransactionID)
+}
+
+func TestGitRunnerRejectsWorktreeMutatingArgv(t *testing.T) {
+	rejected := [][]string{
+		{"checkout", "main"}, {"reset", "--hard"}, {"switch", "main"},
+		{"restore", "."}, {"clean", "-fd"}, {"read-tree", "-u", "main"},
+		{"--work-tree=/tmp/decoy", "status"}, {"--git-dir=/tmp/other", "rev-parse", "HEAD"},
+		{"-C", "/tmp", "status"}, {"-c", "core.worktree=/tmp", "status"},
+	}
+	for _, args := range rejected {
+		if err := validateGitArgv(args); err == nil {
+			t.Errorf("validateGitArgv(%q) accepted a worktree/global override", args)
+		}
+	}
+	if err := validateGitArgv([]string{"read-tree", "--empty"}); err != nil {
+		t.Fatalf("safe read-tree rejected: %v", err)
+	}
+}
+
+func TestBeginIngestConcurrentIndexesIsolated(t *testing.T) {
+	store, initialization, _ := newPhase6IngestStore(t)
+	var wg sync.WaitGroup
+	results := make(chan model.IngestBeginOutcome, 2)
+	errs := make(chan error, 2)
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			outcome, err := store.BeginIngest(context.Background(), initialization.ID())
+			results <- outcome
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(results)
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	var outcomes []model.IngestBeginOutcome
+	for outcome := range results {
+		outcomes = append(outcomes, outcome)
+	}
+	if len(outcomes) != 2 {
+		t.Fatalf("Begin outcomes = %d, want 2", len(outcomes))
+	}
+	pathA := store.transactionQuarantinePath(outcomes[0].TransactionID)
+	pathB := store.transactionQuarantinePath(outcomes[1].TransactionID)
+	if pathA == "" || pathB == "" || pathA == pathB {
+		t.Fatalf("quarantine paths are not isolated: %q, %q", pathA, pathB)
+	}
+	for _, outcome := range outcomes {
+		abortPhase6Ingest(t, store, initialization, outcome.TransactionID)
+	}
+}
+
+func testBeginIngestSetupUnwind(t *testing.T, stage string) {
+	t.Helper()
+	store, initialization, _ := newPhase6IngestStore(t)
+	injected := errors.New("injected setup failure")
+	switch stage {
+	case "create":
+		store.beginAfterQuarantineCreate = func(string) error { return injected }
+	case "open":
+		store.beginAfterQuarantineOpen = func(string) error { return injected }
+	case "stat":
+		store.beginAfterQuarantineStat = func(string) error { return injected }
+	default:
+		t.Fatalf("unknown setup stage %q", stage)
+	}
+	outcome, err := store.BeginIngest(context.Background(), initialization.ID())
+	if !errors.Is(err, injected) {
+		t.Fatalf("BeginIngest = (%#v, %v), want injected failure", outcome, err)
+	}
+	if outcome.Cleanup != model.QuarantineCleanupRemoved || outcome.RecoveryRequired || outcome.Lifecycle != model.IngestLifecycleTerminal {
+		t.Fatalf("setup unwind evidence = %#v", outcome)
+	}
+	if path := store.transactionQuarantinePath(outcome.TransactionID); path == "" {
+		t.Fatal("setup unwind lost recorded locator")
+	} else if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("setup unwind retained %s: %v", path, err)
+	}
+}
+
+func TestBeginIngestSetupUnwindAfterCreate(t *testing.T) {
+	testBeginIngestSetupUnwind(t, "create")
+}
+
+func TestBeginIngestSetupUnwindAfterOpen(t *testing.T) {
+	testBeginIngestSetupUnwind(t, "open")
+}
+
+func TestBeginIngestSetupUnwindAfterStat(t *testing.T) {
+	testBeginIngestSetupUnwind(t, "stat")
+}
+
+func waitForPhase6File(path string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return nil
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return fmt.Errorf("timed out waiting for %s", path)
+}
+
+func TestQuarantineCleanupCrossProcessLockSerializesCooperatingStores(t *testing.T) {
+	if os.Getenv("ZSHPRO_QUARANTINE_LOCK_HELPER") == "1" {
+		root := os.Getenv("ZSHPRO_QUARANTINE_LOCK_ROOT")
+		ready := os.Getenv("ZSHPRO_QUARANTINE_LOCK_READY")
+		release := os.Getenv("ZSHPRO_QUARANTINE_LOCK_RELEASE")
+		err := withStoreRootTransactionLock(root, func(*storeRootTransactionGuard) error {
+			if err := os.WriteFile(ready, []byte("ready"), 0o600); err != nil {
+				return err
+			}
+			return waitForPhase6File(release, 5*time.Second)
+		})
+		if err != nil {
+			os.Exit(13)
+		}
+		return
+	}
+	store, initialization, root := newPhase6IngestStore(t)
+	begin := beginPhase6Ingest(t, store, initialization)
+	base := t.TempDir()
+	ready := filepath.Join(base, "ready")
+	release := filepath.Join(base, "release")
+	helper := exec.Command(os.Args[0], "-test.run=^TestQuarantineCleanupCrossProcessLockSerializesCooperatingStores$")
+	helper.Env = append(os.Environ(),
+		"ZSHPRO_QUARANTINE_LOCK_HELPER=1",
+		"ZSHPRO_QUARANTINE_LOCK_ROOT="+root,
+		"ZSHPRO_QUARANTINE_LOCK_READY="+ready,
+		"ZSHPRO_QUARANTINE_LOCK_RELEASE="+release,
+	)
+	if err := helper.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err := waitForPhase6File(ready, 3*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		outcome model.IngestAbortOutcome
+		err     error
+	}
+	done := make(chan result, 1)
+	go func() {
+		outcome, err := store.AbortIngest(context.Background(), initialization.ID(), begin.TransactionID)
+		done <- result{outcome: outcome, err: err}
+	}()
+	select {
+	case result := <-done:
+		t.Fatalf("cleanup bypassed held cross-process lock: %#v, %v", result.outcome, result.err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	if err := os.WriteFile(release, []byte("release"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := helper.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	resultValue := <-done
+	if resultValue.err != nil || resultValue.outcome.Cleanup != model.QuarantineCleanupRemoved {
+		t.Fatalf("cleanup after lock release = (%#v, %v)", resultValue.outcome, resultValue.err)
+	}
+}
+
+func TestAbortIngestLockUnavailableOrInvalidatedRetainsRecovery(t *testing.T) {
+	t.Run("unsafe lock entry", func(t *testing.T) {
+		store, initialization, root := newPhase6IngestStore(t)
+		begin := beginPhase6Ingest(t, store, initialization)
+		namespace, err := storeTransactionNamespacePath(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(filepath.Join(namespace, "lock"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		outcome, err := store.AbortIngest(context.Background(), initialization.ID(), begin.TransactionID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if outcome.Cleanup != model.QuarantineCleanupRetained || !outcome.RecoveryRequired {
+			t.Fatalf("unsafe-lock cleanup = %#v", outcome)
+		}
+		if _, err := os.Stat(store.transactionQuarantinePath(begin.TransactionID)); err != nil {
+			t.Fatalf("unsafe-lock cleanup mutated quarantine: %v", err)
+		}
+	})
+
+	t.Run("discarded descriptor", func(t *testing.T) {
+		store, initialization, _ := newPhase6IngestStore(t)
+		begin := beginPhase6Ingest(t, store, initialization)
+		store.cleanupDiscardLock = true
+		outcome, err := store.AbortIngest(context.Background(), initialization.ID(), begin.TransactionID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if outcome.Cleanup != model.QuarantineCleanupRetained || !outcome.RecoveryRequired {
+			t.Fatalf("discarded-lock cleanup = %#v", outcome)
+		}
+		if _, err := os.Stat(store.transactionQuarantinePath(begin.TransactionID)); err != nil {
+			t.Fatalf("discarded-lock cleanup mutated quarantine: %v", err)
+		}
+	})
+}
+
+func replacementEntrySeam(t *testing.T, relative, kind string, after bool) func(quarantineCleanupSeam) error {
+	t.Helper()
+	triggered := false
+	return func(seam quarantineCleanupSeam) error {
+		if triggered || seam.Relative != relative {
+			return nil
+		}
+		triggered = true
+		if err := seam.Parent.Remove(seam.Name); err != nil {
+			return err
+		}
+		switch kind {
+		case "file":
+			return seam.Parent.WriteFile(seam.Name, []byte("replacement"), 0o600)
+		case "symlink":
+			return seam.Parent.Symlink("replacement-target", seam.Name)
+		case "directory":
+			if err := seam.Parent.Mkdir(seam.Name, 0o700); err != nil {
+				return err
+			}
+			replacement, err := seam.Parent.OpenRoot(seam.Name)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = replacement.Close() }()
+			return replacement.WriteFile("preserve", []byte("replacement"), 0o600)
+		default:
+			return fmt.Errorf("unknown replacement kind %s after=%v", kind, after)
+		}
+	}
+}
+
+func testAbortIngestRetainsReplacedChild(t *testing.T, kind string, after bool) {
+	t.Helper()
+	store, initialization, _ := newPhase6IngestStore(t)
+	begin := beginPhase6Ingest(t, store, initialization)
+	quarantine := store.transactionQuarantinePath(begin.TransactionID)
+	relative := "victim"
+	switch kind {
+	case "file":
+		if err := os.WriteFile(filepath.Join(quarantine, relative), []byte("original"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	case "symlink":
+		if err := os.Symlink("original-target", filepath.Join(quarantine, relative)); err != nil {
+			t.Fatal(err)
+		}
+	case "directory":
+		if err := os.Mkdir(filepath.Join(quarantine, relative), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(quarantine, relative, "child"), []byte("original"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seam := replacementEntrySeam(t, relative, kind, after)
+	if after {
+		store.cleanupAfterFinalCheck = seam
+	} else {
+		store.cleanupBeforeFinalCheck = seam
+	}
+	outcome, err := store.AbortIngest(context.Background(), initialization.ID(), begin.TransactionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.Cleanup != model.QuarantineCleanupRetained || !outcome.RecoveryRequired {
+		t.Fatalf("replacement cleanup = %#v", outcome)
+	}
+	switch kind {
+	case "file":
+		if got, err := os.ReadFile(filepath.Join(quarantine, relative)); err != nil || string(got) != "replacement" {
+			t.Fatalf("replacement file = %q, %v", got, err)
+		}
+	case "symlink":
+		if got, err := os.Readlink(filepath.Join(quarantine, relative)); err != nil || got != "replacement-target" {
+			t.Fatalf("replacement symlink = %q, %v", got, err)
+		}
+	case "directory":
+		if got, err := os.ReadFile(filepath.Join(quarantine, relative, "preserve")); err != nil || string(got) != "replacement" {
+			t.Fatalf("replacement directory = %q, %v", got, err)
+		}
+	}
+}
+
+func TestAbortIngestRetainsReplacedFileChildBeforeFinalCheck(t *testing.T) {
+	testAbortIngestRetainsReplacedChild(t, "file", false)
+}
+
+func TestAbortIngestRetainsReplacedFileChildAfterFinalCheck(t *testing.T) {
+	testAbortIngestRetainsReplacedChild(t, "file", true)
+}
+
+func TestAbortIngestRetainsReplacedSymlinkChildBeforeFinalCheck(t *testing.T) {
+	testAbortIngestRetainsReplacedChild(t, "symlink", false)
+}
+
+func TestAbortIngestRetainsReplacedSymlinkChildAfterFinalCheck(t *testing.T) {
+	testAbortIngestRetainsReplacedChild(t, "symlink", true)
+}
+
+func TestAbortIngestRetainsReplacedNestedDirectoryChildBeforeFinalCheck(t *testing.T) {
+	testAbortIngestRetainsReplacedChild(t, "directory", false)
+}
+
+func TestAbortIngestRetainsReplacedNestedDirectoryChildAfterFinalCheck(t *testing.T) {
+	testAbortIngestRetainsReplacedChild(t, "directory", true)
+}
+
+func TestAbortIngestTerminalResultReplay(t *testing.T) {
+	store, initialization, _ := newPhase6IngestStore(t)
+	begin := beginPhase6Ingest(t, store, initialization)
+	first := abortPhase6Ingest(t, store, initialization, begin.TransactionID)
+	cleanupCalls := 0
+	store.cleanupBeforeFinalCheck = func(quarantineCleanupSeam) error {
+		cleanupCalls++
+		return nil
+	}
+	second := abortPhase6Ingest(t, store, initialization, begin.TransactionID)
+	if !reflect.DeepEqual(first, second) {
+		t.Fatalf("terminal replay changed: first=%#v second=%#v", first, second)
+	}
+	if cleanupCalls != 0 {
+		t.Fatalf("terminal replay made %d cleanup calls", cleanupCalls)
+	}
+}
+
+func TestAbortIngestRejectsUnknownCrossStoreAndFinalizing(t *testing.T) {
+	store, initialization, _ := newPhase6IngestStore(t)
+	begin := beginPhase6Ingest(t, store, initialization)
+	unknown, err := model.NewIngestTransactionID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AbortIngest(context.Background(), initialization.ID(), unknown); !errors.Is(err, ErrInvalidIngestAuthority) {
+		t.Fatalf("unknown Abort = %v", err)
+	}
+	other, otherInitialization, _ := newPhase6IngestStore(t)
+	if _, err := other.AbortIngest(context.Background(), otherInitialization.ID(), begin.TransactionID); !errors.Is(err, ErrInvalidIngestAuthority) {
+		t.Fatalf("cross-Store Abort = %v", err)
+	}
+	store.transactionMu.Lock()
+	store.ingestTransactions[begin.TransactionID].lifecycle = model.IngestLifecycleFinalizing
+	store.transactionMu.Unlock()
+	if _, err := store.AbortIngest(context.Background(), initialization.ID(), begin.TransactionID); !errors.Is(err, ErrInvalidIngestAuthority) {
+		t.Fatalf("finalizing Abort = %v", err)
+	}
+	store.transactionMu.Lock()
+	store.ingestTransactions[begin.TransactionID].lifecycle = model.IngestLifecycleActive
+	store.transactionMu.Unlock()
+	abortPhase6Ingest(t, store, initialization, begin.TransactionID)
+}
+
+func replacementTopLevelQuarantineSeam(t *testing.T, after bool) func(quarantineCleanupSeam) error {
+	t.Helper()
+	triggered := false
+	return func(seam quarantineCleanupSeam) error {
+		if triggered || seam.Relative != "." {
+			return nil
+		}
+		triggered = true
+		preserved := seam.Name + "-preserved"
+		if err := seam.Parent.Rename(seam.Name, preserved); err != nil {
+			return err
+		}
+		if err := seam.Parent.Mkdir(seam.Name, 0o700); err != nil {
+			return err
+		}
+		replacement, err := seam.Parent.OpenRoot(seam.Name)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = replacement.Close() }()
+		if err := replacement.WriteFile("replacement", []byte("preserve"), 0o600); err != nil {
+			return err
+		}
+		_ = after
+		return nil
+	}
+}
+
+func testAbortIngestRetainsTopReplacement(t *testing.T, after bool) {
+	t.Helper()
+	store, initialization, _ := newPhase6IngestStore(t)
+	begin := beginPhase6Ingest(t, store, initialization)
+	quarantine := store.transactionQuarantinePath(begin.TransactionID)
+	seam := replacementTopLevelQuarantineSeam(t, after)
+	if after {
+		store.cleanupAfterFinalCheck = seam
+	} else {
+		store.cleanupBeforeFinalCheck = seam
+	}
+	outcome, err := store.AbortIngest(context.Background(), initialization.ID(), begin.TransactionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.Cleanup != model.QuarantineCleanupRetained || !outcome.RecoveryRequired {
+		t.Fatalf("top replacement cleanup = %#v", outcome)
+	}
+	if got, err := os.ReadFile(filepath.Join(quarantine, "replacement")); err != nil || string(got) != "preserve" {
+		t.Fatalf("top replacement = %q, %v", got, err)
+	}
+	if _, err := os.Stat(quarantine + "-preserved"); err != nil {
+		t.Fatalf("displaced original quarantine was lost: %v", err)
+	}
+}
+
+func TestAbortIngestRejectsQuarantineReplacementBeforeCleanup(t *testing.T) {
+	testAbortIngestRetainsTopReplacement(t, false)
+}
+
+func TestAbortIngestRejectsSubstitutionAfterFinalCheck(t *testing.T) {
+	testAbortIngestRetainsTopReplacement(t, true)
 }
