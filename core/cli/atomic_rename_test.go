@@ -21,26 +21,13 @@ import (
 	"testing"
 )
 
-// Task 2 RED scaffolding keeps the contract tests type-checkable until GREEN
-// supplies the platform-neutral and build-tagged production adapters.
-type atomicRenameMode uint8
-
-const (
-	atomicRenameExchange atomicRenameMode = iota + 1
-	atomicRenameNoReplace
+// Task 3 wires these production entry points into the guarded install
+// transaction. Keep this Task 2 boundary lint-clean without introducing a
+// mutable production seam or weakening the direct per-call injection tests.
+var (
+	_ = atomicRenameAt
+	_ = acquireTargetRootTransactionLock
 )
-
-var ErrAtomicRenameUnsupported = errors.New("task 2 atomic rename is unsupported")
-
-type syscall6Fn func(uintptr, uintptr, uintptr, uintptr, uintptr, uintptr, uintptr) (uintptr, uintptr, syscall.Errno)
-
-func atomicRenameCapabilityCheck(atomicRenameMode) error {
-	return ErrAtomicRenameUnsupported
-}
-
-func atomicRenameAtWithSyscall(syscall6Fn, int, string, string, atomicRenameMode) error {
-	return errors.New("Task 2 atomic rename is not implemented")
-}
 
 func TestAtomicRenameCapabilityCheckIsSideEffectFree(t *testing.T) {
 	dir := t.TempDir()

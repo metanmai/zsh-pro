@@ -26,6 +26,30 @@ func (g *storeRootTransactionGuard) withAuthenticatedMutation(fn func(*os.Root) 
 	return ErrStoreTransactionLockUnavailable
 }
 
+// The untagged transaction implementation shares these authentication and
+// durability helpers with the supported Unix adapters. Unsupported platforms
+// must provide fail-closed definitions so the package can still be compiled
+// without accidentally accepting or syncing an unauthenticated namespace.
+func validTransactionNamespaceInfo(info os.FileInfo) bool {
+	_ = info
+	return false
+}
+
+func validTransactionLockInfo(info os.FileInfo) bool {
+	_ = info
+	return false
+}
+
+func fileInfoOwnedByCurrentEUID(info os.FileInfo) bool {
+	_ = info
+	return false
+}
+
+func syncTransactionRoot(root *os.Root) error {
+	_ = root
+	return ErrStoreTransactionLockUnavailable
+}
+
 // ensurePrivateStoreDir fails closed on platforms without a supported
 // descriptor-relative no-follow open, Fstat, and Fchmod sequence. A
 // pathname check followed by chmod can be raced onto a substituted or foreign
