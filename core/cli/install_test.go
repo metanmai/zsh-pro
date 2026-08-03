@@ -1484,3 +1484,159 @@ func TestPrepareIngestRepairsBalancedDuplicates(t *testing.T) {
 		t.Fatalf("duplicate region was misclassified as post-END ordinary content: %q", prepared.appendWarning)
 	}
 }
+
+// The Task 3 RED gate names every recovery and identity axis before the
+// transaction implementation lands. GREEN replaces this temporary test-only
+// contract probe with scenario-specific filesystem assertions.
+func requireTask3InstallContract(t *testing.T, contract string) {
+	t.Helper()
+	t.Fatalf("Task 3 install transaction contract is not implemented: %s", contract)
+}
+
+func TestAtomicRenameFilesystemProbePrecedesInitializerAndEffects(t *testing.T) {
+	requireTask3InstallContract(t, "pure check and filesystem probe ordering")
+}
+
+func TestAtomicRenameUnsupportedLeavesStoreCacheLoaderTargetUnchanged(t *testing.T) {
+	requireTask3InstallContract(t, "unsupported isolation")
+}
+
+func TestAtomicRenameProbeCleanupUncertaintyRetainsPrivateEvidence(t *testing.T) {
+	requireTask3InstallContract(t, "probe cleanup uncertainty")
+}
+
+func TestPromoteGuardedCandidateFsyncFailureBeforeJournalOrNamespace(t *testing.T) {
+	requireTask3InstallContract(t, "candidate fsync barrier")
+}
+
+func TestPromoteGuardedArtifactDirectoryFsyncFailureBeforePreparedJournal(t *testing.T) {
+	requireTask3InstallContract(t, "artifact directory fsync barrier")
+}
+
+func TestPromoteGuardedPreparedJournalDirectoryFsyncFailureBeforeNamespace(t *testing.T) {
+	requireTask3InstallContract(t, "prepared journal directory fsync barrier")
+}
+
+func TestPromotionJournalTransitionDirectoryFsyncFailureRetainsRecovery(t *testing.T) {
+	requireTask3InstallContract(t, "journal transition directory fsync")
+}
+
+func TestPromoteGuardedDetectsAndReversesSubstitution(t *testing.T) {
+	requireTask3InstallContract(t, "late substitution reverse")
+}
+
+func TestPromoteGuardedRefusesUnsafeReverseExchange(t *testing.T) {
+	requireTask3InstallContract(t, "unsafe reverse refusal")
+}
+
+func TestPromoteGuardedNoReplacePreservesLateTarget(t *testing.T) {
+	requireTask3InstallContract(t, "late absent-target creation")
+}
+
+func TestPromoteGuardedFsyncFailureRequiresRecovery(t *testing.T) {
+	requireTask3InstallContract(t, "post-promotion fsync uncertainty")
+}
+
+func TestRecoverGuardedExistingBeforeNamespaceSyscall(t *testing.T) {
+	requireTask3InstallContract(t, "existing recovery before exchange")
+}
+
+func TestRecoverGuardedExistingAfterExchangeBeforeJournalAdvance(t *testing.T) {
+	requireTask3InstallContract(t, "existing recovery after exchange")
+}
+
+func TestRecoverGuardedExistingAfterJournalAdvanceBeforeParentSync(t *testing.T) {
+	requireTask3InstallContract(t, "existing recovery after journal advance")
+}
+
+func TestRecoverGuardedExistingAfterParentSync(t *testing.T) {
+	requireTask3InstallContract(t, "existing recovery after parent sync")
+}
+
+func TestRecoverGuardedAbsentBeforeNamespaceSyscall(t *testing.T) {
+	requireTask3InstallContract(t, "absent recovery before create")
+}
+
+func TestRecoverGuardedAbsentAfterNoReplaceBeforeJournalAdvance(t *testing.T) {
+	requireTask3InstallContract(t, "absent recovery after no-replace")
+}
+
+func TestRecoverGuardedAbsentAfterJournalAdvanceBeforeParentSync(t *testing.T) {
+	requireTask3InstallContract(t, "absent recovery after journal advance")
+}
+
+func TestRecoverGuardedAbsentAfterParentSync(t *testing.T) {
+	requireTask3InstallContract(t, "absent recovery after parent sync")
+}
+
+func TestPromoteGuardedDetectsInPlaceMutation(t *testing.T) {
+	requireTask3InstallContract(t, "in-place target mutation")
+}
+
+func TestPromoteGuardedUnsupportedBeforeEffects(t *testing.T) {
+	requireTask3InstallContract(t, "adapter and filesystem unsupported")
+}
+
+func TestTargetTransactionCrossProcessRootLock(t *testing.T) {
+	requireTask3InstallContract(t, "cross-process root lock")
+}
+
+func TestTargetTransactionRejectsUnsafeRootLockEntry(t *testing.T) {
+	requireTask3InstallContract(t, "unsafe root lock entry")
+}
+
+func TestPromotionCleanupRejectsUnauthenticatedArtifact(t *testing.T) {
+	requireTask3InstallContract(t, "unauthenticated cleanup refusal")
+}
+
+func TestPromotionJournalRejectsChangedParentIdentity(t *testing.T) {
+	requireTask3InstallContract(t, "changed parent identity")
+}
+
+func TestPromotionJournalRejectsChangedJournalIdentityOrDigest(t *testing.T) {
+	requireTask3InstallContract(t, "journal identity and digest matrix")
+}
+
+func TestPromotionJournalRejectsChangedRequestedLinkTopology(t *testing.T) {
+	requireTask3InstallContract(t, "requested link topology")
+}
+
+func TestPromotionJournalUsesOneExchangePeerBasename(t *testing.T) {
+	requireTask3InstallContract(t, "one exchange peer")
+}
+
+func TestInstallSecretBearingPeerConfinedAndRemovedOnFinalize(t *testing.T) {
+	requireTask3InstallContract(t, "secret peer finalize cleanup")
+}
+
+func TestInstallSecretBearingPeerRetainedOnlyForRecovery(t *testing.T) {
+	requireTask3InstallContract(t, "secret peer recovery retention")
+}
+
+func TestRollbackGuardedAbsentAfterNoReplaceRequiresRecovery(t *testing.T) {
+	requireTask3InstallContract(t, "absent rollback refusal")
+}
+
+func TestRollbackGuardedRefusesChangedTarget(t *testing.T) {
+	requireTask3InstallContract(t, "changed target rollback refusal")
+}
+
+func TestInstallTransactionMutationSurfaceAudit(t *testing.T) {
+	requireTask3InstallContract(t, "mutation surface AST audit")
+}
+
+func TestIngestStaleCompensation(t *testing.T) {
+	requireTask3InstallContract(t, "filesystem-first stale compensation")
+}
+
+func TestInstallPromotionRejectsChangedTargetBeforeExchange(t *testing.T) {
+	requireTask3InstallContract(t, "expected target axis")
+}
+
+func TestInstallPromotionRejectsChangedCandidateBeforeExchange(t *testing.T) {
+	requireTask3InstallContract(t, "expected candidate axis")
+}
+
+func TestInstallPromotionPostSwapSeparatesCandidateAndDisplacedIdentity(t *testing.T) {
+	requireTask3InstallContract(t, "post-swap independent axes")
+}
