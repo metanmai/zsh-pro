@@ -105,6 +105,153 @@ func TestRuntimeCaptureUsesCompositionStoreAndVaultForEveryLocation(t *testing.T
 	}
 }
 
+type mainDeterministicKeychain struct {
+	storeCalls    int
+	retrieveCalls int
+	deleteCalls   int
+}
+
+func (keychain *mainDeterministicKeychain) Store(string, string) error {
+	keychain.storeCalls++
+	return nil
+}
+
+func (keychain *mainDeterministicKeychain) Retrieve(string) (string, error) {
+	keychain.retrieveCalls++
+	return "", nil
+}
+
+func (keychain *mainDeterministicKeychain) Delete(string) error {
+	keychain.deleteCalls++
+	return nil
+}
+
+func (*mainDeterministicKeychain) Kind() model.SecretRefKind { return model.SecretRefFile }
+
+func TestMainInitToBeginUsesExactCLIStore(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("authenticated ingest transactions are unsupported on this platform")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+
+	source, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count := strings.Count(string(source), "store.New("); count != 1 {
+		t.Fatalf("composition root constructs Store %d times, want exactly once", count)
+	}
+	if strings.Contains(string(source), "GOTOOLCHAIN=auto") {
+		t.Fatal("composition-root build helpers may not select or download a Go toolchain")
+	}
+
+	root := filepath.Join(t.TempDir(), "profiles.git")
+	provider := zsh.Provider{}
+	backend := &mainDeterministicKeychain{}
+	cliStore, err := store.New(root, provider, backend)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialize := storeInitializerFor(cliStore, root, nil)
+	initialization, err := initialize(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if initialization.Transactions != cliStore {
+		t.Fatal("initializer did not expose the exact concrete Store pointer")
+	}
+	if initialization.InitializationID.IsZero() || initialization.CanonicalRoot != root {
+		t.Fatalf("initialization evidence = %#v, want nonzero ID and root %q", initialization, root)
+	}
+
+	begin, err := initialization.Transactions.BeginIngest(context.Background(), initialization.InitializationID)
+	if err != nil || begin.TransactionID.IsZero() || begin.InitializationID != initialization.InitializationID {
+		t.Fatalf("BeginIngest = (%#v, %v)", begin, err)
+	}
+	runtimeValue := "nvim"
+	profile := model.Profile{Entries: []model.Entry{{
+		Text:                    "export EDITOR=nvim",
+		StartLine:               1,
+		Category:                model.CatEnvironment,
+		Kind:                    model.KindAssignment,
+		Names:                   []string{"EDITOR"},
+		Value:                   "nvim",
+		Exported:                true,
+		Managed:                 true,
+		StructuralFidelityKnown: true,
+		RuntimeValue:            &runtimeValue,
+		ValueMode:               model.ValueModeLiteral,
+	}}}
+	committed, err := initialization.Transactions.CommitIngest(
+		context.Background(),
+		initialization.InitializationID,
+		begin.TransactionID,
+		profile,
+		"composition identity proof",
+	)
+	if err != nil || committed.Status != model.IngestCommitCommitted || committed.RecoveryRequired {
+		t.Fatalf("CommitIngest = (%#v, %v)", committed, err)
+	}
+
+	abortBegin, err := initialization.Transactions.BeginIngest(context.Background(), initialization.InitializationID)
+	if err != nil {
+		t.Fatalf("second BeginIngest: %v", err)
+	}
+	aborted, err := initialization.Transactions.AbortIngest(
+		context.Background(),
+		initialization.InitializationID,
+		abortBegin.TransactionID,
+	)
+	if err != nil || aborted.Lifecycle != model.IngestLifecycleTerminal || aborted.RecoveryRequired {
+		t.Fatalf("AbortIngest = (%#v, %v)", aborted, err)
+	}
+
+	beforeRef := gitRef(t, root, "refs/heads/main")
+	otherBackend := &mainDeterministicKeychain{}
+	other, err := store.New(root, provider, otherBackend)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome, crossErr := other.BeginIngest(context.Background(), initialization.InitializationID); !errors.Is(crossErr, store.ErrInvalidIngestAuthority) {
+		t.Fatalf("cross-Store BeginIngest = (%#v, %v), want invalid authority", outcome, crossErr)
+	}
+	if afterRef := gitRef(t, root, "refs/heads/main"); afterRef != beforeRef {
+		t.Fatalf("cross-Store rejection changed main: got %s, want %s", afterRef, beforeRef)
+	}
+	if *otherBackend != (mainDeterministicKeychain{}) {
+		t.Fatalf("cross-Store rejection touched backend: %#v", otherBackend)
+	}
+
+	if err := initialization.Finalize(); err != nil {
+		t.Fatalf("Finalize aggregate terminal transactions: %v", err)
+	}
+	if outcome, expiredErr := cliStore.BeginIngest(context.Background(), initialization.InitializationID); !errors.Is(expiredErr, store.ErrInvalidIngestAuthority) {
+		t.Fatalf("expired initialization BeginIngest = (%#v, %v), want invalid authority", outcome, expiredErr)
+	}
+
+	constructionErr := errors.New("original store construction failure")
+	failedRoot := filepath.Join(t.TempDir(), "must-not-be-created")
+	failedInitializer := storeInitializerFor(nil, failedRoot, constructionErr)
+	if _, gotErr := failedInitializer(context.Background()); !errors.Is(gotErr, constructionErr) {
+		t.Fatalf("failed initializer error = %v, want original %v", gotErr, constructionErr)
+	}
+	if _, statErr := os.Lstat(failedRoot); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("failed initializer reconstructed or mutated Store root: %v", statErr)
+	}
+
+	analysisPath := filepath.Join(t.TempDir(), "analysis.zsh")
+	if err := os.WriteFile(analysisPath, []byte("export EDITOR=nvim\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	program := cli.NewWithStoreInitializer(provider, nil, cli.NotReadyEmitter(), failedInitializer)
+	var stdout, stderr bytes.Buffer
+	if code := program.Run([]string{"analyze", analysisPath}, &stdout, &stderr); code != int(model.ExitClean) {
+		t.Fatalf("analyze with failed deferred Store = %d; stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
 // TestBuiltBinaryInstallMatchesDescriptorRuntimePlatformBoundary proves that the
 // platforms allowed to initialize storage can also serve descriptor-bound
 // runtime list/emission. Platforms without that boundary must reject install

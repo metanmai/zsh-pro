@@ -6,12 +6,21 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 
 	"zsh-pro/core/cli"
 	"zsh-pro/core/shell/zsh"
 	"zsh-pro/core/store"
 )
+
+// storeInitializerFor is introduced with the Task 2 RED contract. GREEN binds
+// initialization and every ingest operation to the supplied Store pointer.
+func storeInitializerFor(*store.Store, string, error) cli.StoreInitializer {
+	return func(context.Context) (cli.StoreInitialization, error) {
+		return cli.StoreInitialization{}, errors.New("store initializer not implemented")
+	}
+}
 
 func main() {
 	os.Exit(newCLI().Run(os.Args[1:], os.Stdout, os.Stderr))
