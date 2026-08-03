@@ -5,16 +5,16 @@ milestone_name: Branchable Shell Environments
 current_phase: 06
 current_phase_name: Ingest End-to-End
 status: executing
-stopped_at: Completed 06-03-PLAN.md
-last_updated: "2026-08-03T21:46:58.071Z"
+stopped_at: Completed 06-04-PLAN.md
+last_updated: "2026-08-03T22:16:28.726Z"
 last_activity: 2026-08-03
 last_activity_desc: Completed Phase 06 Plan 03 guarded startup promotion
 progress:
   total_phases: 6
   completed_phases: 5
   total_plans: 40
-  completed_plans: 38
-  percent: 95
+  completed_plans: 39
+  percent: 83
 ---
 
 # Project State
@@ -29,11 +29,11 @@ See: .planning/PROJECT.md (updated 2026-06-25)
 ## Current Position
 
 Phase: 06 (Ingest End-to-End) — EXECUTING
-Plan: 4 of 5
+Plan: 5 of 5
 Status: Ready to execute
 Last activity: 2026-08-03 — Completed Phase 06 Plan 03 guarded startup promotion
 
-Progress: [██████████] 95%
+Progress: [██████████] 98%
 
 ## Performance Metrics
 
@@ -93,6 +93,7 @@ Progress: [██████████] 95%
 | Phase 06 P01 | 585min | 3 tasks | 10 files |
 | Phase 06 P02 | 38m | 2 tasks | 6 files |
 | Phase 06 P03 | 48m | 3 tasks | 12 files |
+| Phase 06 P04 | 27m | 3 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -168,6 +169,10 @@ Recent decisions affecting current work:
 - [Phase ?]: 06-03: expectedTarget remains the original bounded snapshot while expectedCandidate comes only from independently durable peer evidence.
 - [Phase ?]: 06-03: one private exchange peer owns candidate, displaced occupant, and guarded reverse states; absent post-create rollback remains recovery-required.
 - [Phase ?]: 06-03: pure adapter checks and a real same-filesystem exchange/no-replace probe precede Store, cache, loader, and target effects.
+- [Phase ?]: [06-04]: Persist the complete source-ordered Profile; EffectiveManaged is an inspection-only projection and never filters Store input.
+- [Phase ?]: [06-04]: Filesystem restore-or-retain precedes Store, loader, cache, and initializer compensation; recovery uncertainty disarms later destructive steps.
+- [Phase ?]: [06-04]: A committed ingest finalizes the existing guarded promotion and never rewrites the startup target after commit.
+- [Phase ?]: [06-04]: One concrete Store pointer owns initialization IDs and every ingest transaction operation.
 
 ### Pending Todos
 
@@ -196,6 +201,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-08-03T21:46:58.064Z
-Stopped at: Completed 06-03-PLAN.md
+Last session: 2026-08-03T22:16:28.719Z
+Stopped at: Completed 06-04-PLAN.md
 Resume file: None
