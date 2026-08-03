@@ -14,11 +14,32 @@ import (
 	"zsh-pro/core/store"
 )
 
-// storeInitializerFor is introduced with the Task 2 RED contract. GREEN binds
-// initialization and every ingest operation to the supplied Store pointer.
-func storeInitializerFor(*store.Store, string, error) cli.StoreInitializer {
-	return func(context.Context) (cli.StoreInitialization, error) {
-		return cli.StoreInitialization{}, errors.New("store initializer not implemented")
+var errCompositionStoreUnavailable = errors.New("profile store unavailable")
+
+// storeInitializerFor binds the initializer authority and every follow-on
+// ingest operation to one concrete Store. A construction failure is captured
+// once and replayed verbatim; the initializer never attempts replacement
+// construction after CLI dispatch.
+func storeInitializerFor(cliStore *store.Store, canonicalRoot string, constructionErr error) cli.StoreInitializer {
+	return func(ctx context.Context) (cli.StoreInitialization, error) {
+		if constructionErr != nil {
+			return cli.StoreInitialization{}, constructionErr
+		}
+		if cliStore == nil {
+			return cli.StoreInitialization{}, errCompositionStoreUnavailable
+		}
+		transaction, err := cliStore.InitForInstall(ctx)
+		if err != nil {
+			return cli.StoreInitialization{}, err
+		}
+		return cli.StoreInitialization{
+			InitializationID: transaction.ID(),
+			Transactions:     cliStore,
+			CanonicalRoot:    canonicalRoot,
+			Rollback:         transaction.Rollback,
+			Finalize:         transaction.Finalize,
+			CreatedPath:      transaction.CreatedPath(),
+		}, nil
 	}
 }
 
@@ -43,18 +64,23 @@ func newCLI() *cli.CLI {
 	// means profile storage is unavailable — it must NOT crash the existing read-only
 	// `analyze` path, so it is intentionally non-fatal here and surfaces when a
 	// store-backed verb is wired in Phase 5.
-	var cliStore cli.Store
+	var cliStore *store.Store
+	var storeRoot string
+	var storeErr error
 	var kc store.KeychainDriver
-	if dir, err := cli.StoreRoot(); err == nil {
-		kc = store.NewOSKeychainDriver(dir)
-		if s, err := store.New(dir, provider, kc); err == nil {
-			cliStore = s
-		}
+	storeRoot, storeErr = cli.StoreRoot()
+	if storeErr == nil {
+		kc = store.NewOSKeychainDriver(storeRoot)
+		cliStore, storeErr = store.New(storeRoot, provider, kc)
+	}
+	var commandStore cli.Store
+	if storeErr == nil {
+		commandStore = cliStore
 	}
 	// Runtime secret dereference remains behind the narrow CLI resolver seam;
 	// the existing concrete driver is created once here and never exposes a
 	// resolved value to CLI logging or profile persistence.
-	emitter := cli.NewRuntimeEmitterWithRuntimeStore(cliStore, provider, kc, func(root *cli.RuntimeRoot) (cli.Store, cli.SecretResolver, error) {
+	emitter := cli.NewRuntimeEmitterWithRuntimeStore(commandStore, provider, kc, func(root *cli.RuntimeRoot) (cli.Store, cli.SecretResolver, error) {
 		repository, vaultParent := root.Files()
 		boundStore, err := store.NewRuntime(repository, vaultParent, provider)
 		if err != nil {
@@ -63,23 +89,5 @@ func newCLI() *cli.CLI {
 		return boundStore, boundStore.RuntimeSecretResolver(), nil
 	})
 
-	return cli.NewWithStoreInitializer(provider, cliStore, emitter, func(ctx context.Context) (cli.StoreInitialization, error) {
-		dir, err := cli.StoreRoot()
-		if err != nil {
-			return cli.StoreInitialization{}, err
-		}
-		keychain := store.NewOSKeychainDriver(dir)
-		initialized, err := store.New(dir, provider, keychain)
-		if err != nil {
-			return cli.StoreInitialization{}, err
-		}
-		transaction, err := initialized.InitForInstall(ctx)
-		if err != nil {
-			return cli.StoreInitialization{}, err
-		}
-		return cli.StoreInitialization{
-			Rollback:    transaction.Rollback,
-			CreatedPath: transaction.CreatedPath(),
-		}, nil
-	})
+	return cli.NewWithStoreInitializer(provider, commandStore, emitter, storeInitializerFor(cliStore, storeRoot, storeErr))
 }

@@ -867,7 +867,7 @@ func buildInstalledBinary(t *testing.T) string {
 	t.Helper()
 	binary := filepath.Join(t.TempDir(), "zsh-pro")
 	cmd := exec.Command("go", "build", "-o", binary, ".")
-	cmd.Env = append(os.Environ(), "GOTOOLCHAIN=auto")
+	cmd.Env = append(os.Environ(), "GOTOOLCHAIN=local")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("build zsh-pro binary: %v\n%s", err, out)
 	}
