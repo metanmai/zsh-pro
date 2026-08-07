@@ -999,14 +999,24 @@ func TestLegacyCommitAdapterOutcomeMatrix(t *testing.T) {
 	})
 
 	t.Run("recovery committed", func(t *testing.T) {
-		store := newTestStore(t)
+		keychain := &countingSecretRefKeychain{kind: model.SecretRefFile, values: map[string]string{}}
+		store, err := New(t.TempDir()+"/store", stubRegen{}, keychain)
+		if err != nil {
+			t.Fatal(err)
+		}
 		if err := store.Init(context.Background()); err != nil {
 			t.Fatal(err)
 		}
 		store.cleanupDiscardLock = true
-		report, err := store.Commit(context.Background(), "main", phase6Profile("MATRIX", "recovery"), "recovery")
+		report, err := store.Commit(
+			context.Background(),
+			"main",
+			buildSecretProfile(t, "export API_KEY=recovery-value\n"),
+			"recovery",
+		)
 		state, ok := err.(committedStateError)
-		if !errors.Is(err, ErrIngestRecoveryRequired) || !ok || !state.Committed() || len(report) != 0 {
+		if !errors.Is(err, ErrIngestRecoveryRequired) || !ok || !state.Committed() ||
+			len(report) != 1 || report[0].Name != "API_KEY" || report[0].StartLine != 1 {
 			t.Fatalf("committed recovery adapter = (%#v, %v, committed=%v)", report, err, ok && state.Committed())
 		}
 	})
