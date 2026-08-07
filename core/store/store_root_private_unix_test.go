@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"syscall"
 	"testing"
 	"time"
@@ -94,4 +95,63 @@ func TestStoreRootTransactionLockContentionHonorsCancellationAndDeadline(t *test
 			t.Fatalf("deadline contention = %v, want context deadline exceeded", err)
 		}
 	})
+}
+
+func TestStoreRootTransactionLockBoundsNonExpiringContext(t *testing.T) {
+	lock, err := os.CreateTemp(t.TempDir(), "lock-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = lock.Close() }()
+
+	started := time.Now()
+	err = lockStoreRootTransactionWithin(
+		context.Background(),
+		lock,
+		20*time.Millisecond,
+		func(_ int, operation int) error {
+			if operation != syscall.LOCK_EX|syscall.LOCK_NB {
+				t.Fatalf("flock operation = %d, want exclusive nonblocking", operation)
+			}
+			return syscall.EWOULDBLOCK
+		},
+		waitForStoreRootLockRetry,
+	)
+	if !errors.Is(err, ErrStoreTransactionLockUnavailable) || errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("bounded background lock = %v, want lock unavailable", err)
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("bounded background lock returned after %s", elapsed)
+	}
+}
+
+func TestStoreTransactionCreationRepairsRestrictiveUmask(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "store")
+	previousUmask := syscall.Umask(0o300)
+	defer syscall.Umask(previousUmask)
+
+	if err := withStoreRootTransactionLock(context.Background(), root, func(*storeRootTransactionGuard) error {
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	namespace, err := storeTransactionNamespacePath(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	namespaceInfo, err := os.Lstat(namespace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if namespaceInfo.Mode().Perm() != 0o700 {
+		t.Fatalf("created transaction namespace mode = %v, want 0700", namespaceInfo.Mode().Perm())
+	}
+	lockInfo, err := os.Lstat(filepath.Join(namespace, "lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lockInfo.Mode().Perm() != 0o600 {
+		t.Fatalf("created transaction lock mode = %v, want 0600", lockInfo.Mode().Perm())
+	}
 }

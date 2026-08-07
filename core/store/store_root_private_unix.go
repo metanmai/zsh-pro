@@ -14,7 +14,10 @@ import (
 	"time"
 )
 
-const storeRootLockRetryInterval = 10 * time.Millisecond
+const (
+	storeRootLockRetryInterval    = 10 * time.Millisecond
+	storeRootLockAcquisitionLimit = 5 * time.Second
+)
 
 type storeRootTransactionGuard struct {
 	namespace     *os.Root
@@ -53,10 +56,14 @@ func withStoreRootTransactionLock(ctx context.Context, root string, fn func(*sto
 	name := filepath.Base(namespacePath)
 	info, err := parent.Lstat(name)
 	if os.IsNotExist(err) {
-		if err := parent.Mkdir(name, 0o700); err != nil && !os.IsExist(err) {
+		createErr := parent.Mkdir(name, 0o700)
+		if createErr == nil {
+			info, err = authenticateCreatedTransactionNamespace(parent, name)
+		} else if !os.IsExist(createErr) {
 			return ErrStoreTransactionLockUnavailable
+		} else {
+			info, err = parent.Lstat(name)
 		}
-		info, err = parent.Lstat(name)
 	}
 	if err != nil || !validTransactionNamespaceInfo(info) {
 		return ErrStoreTransactionLockUnavailable
@@ -166,6 +173,10 @@ func openTransactionLock(namespace *os.Root) (*os.File, error) {
 			0o600,
 		)
 		if createErr == nil {
+			if chmodErr := file.Chmod(0o600); chmodErr != nil {
+				_ = file.Close()
+				return nil, chmodErr
+			}
 			if syncErr := syncTransactionRoot(namespace); syncErr != nil {
 				_ = file.Close()
 				return nil, syncErr
@@ -202,6 +213,30 @@ func openTransactionLock(namespace *os.Root) (*os.File, error) {
 	return file, nil
 }
 
+func authenticateCreatedTransactionNamespace(parent *os.Root, name string) (os.FileInfo, error) {
+	directory, err := parent.OpenFile(
+		name,
+		os.O_RDONLY|syscall.O_DIRECTORY|syscall.O_CLOEXEC|syscall.O_NOFOLLOW,
+		0,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = directory.Close() }()
+	if err := directory.Chmod(0o700); err != nil {
+		return nil, err
+	}
+	opened, err := directory.Stat()
+	if err != nil || !validTransactionNamespaceInfo(opened) {
+		return nil, ErrStoreTransactionLockUnavailable
+	}
+	current, err := parent.Lstat(name)
+	if err != nil || !validTransactionNamespaceInfo(current) || !os.SameFile(opened, current) {
+		return nil, ErrStoreTransactionLockUnavailable
+	}
+	return current, nil
+}
+
 func validTransactionNamespaceInfo(info os.FileInfo) bool {
 	return info != nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0 &&
 		info.Mode().Perm() == 0o700 && fileInfoOwnedByCurrentEUID(info)
@@ -221,7 +256,32 @@ type storeRootFlockFunc func(int, int) error
 type storeRootLockWaitFunc func(context.Context) error
 
 func lockStoreRootTransaction(ctx context.Context, file *os.File) error {
-	return lockStoreRootTransactionWith(ctx, file, syscall.Flock, waitForStoreRootLockRetry)
+	return lockStoreRootTransactionWithin(
+		ctx,
+		file,
+		storeRootLockAcquisitionLimit,
+		syscall.Flock,
+		waitForStoreRootLockRetry,
+	)
+}
+
+func lockStoreRootTransactionWithin(
+	ctx context.Context,
+	file *os.File,
+	limit time.Duration,
+	flock storeRootFlockFunc,
+	wait storeRootLockWaitFunc,
+) error {
+	if ctx == nil || limit <= 0 {
+		return ErrStoreTransactionLockUnavailable
+	}
+	bounded, cancel := context.WithTimeout(ctx, limit)
+	defer cancel()
+	err := lockStoreRootTransactionWith(bounded, file, flock, wait)
+	if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+		return ErrStoreTransactionLockUnavailable
+	}
+	return err
 }
 
 func lockStoreRootTransactionWith(

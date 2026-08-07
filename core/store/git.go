@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -100,7 +99,7 @@ func (g gitRunner) ownedEnvironment() []string {
 	environment := make([]string, 0, len(os.Environ())+6)
 	for _, entry := range os.Environ() {
 		name, _, ok := strings.Cut(entry, "=")
-		if ok && strings.HasPrefix(name, "GIT_") {
+		if ok && (strings.HasPrefix(name, "GIT_") || name == "LC_ALL") {
 			continue
 		}
 		environment = append(environment, entry)
@@ -115,6 +114,7 @@ func (g gitRunner) ownedEnvironment() []string {
 		"GIT_DIR="+gitDir,
 		"GIT_CONFIG_NOSYSTEM=1",
 		"GIT_CONFIG_GLOBAL="+os.DevNull,
+		"LC_ALL=C",
 	)
 	if g.privateIndexFile != "" {
 		environment = append(environment, "GIT_INDEX_FILE="+g.privateIndexFile)
@@ -137,25 +137,43 @@ func (g gitRunner) candidate(indexFile, objectDirectory string) gitRunner {
 	candidate.privateIndexFile = indexFile
 	candidate.privateObjectDirectory = objectDirectory
 	if g.runtimeRoot == nil {
-		candidate.privateAlternateObject = filepath.Join(g.repoDir, "objects")
+		candidate.privateAlternateObject = quoteGitPath(filepath.Join(g.repoDir, "objects"))
 	} else {
-		candidate.privateAlternateObject = "objects"
+		candidate.privateAlternateObject = quoteGitPath("objects")
 	}
 	return candidate
+}
+
+// quoteGitPath emits the C-style quoting Git requires for one alternate object
+// directory entry. In particular, a colon remains data inside the quotes rather
+// than becoming the Unix alternate-path separator.
+func quoteGitPath(path string) string {
+	var quoted strings.Builder
+	quoted.Grow(len(path) + 2)
+	quoted.WriteByte('"')
+	for _, value := range []byte(path) {
+		switch value {
+		case '\\', '"':
+			quoted.WriteByte('\\')
+			quoted.WriteByte(value)
+		default:
+			if value < 0x20 || value == 0x7f {
+				quoted.WriteByte('\\')
+				quoted.WriteByte('0' + (value >> 6))
+				quoted.WriteByte('0' + ((value >> 3) & 0x7))
+				quoted.WriteByte('0' + (value & 0x7))
+				continue
+			}
+			quoted.WriteByte(value)
+		}
+	}
+	quoted.WriteByte('"')
+	return quoted.String()
 }
 
 func validateGitArgv(args []string) error {
 	if len(args) == 0 {
 		return ErrGitCommand
-	}
-	for _, arg := range args {
-		// These are global options, not plumbing arguments. Reject them even
-		// for an otherwise allow-listed subcommand, before a process can start.
-		if arg == "-C" || arg == "-c" || arg == "--git-dir" || arg == "--work-tree" ||
-			arg == "--config-env" || strings.HasPrefix(arg, "--git-dir=") ||
-			strings.HasPrefix(arg, "--work-tree=") || strings.HasPrefix(arg, "--config-env=") {
-			return ErrGitCommand
-		}
 	}
 
 	validAtom := func(value string) bool {
@@ -224,7 +242,12 @@ func validateGitArgv(args []string) error {
 		if len(args) >= 4 && validAtom(args[1]) {
 			for index := 2; index < len(args); {
 				switch args[index] {
-				case "-m", "-p":
+				case "-m":
+					if index+1 >= len(args) || args[index+1] == "" || strings.ContainsRune(args[index+1], '\x00') {
+						return ErrGitCommand
+					}
+					index += 2
+				case "-p":
 					if index+1 >= len(args) || !validAtom(args[index+1]) {
 						return ErrGitCommand
 					}
@@ -268,10 +291,9 @@ func newGitRunner(dir string) (gitRunner, error) {
 	return gitRunner{repoDir: canonical}, nil
 }
 
-// newRuntimeGitRunner anchors all git operations to root rather than a path.
-// /dev/fd is available on both supported Unix targets. command starts each git
-// child in the current-process descriptor path before exec, then passes the
-// same directory through ExtraFiles as fd 3 for the child lifetime.
+// newRuntimeGitRunner anchors all git operations to root rather than a caller
+// pathname. Platform code resolves the retained descriptor immediately before
+// process start, and the same directory remains open as child fd 3.
 func newRuntimeGitRunner(root *os.File) (gitRunner, error) {
 	if root == nil {
 		return gitRunner{}, ErrGitCommand
@@ -292,14 +314,27 @@ func (g gitRunner) command(ctx context.Context, args ...string) (*exec.Cmd, erro
 		return cmd, nil
 	}
 	cmd := exec.CommandContext(ctx, "git", args...)
-	// os/exec changes directory before the ExtraFiles descriptors are installed
-	// at their child numbers. Use the already-authenticated parent descriptor for
-	// that pre-exec chdir, then retain the same object as child fd 3 for Git's
-	// lifetime. No mutable source pathname is reopened.
-	cmd.Dir = fmt.Sprintf("/dev/fd/%d", g.runtimeRoot.Fd())
 	cmd.ExtraFiles = []*os.File{g.runtimeRoot}
 	cmd.Env = g.ownedEnvironment()
+	if err := g.refreshRuntimeCommand(cmd); err != nil {
+		return nil, err
+	}
 	return cmd, nil
+}
+
+func (g gitRunner) refreshRuntimeCommand(cmd *exec.Cmd) error {
+	if g.runtimeRoot == nil {
+		return nil
+	}
+	if cmd == nil {
+		return ErrGitCommand
+	}
+	directory, err := runtimeGitWorkingDirectory(g.runtimeRoot)
+	if err != nil {
+		return ErrGitCommand
+	}
+	cmd.Dir = directory
+	return nil
 }
 
 func (g gitRunner) runRaw(ctx context.Context, stdin []byte, args ...string) ([]byte, string, error) {
@@ -314,6 +349,9 @@ func (g gitRunner) runRaw(ctx context.Context, stdin []byte, args ...string) ([]
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if g.beforeStart != nil {
 		g.beforeStart(args)
+	}
+	if err := g.refreshRuntimeCommand(cmd); err != nil {
+		return nil, "", err
 	}
 	if err := cmd.Run(); err != nil {
 		return nil, errb.String(), err
@@ -375,6 +413,9 @@ func (g gitRunner) runCommit(ctx context.Context, tmpIndex, ts string, args ...s
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if g.beforeStart != nil {
 		g.beforeStart(args)
+	}
+	if err := g.refreshRuntimeCommand(cmd); err != nil {
+		return nil, mapGitError(err, "")
 	}
 	if err := cmd.Run(); err != nil {
 		return nil, mapGitError(err, errb.String())
@@ -527,6 +568,9 @@ func (g gitRunner) validateDirectRef(ref validatedHeadRef) error {
 		return ErrGitCommand
 	}
 	defer func() { _ = root.Close() }()
+	if err := validatePackedRefsEntry(root); err != nil {
+		return err
+	}
 
 	parts := strings.Split(ref.name, "/")
 	for index := range parts {
@@ -566,6 +610,26 @@ func (g gitRunner) validateDirectRef(ref validatedHeadRef) error {
 		if strings.HasPrefix(value, "ref:") || !validGitObjectID(value) {
 			return ErrGitCommand
 		}
+	}
+	return nil
+}
+
+func validatePackedRefsEntry(root *os.Root) error {
+	info, err := root.Lstat("packed-refs")
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return ErrGitCommand
+	}
+	file, err := root.OpenFile("packed-refs", os.O_RDONLY|syscall.O_CLOEXEC|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return ErrGitCommand
+	}
+	opened, statErr := file.Stat()
+	closeErr := file.Close()
+	if statErr != nil || closeErr != nil || !opened.Mode().IsRegular() || !os.SameFile(info, opened) {
+		return ErrGitCommand
 	}
 	return nil
 }
@@ -725,6 +789,11 @@ func (g gitRunner) startUpdateRefSession(ctx context.Context) (*updateRefSession
 	if g.beforeStart != nil {
 		g.beforeStart([]string{"update-ref", "--no-deref", "--stdin"})
 	}
+	if err := g.refreshRuntimeCommand(cmd); err != nil {
+		_ = stdin.Close()
+		cancel()
+		return nil, err
+	}
 	if err := cmd.Start(); err != nil {
 		_ = stdin.Close()
 		cancel()
@@ -782,12 +851,22 @@ func (session *updateRefSession) Prepare(mutation []byte) error {
 		// Git aborts and exits automatically when prepare cannot lock the ref.
 		// Closing/waiting observes that terminal process; no explicit abort frame
 		// may be written on this path.
-		_ = session.finishLocked()
-		return ErrSecretRefConflict
+		finishErr := session.finishLocked()
+		if updateRefPrepareLockRejected(session.stderr.String()) {
+			return ErrSecretRefConflict
+		}
+		if finishErr != nil {
+			return finishErr
+		}
+		return err
 	}
 	session.locked = true
 	session.runner.emitRefEvent("prepare-ok-locked")
 	return nil
+}
+
+func updateRefPrepareLockRejected(stderr string) bool {
+	return strings.HasPrefix(strings.TrimSpace(stderr), "fatal: prepare: cannot lock ref ")
 }
 
 func (session *updateRefSession) Commit() error {

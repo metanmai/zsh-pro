@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -131,6 +132,101 @@ func TestValidateGitArgvAllowsOnlyExactVersionProbe(t *testing.T) {
 	if err := validateGitArgv([]string{"version", "--build-options"}); !errors.Is(err, ErrGitCommand) {
 		t.Fatalf("version probe with extra authority accepted: %v", err)
 	}
+}
+
+func TestCommitTreeAllowsHyphenPrefixedMessageOperand(t *testing.T) {
+	for _, message := range []string{"-snapshot", "-C", "--git-dir=/tmp/not-authority"} {
+		if err := validateGitArgv([]string{"commit-tree", emptyTreeSHA, "-m", message}); err != nil {
+			t.Fatalf("safe hyphen-prefixed commit message %q rejected: %v", message, err)
+		}
+	}
+	if err := validateGitArgv([]string{"commit-tree", emptyTreeSHA, "-p", "-parent", "-m", "snapshot"}); !errors.Is(err, ErrGitCommand) {
+		t.Fatalf("hyphen-prefixed parent atom accepted: %v", err)
+	}
+
+	runner := newBareGitRunnerForTest(t, "message-store")
+	commit := createGitCommitForTest(t, runner, "-snapshot")
+	if !validGitObjectID(commit) {
+		t.Fatalf("commit-tree returned invalid object ID %q", commit)
+	}
+}
+
+func TestCandidateAlternateQuotesColonInStorePath(t *testing.T) {
+	runner := newBareGitRunnerForTest(t, "store:primary")
+	objectID, err := runner.hashObject(context.Background(), []byte("alternate-visible\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateObjects := filepath.Join(t.TempDir(), "objects")
+	if err := os.Mkdir(privateObjects, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	candidate := runner.candidate(filepath.Join(t.TempDir(), "index"), privateObjects)
+	wantAlternate := quoteGitPath(filepath.Join(runner.repoDir, "objects"))
+	if candidate.privateAlternateObject != wantAlternate || !strings.HasPrefix(wantAlternate, "\"") {
+		t.Fatalf("candidate alternate = %q, want Git C-style path %q", candidate.privateAlternateObject, wantAlternate)
+	}
+	if !candidate.catFileExists(context.Background(), objectID) {
+		t.Fatal("quoted colon-bearing alternate could not read the authenticated store object")
+	}
+}
+
+func TestValidateDirectRefRejectsSymlinkedPackedRefsBeforeGit(t *testing.T) {
+	runner := newBareGitRunnerForTest(t, "packed-store")
+	packedRefs := filepath.Join(runner.repoDir, "packed-refs")
+	if err := os.Symlink("HEAD", packedRefs); err != nil {
+		t.Fatal(err)
+	}
+	starts := 0
+	runner.beforeStart = func([]string) { starts++ }
+	_, _, err := runner.observeDirectRef(context.Background(), mainHeadRef())
+	if !errors.Is(err, ErrGitCommand) {
+		t.Fatalf("symlinked packed-refs error = %v, want Git command rejection", err)
+	}
+	if starts != 0 {
+		t.Fatalf("symlinked packed-refs started %d Git processes", starts)
+	}
+}
+
+func TestUpdateRefPrepareClassifiesOnlyGitLockRejectionAsConflict(t *testing.T) {
+	t.Run("Git lock rejection", func(t *testing.T) {
+		runner := newBareGitRunnerForTest(t, "conflict-store")
+		current := createGitCommitForTest(t, runner, "current")
+		if err := runner.updateRef(context.Background(), mainHeadRef().name, current); err != nil {
+			t.Fatal(err)
+		}
+		session, err := runner.startUpdateRefSession(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		mutation, err := encodeRefMutation(mainHeadRef(), current, false, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := session.Prepare(mutation); !errors.Is(err, ErrSecretRefConflict) {
+			t.Fatalf("prepare lock rejection = %v, want ref conflict", err)
+		}
+	})
+
+	t.Run("process transport failure", func(t *testing.T) {
+		runner := newBareGitRunnerForTest(t, "transport-store")
+		candidate := createGitCommitForTest(t, runner, "candidate")
+		session, err := runner.startUpdateRefSession(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		mutation, err := encodeRefMutation(mainHeadRef(), candidate, false, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := session.cmd.Process.Kill(); err != nil {
+			t.Fatal(err)
+		}
+		err = session.Prepare(mutation)
+		if !errors.Is(err, ErrGitCommand) || errors.Is(err, ErrSecretRefConflict) {
+			t.Fatalf("killed prepare process = %v, want infrastructure Git error", err)
+		}
+	})
 }
 
 // TestNewGitRunnerAbsenceGuard proves newGitRunner returns ErrGitAbsent (never a
@@ -302,4 +398,47 @@ func TestGitCommitToBranch(t *testing.T) {
 	if sha1 != sha2 {
 		t.Errorf("runCommit is not byte-stable for a fixed timestamp: %q vs %q", sha1, sha2)
 	}
+}
+
+func newBareGitRunnerForTest(t *testing.T, name string) gitRunner {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed; skipping store Git test")
+	}
+	directory := filepath.Join(t.TempDir(), name)
+	if output, err := exec.Command("git", "init", "--bare", "-b", "main", directory).CombinedOutput(); err != nil {
+		t.Fatalf("git init --bare failed: %v\n%s", err, output)
+	}
+	runner, err := newGitRunner(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return runner
+}
+
+func createGitCommitForTest(t *testing.T, runner gitRunner, message string) string {
+	t.Helper()
+	ctx := context.Background()
+	index := filepath.Join(t.TempDir(), "index")
+	const timestamp = "1700000000 +0000"
+	if _, err := runner.runCommit(ctx, index, timestamp, "read-tree", "--empty"); err != nil {
+		t.Fatal(err)
+	}
+	treeOutput, err := runner.runCommit(ctx, index, timestamp, "write-tree")
+	if err != nil {
+		t.Fatal(err)
+	}
+	commitOutput, err := runner.runCommit(
+		ctx,
+		index,
+		timestamp,
+		"commit-tree",
+		strings.TrimSpace(string(treeOutput)),
+		"-m",
+		message,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimSpace(string(commitOutput))
 }
