@@ -1336,7 +1336,6 @@ func encodeInstallPromotionJournalSlot(journal installPromotionJournal, generati
 	if len(payload) == 0 || len(payload) > installJournalSlotSize-installJournalSlotHeaderSize {
 		return nil, ErrInstallRecoveryRequired
 	}
-	digest := sha256.Sum256(payload)
 	slot := make([]byte, installJournalSlotSize)
 	offset := 0
 	copy(slot[offset:], installJournalSlotMagic)
@@ -1347,6 +1346,7 @@ func encodeInstallPromotionJournalSlot(journal installPromotionJournal, generati
 	offset += 8
 	binary.BigEndian.PutUint32(slot[offset:], uint32(len(payload)))
 	offset += 4
+	digest := installPromotionJournalSlotDigest(slot[:offset], payload)
 	copy(slot[offset:], digest[:])
 	offset += sha256.Size
 	copy(slot[offset:], payload)
@@ -1374,9 +1374,10 @@ func decodeInstallPromotionJournalSlot(slot []byte) (installPromotionJournalReco
 		return installPromotionJournalRecord{}, false
 	}
 	wantDigest := slot[offset : offset+sha256.Size]
+	authenticatedHeader := slot[:offset]
 	offset += sha256.Size
 	payload := slot[offset : offset+payloadLength]
-	actualDigest := sha256.Sum256(payload)
+	actualDigest := installPromotionJournalSlotDigest(authenticatedHeader, payload)
 	if !bytes.Equal(wantDigest, actualDigest[:]) {
 		return installPromotionJournalRecord{}, false
 	}
@@ -1393,6 +1394,15 @@ func decodeInstallPromotionJournalSlot(slot []byte) (installPromotionJournalReco
 		return installPromotionJournalRecord{}, false
 	}
 	return installPromotionJournalRecord{generation: generation, journal: journal}, true
+}
+
+func installPromotionJournalSlotDigest(header, payload []byte) [sha256.Size]byte {
+	hash := sha256.New()
+	_, _ = hash.Write(header)
+	_, _ = hash.Write(payload)
+	var digest [sha256.Size]byte
+	copy(digest[:], hash.Sum(nil))
+	return digest
 }
 
 func decodeInstallPromotionJournalRecord(content []byte) (installPromotionJournalRecord, error) {

@@ -2440,6 +2440,11 @@ func testTask3TornJournalTransition(t *testing.T, afterExchanged bool) {
 		writes++
 		if !afterExchanged || writes == 2 {
 			prefixLength := installJournalSlotHeaderSize + 1
+			if afterExchanged {
+				// Tear after the new generation reaches the previously valid
+				// slot but before its length, digest, or payload are replaced.
+				prefixLength = len(installJournalSlotMagic) + 4 + 8
+			}
 			n, err := file.WriteAt(slot[:prefixLength], offset)
 			if err != nil {
 				return n, err
