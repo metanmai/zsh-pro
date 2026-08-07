@@ -103,7 +103,7 @@ func prepareSecrets(p model.Profile, kc KeychainDriver) (preparedSecrets, error)
 	for i := range entries {
 		e := &entries[i]
 		if e.Secret != nil {
-			if err := validatePersistedSecretRef(*e, kc); err != nil {
+			if err := validatePersistedSecretRef(*e); err != nil {
 				return preparedSecrets{}, err
 			}
 			// A persisted reference is already the authoritative redacted form.
@@ -202,7 +202,7 @@ func prepareSecrets(p model.Profile, kc KeychainDriver) (preparedSecrets, error)
 	return preparedSecrets{profile: model.Profile{Entries: entries}, report: report, pending: pending}, nil
 }
 
-func validatePersistedSecretRef(entry model.Entry, keychain KeychainDriver) error {
+func validatePersistedSecretRef(entry model.Entry) error {
 	ref := entry.Secret
 	if ref == nil || entry.Category != model.CatSecrets || entry.Kind != model.KindAssignment ||
 		len(entry.Names) != 1 || entry.Names[0] == "" || ref.Key == "" || ref.Key != entry.Names[0] ||
@@ -217,12 +217,6 @@ func validatePersistedSecretRef(entry model.Entry, keychain KeychainDriver) erro
 		wantText = "export " + wantText
 	}
 	if entry.Text != wantText || entry.Value != placeholder {
-		return ErrUnsafeSecretShape
-	}
-	if keychain == nil {
-		return ErrSecretBackendUnavailable
-	}
-	if keychain.Kind() != ref.Kind {
 		return ErrUnsafeSecretShape
 	}
 	return nil

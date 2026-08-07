@@ -781,7 +781,7 @@ func TestCommitIngestExistingSecretRefPassThrough(t *testing.T) {
 	if err != nil || outcome.Status != model.IngestCommitCommitted {
 		t.Fatalf("CommitIngest persisted SecretRef = (%#v, %v)", outcome, err)
 	}
-	if keychain.kindCalls != 1 || keychain.retrieveCalls != 0 || keychain.storeCalls != 0 || keychain.deleteCalls != 0 {
+	if keychain.kindCalls != 0 || keychain.retrieveCalls != 0 || keychain.storeCalls != 0 || keychain.deleteCalls != 0 {
 		t.Fatalf("backend calls = Kind:%d Retrieve:%d Store:%d Delete:%d",
 			keychain.kindCalls, keychain.retrieveCalls, keychain.storeCalls, keychain.deleteCalls)
 	}
@@ -791,6 +791,28 @@ func TestCommitIngestExistingSecretRefPassThrough(t *testing.T) {
 	back, err := store.Read(context.Background(), "main")
 	if err != nil || !reflect.DeepEqual(back, profile) {
 		t.Fatalf("persisted SecretRef changed: got (%#v, %v), want %#v", back, err, profile)
+	}
+}
+
+func TestCommitIngestExistingSecretRefPassesWithoutActiveBackend(t *testing.T) {
+	store, err := New(t.TempDir()+"/store", stubRegen{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialization, err := store.InitForInstall(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	transaction := beginPhase6Ingest(t, store, initialization)
+	profile := persistedSecretRefProfile(model.SecretRefKeychain)
+	outcome, err := commitPhase6Ingest(t, store, initialization, transaction, profile)
+	if err != nil || outcome.Status != model.IngestCommitCommitted || len(outcome.Withheld) != 0 {
+		t.Fatalf("reference-only pass-through: status=%s withheld=%d err=%v",
+			outcome.Status, len(outcome.Withheld), err)
+	}
+	back, err := store.Read(context.Background(), "main")
+	if err != nil || !reflect.DeepEqual(back, profile) {
+		t.Fatalf("reference-only readback unchanged=%t err=%v", reflect.DeepEqual(back, profile), err)
 	}
 }
 
@@ -815,17 +837,17 @@ func TestCommitIngestMalformedSecretRefCallAndEffectMatrix(t *testing.T) {
 		{name: "runtime value", mutate: func(entry *model.Entry) { entry.RuntimeValue = &runtimeValue }},
 		{name: "dynamic", mutate: func(entry *model.Entry) { entry.Dynamic = true }},
 		{
-			name: "backend kind mismatch",
+			name: "different active backend kind",
 			mutate: func(entry *model.Entry) {
 				entry.Secret.Kind = model.SecretRefKeychain
 				placeholder := secretRefValue(*entry.Secret)
 				entry.Text = "export API_KEY=" + placeholder
 				entry.Value = placeholder
 			},
-			kind:     model.SecretRefFile,
-			wantKind: 1,
+			kind:  model.SecretRefFile,
+			valid: true,
 		},
-		{name: "valid", kind: model.SecretRefFile, wantKind: 1, valid: true},
+		{name: "valid", kind: model.SecretRefFile, valid: true},
 	}
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
