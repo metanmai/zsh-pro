@@ -153,8 +153,24 @@ func TestMainInitToBeginUsesExactCLIStore(t *testing.T) {
 	if count := strings.Count(string(source), "store.New("); count != 1 {
 		t.Fatalf("composition root constructs Store %d times, want exactly once", count)
 	}
-	if strings.Contains(string(source), "GOTOOLCHAIN=auto") {
+	helpers, err := os.ReadFile("main_test.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	helperSource := string(helpers)
+	helperStart := strings.LastIndex(helperSource, "func buildInstalledBinary")
+	if helperStart < 0 {
+		t.Fatal("buildInstalledBinary helper is missing")
+	}
+	helperSource = helperSource[helperStart:]
+	if helperEnd := strings.Index(helperSource, "\nfunc "); helperEnd >= 0 {
+		helperSource = helperSource[:helperEnd]
+	}
+	if strings.Contains(helperSource, "GOTOOLCHAIN=auto") {
 		t.Fatal("composition-root build helpers may not select or download a Go toolchain")
+	}
+	if !strings.Contains(helperSource, `"GOTOOLCHAIN=local"`) {
+		t.Fatal("buildInstalledBinary must pin GOTOOLCHAIN=local")
 	}
 
 	root := filepath.Join(t.TempDir(), "profiles.git")
