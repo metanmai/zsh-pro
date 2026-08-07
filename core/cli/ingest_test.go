@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -443,6 +444,9 @@ func newIngestControllerFixture(t *testing.T, source string) *ingestControllerFi
 }
 
 func runtimeUnsupportedForIngestTest() bool {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		return true
+	}
 	if _, err := exec.LookPath("zsh"); err != nil {
 		return true
 	}

@@ -5,6 +5,7 @@ package cli
 import (
 	"errors"
 	"os"
+	"runtime"
 	"syscall"
 	"unsafe"
 )
@@ -43,6 +44,8 @@ func atomicRenameAtWithSyscallPlatform(
 		flag = darwinRenameExclusiveFlag
 	}
 	_, _, errno := call(darwinRenameatxNPTrap, uintptr(fromDirFD), uintptr(unsafe.Pointer(fromPointer)), uintptr(toDirFD), uintptr(unsafe.Pointer(toPointer)), flag, 0)
+	runtime.KeepAlive(fromPointer)
+	runtime.KeepAlive(toPointer)
 	return classifyAtomicRenameErrno(errno)
 }
 

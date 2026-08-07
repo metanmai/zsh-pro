@@ -170,6 +170,67 @@ func TestAtomicRenameLinuxGo125ABIAndFallbackSurface(t *testing.T) {
 	auditAtomicRenamePlatformAST(t, linuxPath)
 }
 
+func TestAtomicRenameDarwinKeepsSyscallPointersAlive(t *testing.T) {
+	darwinPath := filepath.Join(repositoryRoot(t), "core", "cli", "atomic_rename_darwin.go")
+	set := token.NewFileSet()
+	file, err := parser.ParseFile(set, darwinPath, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var platform *ast.FuncDecl
+	for _, declaration := range file.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if ok && function.Name.Name == "atomicRenameAtWithSyscallPlatform" {
+			platform = function
+			break
+		}
+	}
+	if platform == nil {
+		t.Fatal("Darwin adapter lacks atomicRenameAtWithSyscallPlatform")
+	}
+	var rawCallEnd token.Pos
+	keepAlive := map[string]token.Pos{}
+	ast.Inspect(platform.Body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if identifier, ok := call.Fun.(*ast.Ident); ok && identifier.Name == "call" {
+			rawCallEnd = call.End()
+			return true
+		}
+		selector, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		packageName, packageOK := selector.X.(*ast.Ident)
+		argument, argumentOK := singleIdentifierArgument(call)
+		if packageOK && packageName.Name == "runtime" && selector.Sel.Name == "KeepAlive" && argumentOK {
+			keepAlive[argument] = call.Pos()
+		}
+		return true
+	})
+	if rawCallEnd == token.NoPos {
+		t.Fatal("Darwin adapter lacks the raw rename syscall")
+	}
+	for _, pointer := range []string{"fromPointer", "toPointer"} {
+		if keepAlive[pointer] <= rawCallEnd {
+			t.Fatalf("Darwin adapter does not keep %s alive after the raw syscall", pointer)
+		}
+	}
+}
+
+func singleIdentifierArgument(call *ast.CallExpr) (string, bool) {
+	if len(call.Args) != 1 {
+		return "", false
+	}
+	identifier, ok := call.Args[0].(*ast.Ident)
+	if !ok {
+		return "", false
+	}
+	return identifier.Name, true
+}
+
 func runLocalGo(t *testing.T, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("go", args...)

@@ -14,7 +14,6 @@ import (
 	"reflect"
 	"runtime"
 	"strings"
-	"syscall"
 	"testing"
 
 	"zsh-pro/core/activate"
@@ -431,6 +430,9 @@ func TestIngestE2ESecretRefComparatorDoesNotForgeAuthority(t *testing.T) {
 	}
 	sourceProfile := ir.Build(blocks, f.provider)
 	applyIngestE2EOverrides(&sourceProfile)
+	if index >= len(sourceProfile.Entries) {
+		t.Fatalf("reparsed source profile has %d entries; authoritative index %d is unavailable", len(sourceProfile.Entries), index)
+	}
 	source := sourceProfile.Entries[index]
 	source.StartLine = -100
 	source.ValueMode = model.ValueModeUnsupported
@@ -612,43 +614,15 @@ func TestIngestE2ESecretAbsentAfterUpdateRefObservationAmbiguity(t *testing.T) {
 	proxyDir := t.TempDir()
 	marker := filepath.Join(proxyDir, "commit-response-lost")
 	proxy := filepath.Join(proxyDir, "git")
-	proxySource := `#!/bin/bash
-set -eu
-real=${PHASE6_REAL_GIT:?}
-marker=${PHASE6_AMBIGUITY_MARKER:?}
-if [[ ${1-} == for-each-ref && -f "$marker" ]]; then
-  exit 97
-fi
-if [[ $# -eq 3 && $1 == update-ref && $2 == --no-deref && $3 == --stdin ]]; then
-  coproc REAL_GIT { exec "$real" "$@"; }
-  child_in=${REAL_GIT[1]}
-  child_out=${REAL_GIT[0]}
-  child_pid=$REAL_GIT_PID
-  while IFS= read -r line; do
-    printf '%s\n' "$line" >&"$child_in"
-    case "$line" in
-      start|prepare|abort)
-        IFS= read -r reply <&"$child_out"
-        printf '%s\n' "$reply"
-        ;;
-      commit)
-        IFS= read -r _reply <&"$child_out" || true
-        : > "$marker"
-        exec {child_in}>&-
-        wait "$child_pid" || true
-        exit 98
-        ;;
-    esac
-  done
-  wait "$child_pid"
-  exit $?
-fi
-exec "$real" "$@"
-`
-	if err := os.WriteFile(proxy, []byte(proxySource), 0o700); err != nil {
+	testBinary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(testBinary, proxy); err != nil {
 		t.Fatal(err)
 	}
 	originalPath := os.Getenv("PATH")
+	t.Setenv(ingestE2EGitProxyModeEnv, "1")
 	t.Setenv("PHASE6_REAL_GIT", realGit)
 	t.Setenv("PHASE6_AMBIGUITY_MARKER", marker)
 	t.Setenv("PATH", proxyDir+string(os.PathListSeparator)+originalPath)
@@ -737,18 +711,6 @@ func ingestE2EStoreTransactionNamespace(t *testing.T, storeRoot string) string {
 	}
 	digest := sha256.Sum256([]byte(filepath.Clean(canonical)))
 	return filepath.Join(filepath.Dir(canonical), ".zsh-pro-transactions-"+hex.EncodeToString(digest[:16]))
-}
-
-func requirePrivateCurrentUserDirectory(t *testing.T, path string) {
-	t.Helper()
-	info, err := os.Lstat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || !info.IsDir() || info.Mode().Perm() != 0o700 || stat.Uid != uint32(os.Geteuid()) {
-		t.Fatalf("directory %s lacks mode-0700/current-EUID authority", path)
-	}
 }
 
 func literalBearingPaths(t *testing.T, literal string, roots ...string) []string {
