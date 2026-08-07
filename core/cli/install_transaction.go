@@ -451,6 +451,36 @@ func (evidence installFileEvidence) authenticatedEqual(other installFileEvidence
 	return evidence == other
 }
 
+// installEntryEvidence is deliberately broader than installFileEvidence. The
+// staged candidate, evidence, and journal remain authenticated regular files;
+// only a target occupant displaced by atomic exchange may have another type.
+// Capturing that type without opening it avoids following symlinks or blocking
+// on FIFOs while still binding a guarded reverse to the exact directory entry.
+type installEntryEvidence struct {
+	Device     uint64      `json:"device"`
+	Inode      uint64      `json:"inode"`
+	Digest     string      `json:"digest,omitempty"`
+	Mode       os.FileMode `json:"mode"`
+	UID        uint32      `json:"uid"`
+	GID        uint32      `json:"gid"`
+	LinkTarget string      `json:"link_target,omitempty"`
+}
+
+func (evidence installEntryEvidence) authenticatedEqual(other installEntryEvidence) bool {
+	return evidence == other
+}
+
+func installEntryEvidenceFromFile(evidence installFileEvidence) installEntryEvidence {
+	return installEntryEvidence{
+		Device: evidence.Device,
+		Inode:  evidence.Inode,
+		Digest: evidence.Digest,
+		Mode:   evidence.Mode.Perm(),
+		UID:    evidence.UID,
+		GID:    evidence.GID,
+	}
+}
+
 type installDirectoryEvidence struct {
 	Device uint64      `json:"device"`
 	Inode  uint64      `json:"inode"`
@@ -506,7 +536,7 @@ type installPromotionJournal struct {
 	TransactionDirectory      installDirectoryEvidence `json:"transaction_directory"`
 	ExpectedTarget            installSnapshotRecord    `json:"expected_target"`
 	ExpectedCandidate         installFileEvidence      `json:"expected_candidate"`
-	DisplacedObserved         *installFileEvidence     `json:"displaced_observed,omitempty"`
+	DisplacedObserved         *installEntryEvidence    `json:"displaced_observed,omitempty"`
 }
 
 type requestedLinkRecord struct {
@@ -703,6 +733,23 @@ func installFileEvidenceFromInfo(info os.FileInfo, digest [sha256.Size]byte) (in
 	}, nil
 }
 
+func installEntryEvidenceFromInfo(info os.FileInfo) (installEntryEvidence, error) {
+	if info == nil {
+		return installEntryEvidence{}, errors.New("transaction entry authentication failed")
+	}
+	device, inode, uid, gid, err := installStatIdentity(info)
+	if err != nil {
+		return installEntryEvidence{}, err
+	}
+	return installEntryEvidence{
+		Device: device,
+		Inode:  inode,
+		Mode:   info.Mode(),
+		UID:    uid,
+		GID:    gid,
+	}, nil
+}
+
 func captureInstallFileEvidence(root *os.Root, name string) (installFileEvidence, []byte, error) {
 	if root == nil {
 		return installFileEvidence{}, nil, ErrInstallRecoveryRequired
@@ -740,6 +787,63 @@ func captureInstallFileEvidence(root *os.Root, name string) (installFileEvidence
 		return installFileEvidence{}, nil, err
 	}
 	return evidence, content, nil
+}
+
+func captureInstallEntryEvidence(root *os.Root, name string) (installEntryEvidence, error) {
+	if root == nil {
+		return installEntryEvidence{}, ErrInstallRecoveryRequired
+	}
+	beforeInfo, err := root.Lstat(name)
+	if err != nil {
+		return installEntryEvidence{}, err
+	}
+	if beforeInfo.Mode().IsRegular() {
+		fileEvidence, _, err := captureInstallFileEvidence(root, name)
+		if err != nil {
+			return installEntryEvidence{}, err
+		}
+		return installEntryEvidenceFromFile(fileEvidence), nil
+	}
+	before, err := installEntryEvidenceFromInfo(beforeInfo)
+	if err != nil {
+		return installEntryEvidence{}, err
+	}
+	if before.Mode&os.ModeSymlink != 0 {
+		before.LinkTarget, err = root.Readlink(name)
+		if err != nil {
+			return installEntryEvidence{}, err
+		}
+	}
+	afterInfo, err := root.Lstat(name)
+	if err != nil {
+		return installEntryEvidence{}, err
+	}
+	after, err := installEntryEvidenceFromInfo(afterInfo)
+	if err != nil {
+		return installEntryEvidence{}, err
+	}
+	if after.Mode&os.ModeSymlink != 0 {
+		after.LinkTarget, err = root.Readlink(name)
+		if err != nil {
+			return installEntryEvidence{}, err
+		}
+		finalInfo, err := root.Lstat(name)
+		if err != nil {
+			return installEntryEvidence{}, err
+		}
+		final, err := installEntryEvidenceFromInfo(finalInfo)
+		if err != nil {
+			return installEntryEvidence{}, err
+		}
+		final.LinkTarget = after.LinkTarget
+		if !after.authenticatedEqual(final) {
+			return installEntryEvidence{}, ErrInstallRecoveryRequired
+		}
+	}
+	if !before.authenticatedEqual(after) {
+		return installEntryEvidence{}, ErrInstallRecoveryRequired
+	}
+	return after, nil
 }
 
 func captureInstallTargetEvidence(root *os.Root, name string) (installFileEvidence, bool, error) {
@@ -1479,7 +1583,7 @@ func installPromotionJournalsEqual(left, right installPromotionJournal) bool {
 		left.TransactionDirectory.equal(right.TransactionDirectory) &&
 		left.ExpectedTarget == right.ExpectedTarget &&
 		left.ExpectedCandidate.authenticatedEqual(right.ExpectedCandidate) &&
-		fileEvidencePointersEqual(left.DisplacedObserved, right.DisplacedObserved)
+		entryEvidencePointersEqual(left.DisplacedObserved, right.DisplacedObserved)
 }
 
 func sameInstallPromotionJournalTransaction(left, right installPromotionJournal) bool {
@@ -1492,7 +1596,7 @@ func validInstallPromotionJournalTransition(previous, next installPromotionJourn
 	if !sameInstallPromotionJournalTransaction(previous, next) {
 		return false
 	}
-	sameDisplaced := fileEvidencePointersEqual(previous.DisplacedObserved, next.DisplacedObserved)
+	sameDisplaced := entryEvidencePointersEqual(previous.DisplacedObserved, next.DisplacedObserved)
 	switch previous.State {
 	case promotionStatePrepared:
 		switch next.State {
@@ -1519,7 +1623,7 @@ func (transaction *guardedInstallTransaction) journalsMatch(actual installPromot
 	return transaction != nil && installPromotionJournalsEqual(actual, transaction.journal)
 }
 
-func fileEvidencePointersEqual(left, right *installFileEvidence) bool {
+func entryEvidencePointersEqual(left, right *installEntryEvidence) bool {
 	if left == nil || right == nil {
 		return left == right
 	}
@@ -1577,9 +1681,23 @@ func (transaction *guardedInstallTransaction) authenticateJournalAndEvidence() e
 	if err != nil {
 		return ErrInstallRecoveryRequired
 	}
-	if transaction.expectedTarget.exists || transaction.journal.State == promotionStateReversed {
-		if !transaction.journal.RequestedLink.equal(currentTopology) {
+	if transaction.journal.State == promotionStateReversed {
+		if transaction.journal.DisplacedObserved == nil {
 			return ErrInstallRecoveryRequired
+		}
+		matches, matchErr := transaction.targetEntryMatches(*transaction.journal.DisplacedObserved)
+		if matchErr != nil || !matches {
+			return ErrInstallRecoveryRequired
+		}
+	} else if transaction.expectedTarget.exists {
+		if !transaction.journal.RequestedLink.equal(currentTopology) {
+			if transaction.journal.State != promotionStateExchanged || transaction.journal.DisplacedObserved == nil {
+				return ErrInstallRecoveryRequired
+			}
+			matches, matchErr := transaction.targetEntryMatches(*transaction.journal.DisplacedObserved)
+			if matchErr != nil || !matches {
+				return ErrInstallRecoveryRequired
+			}
 		}
 	} else if transaction.journal.State == promotionStatePrepared {
 		if currentTopology.symlink {
@@ -1593,7 +1711,7 @@ func (transaction *guardedInstallTransaction) authenticateJournalAndEvidence() e
 
 func (transaction *guardedInstallTransaction) writeJournalTransition(
 	state promotionState,
-	displaced *installFileEvidence,
+	displaced *installEntryEvidence,
 ) error {
 	if err := transaction.authenticateJournalAndEvidence(); err != nil {
 		return err
@@ -1649,6 +1767,12 @@ func evidenceMatchesSnapshot(evidence installFileEvidence, snapshot installSnaps
 		evidence.Digest == hex.EncodeToString(snapshot.digest[:]) && evidence.Mode.Perm() == snapshot.mode.Perm()
 }
 
+func entryEvidenceMatchesSnapshot(evidence installEntryEvidence, snapshot installSnapshot) bool {
+	return snapshot.exists && snapshot.regular && evidence.Mode.IsRegular() &&
+		evidence.Device == snapshot.device && evidence.Inode == snapshot.inode &&
+		evidence.Digest == hex.EncodeToString(snapshot.digest[:]) && evidence.Mode.Perm() == snapshot.mode.Perm()
+}
+
 func (transaction *guardedInstallTransaction) expectedTargetStillCurrent() (bool, error) {
 	evidence, exists, err := captureInstallTargetEvidence(transaction.guard.parentRoot, transaction.guard.targetName)
 	if err != nil {
@@ -1660,8 +1784,24 @@ func (transaction *guardedInstallTransaction) expectedTargetStillCurrent() (bool
 	return exists && evidenceMatchesSnapshot(evidence, transaction.expectedTarget), nil
 }
 
-func (transaction *guardedInstallTransaction) peerMatches(expected installFileEvidence) (bool, error) {
+func (transaction *guardedInstallTransaction) peerFileMatches(expected installFileEvidence) (bool, error) {
 	evidence, _, err := captureInstallFileEvidence(transaction.transactionRoot, exchangePeerBasename)
+	if err != nil {
+		return false, err
+	}
+	return expected.authenticatedEqual(evidence), nil
+}
+
+func (transaction *guardedInstallTransaction) peerEntryMatches(expected installEntryEvidence) (bool, error) {
+	evidence, err := captureInstallEntryEvidence(transaction.transactionRoot, exchangePeerBasename)
+	if err != nil {
+		return false, err
+	}
+	return expected.authenticatedEqual(evidence), nil
+}
+
+func (transaction *guardedInstallTransaction) targetEntryMatches(expected installEntryEvidence) (bool, error) {
+	evidence, err := captureInstallEntryEvidence(transaction.guard.parentRoot, transaction.guard.targetName)
 	if err != nil {
 		return false, err
 	}
@@ -1687,7 +1827,7 @@ func (transaction *guardedInstallTransaction) promote() (promotionOutcome, error
 	if err != nil || !targetCurrent {
 		return promotionOutcome{Disposition: promotionUnchanged, transaction: transaction}, errors.Join(ErrInstallTargetChanged, err)
 	}
-	peerCurrent, err := transaction.peerMatches(transaction.expectedCandidate)
+	peerCurrent, err := transaction.peerFileMatches(transaction.expectedCandidate)
 	if err != nil || !peerCurrent {
 		return promotionOutcome{Disposition: promotionUnchanged, transaction: transaction}, errors.Join(ErrInstallTargetChanged, err)
 	}
@@ -1746,14 +1886,14 @@ func (transaction *guardedInstallTransaction) promote() (promotionOutcome, error
 	if ok, err := transaction.targetMatches(transaction.expectedCandidate); err != nil || !ok {
 		return transaction.recoveryOutcome(errors.Join(ErrInstallRecoveryRequired, err))
 	}
-	displaced, _, err := captureInstallFileEvidence(transaction.transactionRoot, exchangePeerBasename)
+	displaced, err := captureInstallEntryEvidence(transaction.transactionRoot, exchangePeerBasename)
 	if err != nil {
 		return transaction.recoveryOutcome(err)
 	}
 	if err := transaction.writeJournalTransition(promotionStateExchanged, &displaced); err != nil {
 		return transaction.recoveryOutcome(err)
 	}
-	if !evidenceMatchesSnapshot(displaced, transaction.expectedTarget) {
+	if !entryEvidenceMatchesSnapshot(displaced, transaction.expectedTarget) {
 		return transaction.reverseLateSubstitution(displaced)
 	}
 	if err := transaction.syncChangedDirectories("forward-exchange"); err != nil {
@@ -1767,7 +1907,7 @@ func (transaction *guardedInstallTransaction) promote() (promotionOutcome, error
 }
 
 func (transaction *guardedInstallTransaction) reverseLateSubstitution(
-	displaced installFileEvidence,
+	displaced installEntryEvidence,
 ) (promotionOutcome, error) {
 	if transaction.seams.beforeReverse != nil {
 		if err := transaction.seams.beforeReverse(transaction); err != nil {
@@ -1775,7 +1915,7 @@ func (transaction *guardedInstallTransaction) reverseLateSubstitution(
 		}
 	}
 	targetOK, targetErr := transaction.targetMatches(transaction.expectedCandidate)
-	peerOK, peerErr := transaction.peerMatches(displaced)
+	peerOK, peerErr := transaction.peerEntryMatches(displaced)
 	if targetErr != nil || peerErr != nil || !targetOK || !peerOK {
 		return transaction.recoveryOutcome(errors.Join(ErrInstallRecoveryRequired, targetErr, peerErr))
 	}
@@ -1846,7 +1986,7 @@ func (transaction *guardedInstallTransaction) rollback() error {
 		transaction.disposition = promotionRecoveryRequired
 		return ErrInstallRecoveryRequired
 	}
-	peerOK, peerErr := transaction.peerMatches(*transaction.journal.DisplacedObserved)
+	peerOK, peerErr := transaction.peerEntryMatches(*transaction.journal.DisplacedObserved)
 	if targetErr != nil || peerErr != nil || !targetOK || !peerOK {
 		transaction.disposition = promotionRecoveryRequired
 		return errors.Join(ErrInstallRecoveryRequired, targetErr, peerErr)
@@ -1892,14 +2032,14 @@ func (transaction *guardedInstallTransaction) finalize() error {
 		return err
 	}
 	if _, err := transaction.transactionRoot.Lstat(exchangePeerBasename); err == nil {
-		var expected installFileEvidence
+		var expected installEntryEvidence
 		switch {
 		case transaction.disposition == promotionInstalled && transaction.expectedTarget.exists && transaction.journal.DisplacedObserved != nil:
 			expected = *transaction.journal.DisplacedObserved
 		default:
-			expected = transaction.expectedCandidate
+			expected = installEntryEvidenceFromFile(transaction.expectedCandidate)
 		}
-		matches, matchErr := transaction.peerMatches(expected)
+		matches, matchErr := transaction.peerEntryMatches(expected)
 		if matchErr != nil || !matches {
 			transaction.disposition = promotionRecoveryRequired
 			transaction.closeHandles()
@@ -2124,10 +2264,15 @@ func recoverGuardedInstallTransaction(
 	}
 
 	targetCandidate, targetErr := transaction.targetMatches(transaction.expectedCandidate)
-	peerCandidate, peerCandidateErr := transaction.peerMatches(transaction.expectedCandidate)
+	peerCandidate, peerCandidateErr := transaction.peerFileMatches(transaction.expectedCandidate)
 	targetOriginal, targetOriginalErr := transaction.expectedTargetStillCurrent()
-	peerEvidence, _, peerErr := captureInstallFileEvidence(transaction.transactionRoot, exchangePeerBasename)
+	peerEvidence, peerErr := captureInstallEntryEvidence(transaction.transactionRoot, exchangePeerBasename)
 	peerMissing := errors.Is(peerErr, os.ErrNotExist) || errors.Is(peerErr, syscall.ENOENT)
+	targetDisplaced := false
+	var targetDisplacedErr error
+	if transaction.journal.DisplacedObserved != nil {
+		targetDisplaced, targetDisplacedErr = transaction.targetEntryMatches(*transaction.journal.DisplacedObserved)
+	}
 
 	if !transaction.expectedTarget.exists {
 		switch {
@@ -2142,6 +2287,24 @@ func recoverGuardedInstallTransaction(
 		default:
 			return retain(errors.Join(ErrInstallRecoveryRequired, targetErr, peerCandidateErr, peerErr))
 		}
+	}
+	if transaction.journal.DisplacedObserved != nil && targetDisplacedErr == nil && targetDisplaced &&
+		peerCandidateErr == nil && peerCandidate {
+		if transaction.journal.State == promotionStateExchanged {
+			if err := transaction.writeJournalTransition(promotionStateReversed, transaction.journal.DisplacedObserved); err != nil {
+				return retain(err)
+			}
+		} else if transaction.journal.State != promotionStateReversed {
+			return retain(ErrInstallRecoveryRequired)
+		}
+		if err := transaction.syncChangedDirectories("recover-reverse"); err != nil {
+			return retain(err)
+		}
+		transaction.disposition = promotionRestored
+		if err := transaction.finalize(); err != nil {
+			return retain(err)
+		}
+		return promotionOutcome{Disposition: promotionRestored, Restored: true}, nil
 	}
 
 	if targetOriginalErr == nil && targetOriginal && peerCandidateErr == nil && peerCandidate {

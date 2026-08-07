@@ -2635,9 +2635,9 @@ func testTask3PostSwapAxes(t *testing.T) {
 	if err != nil || !exists || !transaction.expectedCandidate.authenticatedEqual(targetEvidence) {
 		t.Fatalf("target is not expectedCandidate: evidence=%+v err=%v", targetEvidence, err)
 	}
-	peerEvidence, _, err := captureInstallFileEvidence(transaction.transactionRoot, exchangePeerBasename)
+	peerEvidence, err := captureInstallEntryEvidence(transaction.transactionRoot, exchangePeerBasename)
 	if err != nil || !transaction.journal.DisplacedObserved.authenticatedEqual(peerEvidence) ||
-		!evidenceMatchesSnapshot(peerEvidence, transaction.expectedTarget) {
+		!entryEvidenceMatchesSnapshot(peerEvidence, transaction.expectedTarget) {
 		t.Fatalf("peer is not displacedObserved/expectedTarget: evidence=%+v err=%v", peerEvidence, err)
 	}
 	if !bytes.Equal(readTask3Target(t, fixture.target), fixture.candidate) {
@@ -2886,4 +2886,98 @@ func TestInstallPromotionRejectsChangedCandidateBeforeExchange(t *testing.T) {
 
 func TestInstallPromotionPostSwapSeparatesCandidateAndDisplacedIdentity(t *testing.T) {
 	requireTask3InstallContract(t, "post-swap independent axes")
+}
+
+func TestInstallPromotionAuthenticatesNonRegularDisplacedOccupant(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("atomic exchange requires Linux or Darwin")
+	}
+	var targetCalls atomic.Int32
+	seams := targetAtomicCountingSeams(&targetCalls)
+	fixture, transaction := prepareTask3Transaction(t, true, seams, nil)
+	lateTarget := filepath.Join(fixture.home, "late-target")
+	if err := os.WriteFile(lateTarget, []byte("late target bytes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	targetCalls.Store(0)
+	seams.beforeNamespace = func(*guardedInstallTransaction, atomicRenameMode) error {
+		if err := os.Remove(fixture.target); err != nil {
+			return err
+		}
+		return os.Symlink(lateTarget, fixture.target)
+	}
+	transaction.seams = normalizedInstallTransactionSeams(seams)
+
+	outcome, err := transaction.promote()
+	if !errors.Is(err, ErrInstallTargetChanged) || !outcome.Restored || outcome.RecoveryRequired {
+		t.Fatalf("non-regular substitution outcome=%+v err=%v", outcome, err)
+	}
+	if targetCalls.Load() != 2 {
+		t.Fatalf("non-regular substitution calls = %d, want forward plus guarded reverse", targetCalls.Load())
+	}
+	if transaction.journal.DisplacedObserved == nil ||
+		transaction.journal.DisplacedObserved.Mode&os.ModeSymlink == 0 ||
+		transaction.journal.DisplacedObserved.LinkTarget != lateTarget {
+		t.Fatalf("typed displaced evidence = %+v, want symlink to %s", transaction.journal.DisplacedObserved, lateTarget)
+	}
+	if info, err := os.Lstat(fixture.target); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("restored target type = %v, err=%v; want symlink", info, err)
+	}
+	if target, err := os.Readlink(fixture.target); err != nil || target != lateTarget {
+		t.Fatalf("restored symlink target = %q, err=%v; want %q", target, err, lateTarget)
+	}
+	peer, _, err := captureInstallFileEvidence(transaction.transactionRoot, exchangePeerBasename)
+	if err != nil || !transaction.expectedCandidate.authenticatedEqual(peer) {
+		t.Fatalf("post-reverse exchange peer = %+v, err=%v; want candidate", peer, err)
+	}
+	if err := outcome.Finalize(); err != nil {
+		t.Fatal(err)
+	}
+	if target, err := os.Readlink(fixture.target); err != nil || target != lateTarget {
+		t.Fatalf("finalize changed restored symlink = %q, err=%v", target, err)
+	}
+}
+
+func TestRecoverInstallPromotionAuthenticatesNonRegularDisplacedOccupant(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("atomic exchange requires Linux or Darwin")
+	}
+	seams := normalizedInstallTransactionSeams(nil)
+	fixture, transaction := prepareTask3Transaction(t, true, &seams, nil)
+	lateTarget := filepath.Join(fixture.home, "late-recovery-target")
+	if err := os.WriteFile(lateTarget, []byte("late recovery target bytes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	seams.beforeNamespace = func(*guardedInstallTransaction, atomicRenameMode) error {
+		if err := os.Remove(fixture.target); err != nil {
+			return err
+		}
+		return os.Symlink(lateTarget, fixture.target)
+	}
+	failed := false
+	seams.syncDirectory = func(file *os.File, stage string) error {
+		if stage == "journal-directory:reversed" && !failed {
+			failed = true
+			return errors.New("injected crash after reverse journal write")
+		}
+		return file.Sync()
+	}
+	transaction.seams = seams
+	locator := transaction.recoveryLocator()
+	outcome, err := transaction.promote()
+	if !errors.Is(err, ErrInstallRecoveryRequired) || !outcome.RecoveryRequired || !failed {
+		t.Fatalf("interrupted non-regular reverse outcome=%+v failed=%v err=%v", outcome, failed, err)
+	}
+	transaction.closeHandles()
+
+	recovered, err := recoverGuardedInstallTransaction(context.Background(), locator, nil)
+	if err != nil || !recovered.Restored || recovered.RecoveryRequired {
+		t.Fatalf("non-regular recovery outcome=%+v err=%v", recovered, err)
+	}
+	if target, err := os.Readlink(fixture.target); err != nil || target != lateTarget {
+		t.Fatalf("recovery changed restored symlink = %q, err=%v", target, err)
+	}
+	if _, err := os.Lstat(filepath.Join(fixture.home, installTransactionNamespaceName, locator.TransactionName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("recovery retained finalized transaction: %v", err)
+	}
 }
