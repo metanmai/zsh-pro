@@ -831,6 +831,9 @@ func TestStoreTransactionRootLockRejectsUnsafeEntry(t *testing.T) {
 				if err := os.Mkdir(namespace, 0o755); err != nil {
 					t.Fatal(err)
 				}
+				if err := os.Chmod(namespace, 0o755); err != nil {
+					t.Fatal(err)
+				}
 			},
 		},
 		{
@@ -869,6 +872,9 @@ func TestStoreTransactionRootLockRejectsUnsafeEntry(t *testing.T) {
 					t.Fatal(err)
 				}
 				if err := os.WriteFile(filepath.Join(namespace, "lock"), nil, 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(filepath.Join(namespace, "lock"), 0o644); err != nil {
 					t.Fatal(err)
 				}
 			},
