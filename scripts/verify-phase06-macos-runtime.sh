@@ -29,6 +29,12 @@ fi
 if ! git diff --quiet "$expected_sha" -- core scripts/verify-phase06-macos-runtime.sh; then
   blocked 'implementation or verifier differs from the requested SHA'
 fi
+untracked_scope=$(git ls-files --others -- core scripts/verify-phase06-macos-runtime.sh 2>/dev/null) || {
+  blocked 'cannot inspect untracked implementation or verifier files'
+}
+if [ -n "$untracked_scope" ]; then
+  blocked 'untracked implementation or verifier files are present'
+fi
 if [ "$(uname -s)" != Darwin ]; then
   blocked 'native Darwin execution is required; cross-builds do not qualify'
 fi
