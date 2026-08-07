@@ -408,9 +408,8 @@ func (s *Store) AbortIngest(
 		s.transactionMu.Unlock()
 		return model.IngestAbortOutcome{}, ErrInvalidIngestAuthority
 	}
-	if record.lifecycle == model.IngestLifecycleTerminal && record.abortOutcomeSet {
-		outcome := record.abortOutcome
-		err := record.abortErr
+	if record.lifecycle == model.IngestLifecycleTerminal {
+		outcome, err := s.terminalAbortOutcomeLocked(initialization, record)
 		s.transactionMu.Unlock()
 		return outcome, err
 	}
@@ -449,6 +448,35 @@ func (s *Store) AbortIngest(
 	abortErr := record.abortErr
 	s.transactionMu.Unlock()
 	return outcome, abortErr
+}
+
+func (s *Store) terminalAbortOutcomeLocked(
+	initialization *installInitializationRecord,
+	record *ingestTransactionRecord,
+) (model.IngestAbortOutcome, error) {
+	if record.abortOutcomeSet {
+		return record.abortOutcome, record.abortErr
+	}
+
+	failure := record.beginOutcome.FailureCode
+	cleanup := record.cleanup
+	recoveryRequired := record.recoveryRequired
+	if terminal, ok := s.ingestCommitOutcomes[record.transactionID]; ok {
+		failure = terminal.outcome.FailureCode
+		cleanup = terminal.outcome.Cleanup
+		recoveryRequired = terminal.outcome.RecoveryRequired
+	}
+	record.abortOutcome = model.IngestAbortOutcome{
+		InitializationID:        record.initializationID,
+		TransactionID:           record.transactionID,
+		Lifecycle:               model.IngestLifecycleTerminal,
+		Cleanup:                 cleanup,
+		FailureCode:             failure,
+		RecoveryRequired:        recoveryRequired,
+		InitializerRollbackSafe: s.initializerRollbackSafeLocked(initialization),
+	}
+	record.abortOutcomeSet = true
+	return record.abortOutcome, record.abortErr
 }
 
 func (s *Store) transactionQuarantinePath(transactionID model.IngestTransactionID) string {

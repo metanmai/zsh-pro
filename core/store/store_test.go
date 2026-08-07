@@ -1846,6 +1846,50 @@ func TestAbortIngestTerminalResultReplay(t *testing.T) {
 	}
 }
 
+func TestAbortIngestReplaysEveryTerminalTransaction(t *testing.T) {
+	t.Run("begin failure", func(t *testing.T) {
+		store, initialization, _ := newPhase6IngestStore(t)
+		store.beginObserveMain = func(context.Context) (string, bool, error) {
+			return "", false, ErrGitCommand
+		}
+		begin, err := store.BeginIngest(context.Background(), initialization.ID())
+		if !errors.Is(err, ErrGitCommand) || begin.Lifecycle != model.IngestLifecycleTerminal {
+			t.Fatalf("terminal BeginIngest = (%#v, %v)", begin, err)
+		}
+		cleanupCalls := 0
+		store.cleanupBeforeFinalCheck = func(quarantineCleanupSeam) error {
+			cleanupCalls++
+			return nil
+		}
+		outcome, err := store.AbortIngest(context.Background(), initialization.ID(), begin.TransactionID)
+		if err != nil || outcome.Lifecycle != model.IngestLifecycleTerminal ||
+			outcome.Cleanup != begin.Cleanup || outcome.FailureCode != begin.FailureCode ||
+			outcome.RecoveryRequired != begin.RecoveryRequired || cleanupCalls != 0 {
+			t.Fatalf("terminal begin Abort: outcome=%#v err=%v cleanup_calls=%d", outcome, err, cleanupCalls)
+		}
+	})
+
+	t.Run("committed", func(t *testing.T) {
+		store, initialization, _ := newPhase6IngestStore(t)
+		begin := beginPhase6Ingest(t, store, initialization)
+		committed, err := commitPhase6Ingest(t, store, initialization, begin, phase6Profile("TERMINAL", "committed"))
+		if err != nil || committed.Status != model.IngestCommitCommitted {
+			t.Fatalf("CommitIngest = (%#v, %v)", committed, err)
+		}
+		cleanupCalls := 0
+		store.cleanupBeforeFinalCheck = func(quarantineCleanupSeam) error {
+			cleanupCalls++
+			return nil
+		}
+		outcome, err := store.AbortIngest(context.Background(), initialization.ID(), begin.TransactionID)
+		if err != nil || outcome.Lifecycle != model.IngestLifecycleTerminal ||
+			outcome.Cleanup != committed.Cleanup || outcome.FailureCode != committed.FailureCode ||
+			outcome.RecoveryRequired != committed.RecoveryRequired || cleanupCalls != 0 {
+			t.Fatalf("terminal commit Abort: outcome=%#v err=%v cleanup_calls=%d", outcome, err, cleanupCalls)
+		}
+	})
+}
+
 func TestAbortIngestRejectsUnknownCrossStoreAndFinalizing(t *testing.T) {
 	store, initialization, _ := newPhase6IngestStore(t)
 	begin := beginPhase6Ingest(t, store, initialization)
