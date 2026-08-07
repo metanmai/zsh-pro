@@ -878,12 +878,15 @@ func TestPrepareSecretsLiteralRedactedBeforeObjects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(prepared.pending) != 1 || len(prepared.report) != 1 ||
-		strings.Contains(prepared.profile.Entries[0].Text, literal) || strings.Contains(prepared.profile.Entries[0].Value, literal) {
-		t.Fatalf("literal was not redacted before candidate preparation: %#v", prepared)
+	textRedacted := !strings.Contains(prepared.profile.Entries[0].Text, literal)
+	valueRedacted := !strings.Contains(prepared.profile.Entries[0].Value, literal)
+	if len(prepared.pending) != 1 || len(prepared.report) != 1 || !textRedacted || !valueRedacted {
+		t.Fatalf("literal redaction facts: pending=%d report=%d text_redacted=%t value_redacted=%t",
+			len(prepared.pending), len(prepared.report), textRedacted, valueRedacted)
 	}
 	if keychain.retrieveCalls != 0 || keychain.storeCalls != 0 || keychain.deleteCalls != 0 {
-		t.Fatalf("prepareSecrets touched backend data methods: %#v", keychain)
+		t.Fatalf("prepareSecrets backend calls: Retrieve=%d Store=%d Delete=%d",
+			keychain.retrieveCalls, keychain.storeCalls, keychain.deleteCalls)
 	}
 }
 
@@ -894,11 +897,14 @@ func TestPrepareSecretsDynamicVerbatim(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(prepared.profile, profile) || len(prepared.pending) != 0 || len(prepared.report) != 0 {
-		t.Fatalf("dynamic secret changed: %#v", prepared)
+	profileUnchanged := reflect.DeepEqual(prepared.profile, profile)
+	if !profileUnchanged || len(prepared.pending) != 0 || len(prepared.report) != 0 {
+		t.Fatalf("dynamic secret facts: profile_unchanged=%t pending=%d report=%d",
+			profileUnchanged, len(prepared.pending), len(prepared.report))
 	}
 	if keychain.kindCalls != 0 || keychain.retrieveCalls != 0 || keychain.storeCalls != 0 || keychain.deleteCalls != 0 {
-		t.Fatalf("dynamic secret touched backend: %#v", keychain)
+		t.Fatalf("dynamic secret backend calls: Kind=%d Retrieve=%d Store=%d Delete=%d",
+			keychain.kindCalls, keychain.retrieveCalls, keychain.storeCalls, keychain.deleteCalls)
 	}
 }
 
