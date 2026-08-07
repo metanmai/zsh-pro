@@ -2190,7 +2190,8 @@ func TestCommitIngestRefMismatchCleansWithZeroPublication(t *testing.T) {
 	}
 	outcome, err := commitPhase6Ingest(t, store, initialization, second, phase6Profile("LOSER", "two"))
 	if !errors.Is(err, ErrSecretRefConflict) || outcome.Status != model.IngestCommitConflict ||
-		outcome.Backend != model.IngestBackendUnchanged || outcome.Cleanup != model.QuarantineCleanupRemoved {
+		outcome.Backend != model.IngestBackendUnchanged || outcome.Objects != model.IngestObjectsRemoved ||
+		outcome.Cleanup != model.QuarantineCleanupRemoved {
 		t.Fatalf("loser = (%#v, %v)", outcome, err)
 	}
 }
@@ -2299,8 +2300,38 @@ func TestCommitIngestCommittedCleanupAxis(t *testing.T) {
 	store, initialization, _ := newPhase6IngestStore(t)
 	transaction := beginPhase6Ingest(t, store, initialization)
 	outcome, err := commitPhase6Ingest(t, store, initialization, transaction, phase6Profile("CLEAN", "one"))
-	if err != nil || outcome.Status != model.IngestCommitCommitted || outcome.Cleanup != model.QuarantineCleanupRemoved || outcome.RecoveryRequired {
+	if err != nil || outcome.Status != model.IngestCommitCommitted || outcome.Objects != model.IngestObjectsPublished ||
+		outcome.Cleanup != model.QuarantineCleanupRemoved || outcome.RecoveryRequired {
 		t.Fatalf("committed cleanup = (%#v, %v)", outcome, err)
+	}
+}
+
+func TestCommitIngestLostResponseExpectedPreservesRetainedObjects(t *testing.T) {
+	store, initialization, _ := newPhase6IngestStore(t)
+	transaction := beginPhase6Ingest(t, store, initialization)
+	wantRef := *transaction.Baseline.ExpectedRevision
+	linkedObjects := 0
+	store.commitPublishLink = func(source, destination string) error {
+		if err := os.Link(source, destination); err != nil {
+			return err
+		}
+		linkedObjects++
+		return nil
+	}
+	store.commitRefSession = func(session *updateRefSession) error {
+		if err := session.Abort(); err != nil {
+			return err
+		}
+		return ErrGitCommand
+	}
+	outcome, err := commitPhase6Ingest(t, store, initialization, transaction, phase6Profile("RETAINED", "one"))
+	if linkedObjects == 0 || !errors.Is(err, ErrIngestNotCommitted) || outcome.Status != model.IngestCommitNotCommitted ||
+		outcome.RefState != model.IngestRefExpected || outcome.Objects != model.IngestObjectsRetained ||
+		outcome.Cleanup != model.QuarantineCleanupRemoved || outcome.RecoveryRequired {
+		t.Fatalf("lost response at expected ref = (%#v, %v)", outcome, err)
+	}
+	if current, readErr := store.git.revParse(context.Background(), "refs/heads/main"); readErr != nil || current != wantRef {
+		t.Fatalf("lost response moved ref: current=%q err=%v want=%q", current, readErr, wantRef)
 	}
 }
 

@@ -725,7 +725,7 @@ func (s *Store) cleanupCommittedTransaction(
 	cleanup, recovery, cleanupErr := s.cleanupIngestQuarantine(ctx, claim.record)
 	outcome.Cleanup = cleanup
 	if cleanup == model.QuarantineCleanupRemoved {
-		if outcome.Status != model.IngestCommitCommitted {
+		if outcome.Status != model.IngestCommitCommitted && outcome.Objects == model.IngestObjectsQuarantined {
 			outcome.Objects = model.IngestObjectsRemoved
 		}
 		return commitErr
