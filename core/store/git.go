@@ -854,18 +854,6 @@ func (session *updateRefSession) finishLocked() error {
 	return nil
 }
 
-// observeRef distinguishes a genuinely absent ref from a failed Git probe.
-// for-each-ref exits successfully with empty output for absence, while repository
-// or subprocess failures stay operational errors; this avoids conflating the
-// implementation-dependent show-ref missing-ref exit with a corrupt repository.
-func (g gitRunner) observeRef(ctx context.Context, ref string) (string, bool, error) {
-	main := mainHeadRef()
-	if ref != main.name {
-		return "", false, ErrGitCommand
-	}
-	return g.observeDirectRef(ctx, main)
-}
-
 // profileAtRevision reads profile.json from one exact commit. ls-tree establishes
 // whether the object is present before show reads it, so an initialized empty
 // baseline remains distinguishable from a committed empty profile.

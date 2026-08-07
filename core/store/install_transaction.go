@@ -132,6 +132,17 @@ func (s *Store) InitForInstall(ctx context.Context) (InstallInitialization, erro
 
 // BeginIngest starts a main-only ingest transaction.
 func (s *Store) BeginIngest(ctx context.Context, id model.InstallInitializationID) (model.IngestBeginOutcome, error) {
+	return s.beginIngestForRef(ctx, id, mainHeadRef())
+}
+
+func (s *Store) beginIngestForRef(
+	ctx context.Context,
+	id model.InstallInitializationID,
+	ref validatedHeadRef,
+) (model.IngestBeginOutcome, error) {
+	if !ref.valid() {
+		return model.IngestBeginOutcome{FailureCode: model.IngestFailureInvalidAuthority}, ErrInvalidIngestAuthority
+	}
 	record, outcome, err := s.reserveIngestTransaction(id)
 	if err != nil {
 		return outcome, err
@@ -141,7 +152,7 @@ func (s *Store) BeginIngest(ctx context.Context, id model.InstallInitializationI
 			return s.terminalizeBeginFailure(record, model.IngestFailureBaselineRead, model.QuarantineCleanupRemoved, false), err
 		}
 	}
-	return s.beginIngestReserved(ctx, record)
+	return s.beginIngestReserved(ctx, record, ref)
 }
 
 func (s *Store) rollbackInstallInitialization(id model.InstallInitializationID) error {
@@ -302,14 +313,18 @@ func (s *Store) reserveIngestTransaction(id model.InstallInitializationID) (*ing
 	return record, record.beginOutcome, nil
 }
 
-func (s *Store) beginIngestReserved(ctx context.Context, record *ingestTransactionRecord) (model.IngestBeginOutcome, error) {
-	observe := s.git.observeRef
-	if s.beginObserveMain != nil {
-		observe = func(ctx context.Context, _ string) (string, bool, error) {
-			return s.beginObserveMain(ctx)
-		}
+func (s *Store) beginIngestReserved(
+	ctx context.Context,
+	record *ingestTransactionRecord,
+	ref validatedHeadRef,
+) (model.IngestBeginOutcome, error) {
+	observe := func(ctx context.Context) (string, bool, error) {
+		return s.git.observeDirectRef(ctx, ref)
 	}
-	revision, present, err := observe(ctx, "refs/heads/main")
+	if ref == mainHeadRef() && s.beginObserveMain != nil {
+		observe = s.beginObserveMain
+	}
+	revision, present, err := observe(ctx)
 	if err != nil {
 		return s.terminalizeBeginFailure(record, model.IngestFailureBaselineRead, model.QuarantineCleanupRemoved, false), err
 	}
@@ -353,12 +368,18 @@ func (s *Store) beginIngestReserved(ctx context.Context, record *ingestTransacti
 		s.transactionMu.Unlock()
 		return s.terminalizeBeginFailure(record, model.IngestFailureInvalidAuthority, model.QuarantineCleanupRetained, true), ErrInvalidIngestAuthority
 	}
+	if ref != mainHeadRef() {
+		if s.ingestTransactionRefs == nil {
+			s.ingestTransactionRefs = make(map[model.IngestTransactionID]validatedHeadRef)
+		}
+		s.ingestTransactionRefs[record.transactionID] = ref
+	}
 	record.lifecycle = model.IngestLifecycleActive
 	record.cleanup = model.QuarantineCleanupRetained
 	record.beginOutcome = model.IngestBeginOutcome{
 		InitializationID:        record.initializationID,
 		TransactionID:           record.transactionID,
-		Baseline:                record.baseline,
+		Baseline:                baseline,
 		Lifecycle:               model.IngestLifecycleActive,
 		Cleanup:                 model.QuarantineCleanupRetained,
 		FailureCode:             model.IngestFailureNone,

@@ -1015,68 +1015,7 @@ func (s *Store) beginTransactionForRef(
 	if !ref.valid() || authority.id.IsZero() {
 		return model.IngestBeginOutcome{FailureCode: model.IngestFailureInvalidAuthority}, ErrInvalidIngestAuthority
 	}
-	record, outcome, err := s.reserveIngestTransaction(authority.id)
-	if err != nil {
-		return outcome, err
-	}
-	revision, present, err := s.git.observeDirectRef(ctx, ref)
-	if err != nil {
-		return s.terminalizeBeginFailure(record, model.IngestFailureBaselineRead, model.QuarantineCleanupRemoved, false), err
-	}
-	var (
-		expected       *string
-		profile        model.Profile
-		profilePresent bool
-	)
-	if present {
-		expected, err = model.NewExpectedRevision(revision)
-		if err == nil {
-			profile, profilePresent, err = s.git.profileAtRevision(ctx, revision)
-		}
-		if err != nil {
-			return s.terminalizeBeginFailure(record, model.IngestFailureBaselineRead, model.QuarantineCleanupRemoved, false), err
-		}
-	}
-	baseline, err := model.NewIngestBaseline(
-		record.initializationID,
-		record.transactionID,
-		present,
-		expected,
-		profile,
-		profilePresent,
-	)
-	if err != nil {
-		return s.terminalizeBeginFailure(record, model.IngestFailureBaselineRead, model.QuarantineCleanupRemoved, false), err
-	}
-	s.setIngestBaseline(record, baseline)
-	cleanup, recoveryRequired, err := s.createIngestQuarantine(ctx, record)
-	if err != nil {
-		return s.terminalizeBeginFailure(record, model.IngestFailureQuarantine, cleanup, recoveryRequired), err
-	}
-
-	s.transactionMu.Lock()
-	current, ok := s.ingestTransactions[record.transactionID]
-	if !ok || current != record || record.lifecycle != model.IngestLifecycleProvisional {
-		s.transactionMu.Unlock()
-		return s.terminalizeBeginFailure(record, model.IngestFailureInvalidAuthority, model.QuarantineCleanupRetained, true), ErrInvalidIngestAuthority
-	}
-	if s.ingestTransactionRefs == nil {
-		s.ingestTransactionRefs = make(map[model.IngestTransactionID]validatedHeadRef)
-	}
-	s.ingestTransactionRefs[record.transactionID] = ref
-	record.lifecycle = model.IngestLifecycleActive
-	record.cleanup = model.QuarantineCleanupRetained
-	record.beginOutcome = model.IngestBeginOutcome{
-		InitializationID: record.initializationID,
-		TransactionID:    record.transactionID,
-		Baseline:         baseline,
-		Lifecycle:        model.IngestLifecycleActive,
-		Cleanup:          model.QuarantineCleanupRetained,
-		FailureCode:      model.IngestFailureNone,
-	}
-	outcome = record.beginOutcome
-	s.transactionMu.Unlock()
-	return outcome, nil
+	return s.beginIngestForRef(ctx, authority.id, ref)
 }
 
 func adaptLegacyCommitOutcome(outcome model.IngestCommitOutcome, cause error) (WithheldReport, error) {

@@ -1079,6 +1079,62 @@ func TestBeginIngestTargetsMainWithoutBranchInput(t *testing.T) {
 	abortPhase6Ingest(t, store, initialization, outcome.TransactionID)
 }
 
+func TestSharedBeginStateMachineRegistersOnlyBranchSpecificRefs(t *testing.T) {
+	store, initialization, _ := newPhase6IngestStore(t)
+	ctx := context.Background()
+	main := beginPhase6Ingest(t, store, initialization)
+	authority, err := store.legacyAuthority(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	featureRef, err := validatedHeadRefForBranch("feature/shared-begin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	feature, err := store.beginTransactionForRef(ctx, featureRef, authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	store.transactionMu.Lock()
+	_, mainRegistered := store.ingestTransactionRefs[main.TransactionID]
+	registeredFeature, featureRegistered := store.ingestTransactionRefs[feature.TransactionID]
+	store.transactionMu.Unlock()
+	if mainRegistered || !featureRegistered || registeredFeature != featureRef {
+		t.Fatalf("ref registration: main=%t feature=%t exact_feature=%t",
+			mainRegistered, featureRegistered, registeredFeature == featureRef)
+	}
+	abortPhase6Ingest(t, store, initialization, main.TransactionID)
+	if outcome, err := store.AbortIngest(ctx, authority.id, feature.TransactionID); err != nil ||
+		outcome.Cleanup != model.QuarantineCleanupRemoved {
+		t.Fatalf("legacy feature abort: cleanup=%s err=%v", outcome.Cleanup, err)
+	}
+}
+
+func TestSharedBeginStateMachinePreservesMainProbeFailureEvidence(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	if err := store.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+	authority, err := store.legacyAuthority(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.beginObserveMain = func(context.Context) (string, bool, error) {
+		return "", false, ErrGitCommand
+	}
+	outcome, err := store.beginTransactionForRef(ctx, mainHeadRef(), authority)
+	if !errors.Is(err, ErrGitCommand) || outcome.Lifecycle != model.IngestLifecycleTerminal ||
+		outcome.FailureCode != model.IngestFailureBaselineRead ||
+		outcome.Cleanup != model.QuarantineCleanupRemoved || outcome.RecoveryRequired ||
+		!outcome.InitializerRollbackSafe {
+		t.Fatalf("shared main probe failure: lifecycle=%s failure=%s cleanup=%s recovery=%t rollback_safe=%t err=%v",
+			outcome.Lifecycle, outcome.FailureCode, outcome.Cleanup, outcome.RecoveryRequired,
+			outcome.InitializerRollbackSafe, err)
+	}
+}
+
 func TestBeginIngestPresentRefCarriesExpectedRevision(t *testing.T) {
 	store, initialization, _ := newPhase6IngestStore(t)
 	want, err := store.git.revParse(context.Background(), "refs/heads/main")
