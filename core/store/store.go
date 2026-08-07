@@ -388,7 +388,11 @@ func (s *Store) terminalizeIngestCommit(
 		outcome.RecoveryRequired = true
 		outcome.Status = model.IngestCommitRecoveryRequired
 		outcome.FailureCode = model.IngestFailureInvalidAuthority
+		outcome.Withheld = nil
 		return outcome, ErrIngestRecoveryRequired
+	}
+	if outcome.Status != model.IngestCommitCommitted {
+		outcome.Withheld = nil
 	}
 	record.lifecycle = model.IngestLifecycleTerminal
 	if outcome.Status == model.IngestCommitCommitted {

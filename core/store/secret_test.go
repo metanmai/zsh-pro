@@ -1035,6 +1035,69 @@ func TestLegacyCommitAdapterOutcomeMatrix(t *testing.T) {
 	})
 }
 
+func TestCommitIngestNonCommittedOutcomesClearWithheld(t *testing.T) {
+	t.Run("backend failure", func(t *testing.T) {
+		keychain := &countingSecretRefKeychain{
+			kind: model.SecretRefFile, failStore: true, values: map[string]string{},
+		}
+		store, initialization, transaction := newCountingIngestStore(t, keychain)
+		outcome, err := commitPhase6Ingest(
+			t,
+			store,
+			initialization,
+			transaction,
+			buildSecretProfile(t, "export API_KEY=backend-failure\n"),
+		)
+		if !errors.Is(err, ErrSecretBackendUnavailable) || outcome.Status == model.IngestCommitCommitted ||
+			len(outcome.Withheld) != 0 {
+			t.Fatalf("backend noncommit: status=%s withheld=%d err=%v",
+				outcome.Status, len(outcome.Withheld), err)
+		}
+	})
+
+	t.Run("ref conflict", func(t *testing.T) {
+		keychain := &countingSecretRefKeychain{kind: model.SecretRefFile, values: map[string]string{}}
+		store, initialization, first := newCountingIngestStore(t, keychain)
+		second := beginPhase6Ingest(t, store, initialization)
+		if outcome, err := commitPhase6Ingest(
+			t, store, initialization, first, phase6Profile("WITHHELD", "winner"),
+		); err != nil || outcome.Status != model.IngestCommitCommitted {
+			t.Fatalf("conflict winner: status=%s err=%v", outcome.Status, err)
+		}
+		outcome, err := commitPhase6Ingest(
+			t,
+			store,
+			initialization,
+			second,
+			buildSecretProfile(t, "export API_KEY=conflict-value\n"),
+		)
+		if !errors.Is(err, ErrSecretRefConflict) || outcome.Status != model.IngestCommitConflict ||
+			len(outcome.Withheld) != 0 {
+			t.Fatalf("conflict noncommit: status=%s withheld=%d err=%v",
+				outcome.Status, len(outcome.Withheld), err)
+		}
+	})
+
+	t.Run("recovery required", func(t *testing.T) {
+		keychain := &countingSecretRefKeychain{kind: model.SecretRefFile, values: map[string]string{}}
+		store, initialization, transaction := newCountingIngestStore(t, keychain)
+		injected := errors.New("injected durability failure")
+		store.commitSyncObject = func(string) error { return injected }
+		outcome, err := commitPhase6Ingest(
+			t,
+			store,
+			initialization,
+			transaction,
+			buildSecretProfile(t, "export API_KEY=recovery-value\n"),
+		)
+		if !errors.Is(err, injected) || outcome.Status == model.IngestCommitCommitted ||
+			!outcome.RecoveryRequired || len(outcome.Withheld) != 0 {
+			t.Fatalf("recovery noncommit: status=%s recovery=%t withheld=%d err=%v",
+				outcome.Status, outcome.RecoveryRequired, len(outcome.Withheld), err)
+		}
+	})
+}
+
 func TestLegacyCommitAdapterReportContainsNoValues(t *testing.T) {
 	keychain := &countingSecretRefKeychain{kind: model.SecretRefFile, values: map[string]string{}}
 	store, err := New(t.TempDir()+"/store", stubRegen{}, keychain)
