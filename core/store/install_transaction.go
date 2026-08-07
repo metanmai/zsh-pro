@@ -101,8 +101,11 @@ func (s *Store) InitForInstall(ctx context.Context) (InstallInitialization, erro
 	if err != nil {
 		return InstallInitialization{}, installInitializationError(err, state.rollback())
 	}
-	rootInfo, err := os.Stat(state.dir)
-	if err != nil {
+	rootInfo, err := os.Lstat(state.dir)
+	if err != nil || !rootInfo.IsDir() || rootInfo.Mode()&os.ModeSymlink != 0 {
+		if err == nil {
+			err = ErrInvalidIngestAuthority
+		}
 		return InstallInitialization{}, installInitializationError(err, state.rollback())
 	}
 
@@ -898,6 +901,13 @@ func (s *Store) validInstallInitializationLocked(id model.InstallInitializationI
 	record, ok := s.installInitializations[id]
 	if !ok || record == nil || record.id != id || record.storeNonce != s.storeNonce || record.state == nil {
 		return nil, false
+	}
+	if !record.closing && !record.terminal {
+		current, err := os.Lstat(record.root)
+		if err != nil || !current.IsDir() || current.Mode()&os.ModeSymlink != 0 ||
+			record.rootInfo == nil || !os.SameFile(record.rootInfo, current) {
+			return nil, false
+		}
 	}
 	return record, true
 }

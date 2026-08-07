@@ -1008,8 +1008,8 @@ func (s *Store) legacyAuthority(ctx context.Context) (legacyInitializationAuthor
 	if err != nil {
 		return legacyInitializationAuthority{}, ErrInvalidIngestAuthority
 	}
-	rootInfo, err := os.Stat(root)
-	if err != nil || !rootInfo.IsDir() {
+	rootInfo, err := os.Lstat(root)
+	if err != nil || !rootInfo.IsDir() || rootInfo.Mode()&os.ModeSymlink != 0 {
 		return legacyInitializationAuthority{}, ErrInvalidIngestAuthority
 	}
 	state := &installInitializationState{dir: root, preexisting: true, originalInfo: rootInfo}

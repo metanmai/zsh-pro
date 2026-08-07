@@ -541,6 +541,53 @@ func TestInstallInitializationIDBindsStoreAndRoot(t *testing.T) {
 	}
 }
 
+func TestInstallInitializationRejectsReplacedOrSymlinkedRoot(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("transactional initialization is unsupported on this platform")
+	}
+	for _, kind := range []string{"replacement", "symlink"} {
+		t.Run(kind, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "store")
+			store, err := New(root, stubRegen{}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			initialization, err := store.InitForInstall(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			displaced := root + "-original"
+			if err := os.Rename(root, displaced); err != nil {
+				t.Fatal(err)
+			}
+			switch kind {
+			case "replacement":
+				if err := os.Mkdir(root, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			case "symlink":
+				if err := os.Symlink(displaced, root); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			gitStarts := 0
+			store.git.beforeStart = func([]string) { gitStarts++ }
+			outcome, err := store.BeginIngest(context.Background(), initialization.ID())
+			if !errors.Is(err, ErrInvalidIngestAuthority) || !outcome.TransactionID.IsZero() || gitStarts != 0 {
+				t.Fatalf("changed root Begin: token_zero=%t git_starts=%d err=%v",
+					outcome.TransactionID.IsZero(), gitStarts, err)
+			}
+			if err := initialization.Finalize(); !errors.Is(err, ErrInvalidIngestAuthority) {
+				t.Fatalf("changed root Finalize = %v, want invalid authority", err)
+			}
+			if err := initialization.Rollback(); !errors.Is(err, ErrInvalidIngestAuthority) {
+				t.Fatalf("changed root Rollback = %v, want invalid authority", err)
+			}
+		})
+	}
+}
+
 func TestBeginIngestRejectsWrongOrCrossStoreInitialization(t *testing.T) {
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
 		t.Skip("transactional initialization is unsupported on this platform")
