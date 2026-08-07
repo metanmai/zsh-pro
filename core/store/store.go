@@ -696,15 +696,11 @@ func (s *Store) publishCandidateObjects(claim claimedIngestCommit) (objectPublic
 }
 
 func defaultCommitOutcome(claim claimedIngestCommit) model.IngestCommitOutcome {
-	refState := model.IngestRefExpected
-	if !claim.baseline.RefPresent {
-		refState = model.IngestRefExpected
-	}
 	return model.IngestCommitOutcome{
 		InitializationID: claim.record.initializationID,
 		TransactionID:    claim.record.transactionID,
 		Status:           model.IngestCommitNotCommitted,
-		RefState:         refState,
+		RefState:         model.IngestRefExpected,
 		Backend:          model.IngestBackendUnchanged,
 		Objects:          model.IngestObjectsQuarantined,
 		Cleanup:          model.QuarantineCleanupRetained,
