@@ -781,7 +781,7 @@ func TestCommitIngestExistingSecretRefPassThrough(t *testing.T) {
 	if err != nil || outcome.Status != model.IngestCommitCommitted {
 		t.Fatalf("CommitIngest persisted SecretRef = (%#v, %v)", outcome, err)
 	}
-	if keychain.kindCalls != 0 || keychain.retrieveCalls != 0 || keychain.storeCalls != 0 || keychain.deleteCalls != 0 {
+	if keychain.kindCalls != 1 || keychain.retrieveCalls != 0 || keychain.storeCalls != 0 || keychain.deleteCalls != 0 {
 		t.Fatalf("backend calls = Kind:%d Retrieve:%d Store:%d Delete:%d",
 			keychain.kindCalls, keychain.retrieveCalls, keychain.storeCalls, keychain.deleteCalls)
 	}
@@ -794,7 +794,7 @@ func TestCommitIngestExistingSecretRefPassThrough(t *testing.T) {
 	}
 }
 
-func TestCommitIngestExistingSecretRefPassesWithoutActiveBackend(t *testing.T) {
+func TestCommitIngestExistingSecretRefRejectsMissingActiveBackend(t *testing.T) {
 	store, err := New(t.TempDir()+"/store", stubRegen{}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -805,14 +805,20 @@ func TestCommitIngestExistingSecretRefPassesWithoutActiveBackend(t *testing.T) {
 	}
 	transaction := beginPhase6Ingest(t, store, initialization)
 	profile := persistedSecretRefProfile(model.SecretRefKeychain)
+	gitStarts := 0
+	store.git.beforeStart = func([]string) { gitStarts++ }
+	before := *transaction.Baseline.ExpectedRevision
 	outcome, err := commitPhase6Ingest(t, store, initialization, transaction, profile)
-	if err != nil || outcome.Status != model.IngestCommitCommitted || len(outcome.Withheld) != 0 {
-		t.Fatalf("reference-only pass-through: status=%s withheld=%d err=%v",
+	if !errors.Is(err, ErrSecretBackendUnavailable) || outcome.Status == model.IngestCommitCommitted || len(outcome.Withheld) != 0 {
+		t.Fatalf("reference-only missing backend: status=%s withheld=%d err=%v",
 			outcome.Status, len(outcome.Withheld), err)
 	}
-	back, err := store.Read(context.Background(), "main")
-	if err != nil || !reflect.DeepEqual(back, profile) {
-		t.Fatalf("reference-only readback unchanged=%t err=%v", reflect.DeepEqual(back, profile), err)
+	if gitStarts != 0 {
+		t.Fatalf("missing backend started %d Git processes", gitStarts)
+	}
+	after, readErr := store.git.revParse(context.Background(), "refs/heads/main")
+	if readErr != nil || after != before {
+		t.Fatalf("missing backend moved ref: %q, %v; want %q", after, readErr, before)
 	}
 }
 
@@ -823,6 +829,7 @@ func TestCommitIngestMalformedSecretRefCallAndEffectMatrix(t *testing.T) {
 		mutate   func(*model.Entry)
 		kind     model.SecretRefKind
 		wantKind int
+		wantErr  error
 		valid    bool
 	}{
 		{name: "wrong category", mutate: func(entry *model.Entry) { entry.Category = model.CatEnvironment }},
@@ -837,17 +844,18 @@ func TestCommitIngestMalformedSecretRefCallAndEffectMatrix(t *testing.T) {
 		{name: "runtime value", mutate: func(entry *model.Entry) { entry.RuntimeValue = &runtimeValue }},
 		{name: "dynamic", mutate: func(entry *model.Entry) { entry.Dynamic = true }},
 		{
-			name: "different active backend kind",
+			name: "backend kind mismatch",
 			mutate: func(entry *model.Entry) {
 				entry.Secret.Kind = model.SecretRefKeychain
 				placeholder := secretRefValue(*entry.Secret)
 				entry.Text = "export API_KEY=" + placeholder
 				entry.Value = placeholder
 			},
-			kind:  model.SecretRefFile,
-			valid: true,
+			kind:     model.SecretRefFile,
+			wantKind: 1,
+			wantErr:  ErrSecretBackendUnavailable,
 		},
-		{name: "valid", kind: model.SecretRefFile, valid: true},
+		{name: "valid", kind: model.SecretRefFile, wantKind: 1, valid: true},
 	}
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
@@ -873,7 +881,11 @@ func TestCommitIngestMalformedSecretRefCallAndEffectMatrix(t *testing.T) {
 					t.Fatal("valid pass-through wrote no candidate")
 				}
 			} else {
-				if !errors.Is(err, ErrUnsafeSecretShape) || outcome.Status == model.IngestCommitCommitted {
+				wantErr := row.wantErr
+				if wantErr == nil {
+					wantErr = ErrUnsafeSecretShape
+				}
+				if !errors.Is(err, wantErr) || outcome.Status == model.IngestCommitCommitted {
 					t.Fatalf("malformed reference = (%#v, %v)", outcome, err)
 				}
 				if gitStarts != 0 {
