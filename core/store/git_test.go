@@ -65,6 +65,74 @@ func TestEmptyTreeSHA(t *testing.T) {
 	}
 }
 
+func TestGitSupportsUpdateRefTransactions(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+		want   bool
+	}{
+		{name: "before transaction verbs", output: "git version 2.26.3\n", want: false},
+		{name: "minimum supported", output: "git version 2.27.0\n", want: true},
+		{name: "vendor suffix", output: "git version 2.27.0.windows.1\n", want: true},
+		{name: "vendor annotation", output: "git version 2.39.3 (Apple Git-146)\n", want: true},
+		{name: "new major", output: "git version 3.0.0\n", want: true},
+		{name: "missing patch", output: "git version 2.27\n", want: false},
+		{name: "non-numeric minor", output: "git version 2.next.0\n", want: false},
+		{name: "non-numeric patch", output: "git version 2.27.next\n", want: false},
+		{name: "unexpected format", output: "version 2.43.0\n", want: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := gitSupportsUpdateRefTransactions([]byte(test.output)); got != test.want {
+				t.Fatalf("support decision = %t, want %t", got, test.want)
+			}
+		})
+	}
+}
+
+func TestStartUpdateRefSessionRejectsUnsupportedGitBeforeProcess(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+		err    error
+	}{
+		{name: "older version", output: "git version 2.26.3\n"},
+		{name: "malformed output", output: "git version unknown\n"},
+		{name: "version probe failure", err: errors.New("probe failed")},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			starts := 0
+			runner := gitRunner{
+				repoDir: t.TempDir(),
+				beforeStart: func([]string) {
+					starts++
+				},
+				gitVersionOutput: func(context.Context) ([]byte, error) {
+					return []byte(test.output), test.err
+				},
+			}
+			session, err := runner.startUpdateRefSession(context.Background())
+			if session != nil || !errors.Is(err, ErrGitCommand) {
+				t.Fatalf("unsupported Git gate: session_present=%t err_is_git_command=%t",
+					session != nil, errors.Is(err, ErrGitCommand))
+			}
+			if starts != 0 {
+				t.Fatalf("unsupported Git started %d update-ref processes", starts)
+			}
+		})
+	}
+}
+
+func TestValidateGitArgvAllowsOnlyExactVersionProbe(t *testing.T) {
+	if err := validateGitArgv([]string{"version"}); err != nil {
+		t.Fatalf("exact version probe rejected: %v", err)
+	}
+	if err := validateGitArgv([]string{"version", "--build-options"}); !errors.Is(err, ErrGitCommand) {
+		t.Fatalf("version probe with extra authority accepted: %v", err)
+	}
+}
+
 // TestNewGitRunnerAbsenceGuard proves newGitRunner returns ErrGitAbsent (never a
 // crash) when git is not on $PATH. Skipped when git IS present (cannot simulate
 // absence without mutating $PATH), but always exercises the present-path success.

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -35,6 +36,9 @@ type gitRunner struct {
 	repoDir string // path to the bare git repo ($ZSHPRO_HOME)
 
 	beforeStart func([]string)
+	// gitVersionOutput is a test seam for the fail-closed transaction-verb
+	// compatibility check. Production runners always execute `git version`.
+	gitVersionOutput func(context.Context) ([]byte, error)
 
 	// runtimeRoot is non-nil only for a sourced-loader capture. Every git
 	// subprocess starts from this descriptor's /dev/fd spelling before exec and
@@ -167,6 +171,10 @@ func validateGitArgv(args []string) error {
 	}
 
 	switch args[0] {
+	case "version":
+		if len(args) == 1 {
+			return nil
+		}
 	case "init":
 		return validInitArgv(args)
 	case "rev-parse":
@@ -638,7 +646,56 @@ type updateRefSession struct {
 	commitWritten bool
 }
 
+// gitSupportsUpdateRefTransactions recognizes versions that include the
+// explicit start/prepare/commit/abort verbs. Git's 2.27 release notes document
+// those verbs as new in that release, so malformed or older version output is
+// rejected rather than risking an effectful fallback protocol.
+func gitSupportsUpdateRefTransactions(output []byte) bool {
+	fields := strings.Fields(string(output))
+	if len(fields) < 3 || fields[0] != "git" || fields[1] != "version" {
+		return false
+	}
+	components := strings.Split(fields[2], ".")
+	if len(components) < 3 {
+		return false
+	}
+	major, err := strconv.Atoi(components[0])
+	if err != nil {
+		return false
+	}
+	minor, err := strconv.Atoi(components[1])
+	if err != nil || leadingDecimal(components[2]) == "" {
+		return false
+	}
+	return major > 2 || (major == 2 && minor >= 27)
+}
+
+func leadingDecimal(value string) string {
+	for index, char := range value {
+		if char < '0' || char > '9' {
+			return value[:index]
+		}
+	}
+	return value
+}
+
+func (g gitRunner) supportsUpdateRefTransactions(ctx context.Context) bool {
+	var (
+		output []byte
+		err    error
+	)
+	if g.gitVersionOutput != nil {
+		output, err = g.gitVersionOutput(ctx)
+	} else {
+		output, err = g.run(ctx, "version")
+	}
+	return err == nil && gitSupportsUpdateRefTransactions(output)
+}
+
 func (g gitRunner) startUpdateRefSession(ctx context.Context) (*updateRefSession, error) {
+	if !g.supportsUpdateRefTransactions(ctx) {
+		return nil, ErrGitCommand
+	}
 	processContext, cancel := context.WithTimeout(ctx, gitTimeout)
 	cmd, err := g.command(processContext, "update-ref", "--no-deref", "--stdin")
 	if err != nil {
