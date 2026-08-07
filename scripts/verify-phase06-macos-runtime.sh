@@ -26,10 +26,10 @@ actual_sha=$(git rev-parse HEAD 2>/dev/null) || blocked 'cannot resolve reposito
 if [ "$actual_sha" != "$expected_sha" ]; then
   blocked "HEAD $actual_sha does not match requested implementation SHA $expected_sha"
 fi
-if ! git diff --quiet "$expected_sha" -- core scripts/verify-phase06-macos-runtime.sh; then
+if ! git diff --quiet "$expected_sha" -- core scripts/verify-phase06-macos-runtime.sh scripts/verify-phase06-macos-runtime_test.sh; then
   blocked 'implementation or verifier differs from the requested SHA'
 fi
-untracked_scope=$(git ls-files --others -- core scripts/verify-phase06-macos-runtime.sh 2>/dev/null) || {
+untracked_scope=$(git ls-files --others -- core scripts/verify-phase06-macos-runtime.sh scripts/verify-phase06-macos-runtime_test.sh 2>/dev/null) || {
   blocked 'cannot inspect untracked implementation or verifier files'
 }
 if [ -n "$untracked_scope" ]; then
