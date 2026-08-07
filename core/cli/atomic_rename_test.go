@@ -90,6 +90,23 @@ func TestAtomicRenameAtRejectsUnsafeBasenames(t *testing.T) {
 	}
 }
 
+func TestAtomicRenameBetweenAtAllowsEqualBasenamesInDifferentDirectories(t *testing.T) {
+	var calls int
+	call := func(_ uintptr, fromDirFD uintptr, _ uintptr, toDirFD uintptr, _ uintptr, _ uintptr, _ uintptr) (uintptr, uintptr, syscall.Errno) {
+		calls++
+		if fromDirFD != 3 || toDirFD != 4 {
+			t.Fatalf("raw directory descriptors = %d/%d, want 3/4", fromDirFD, toDirFD)
+		}
+		return 0, 0, 0
+	}
+	if err := atomicRenameBetweenAtWithSyscall(call, 3, "same", 4, "same", atomicRenameExchange); err != nil {
+		t.Fatalf("cross-directory equal-basename rename: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("raw syscall calls = %d, want 1", calls)
+	}
+}
+
 func TestAtomicRenamePerCallInjectionIsParallelSafe(t *testing.T) {
 	if err := atomicRenameCapabilityCheck(atomicRenameExchange); err != nil {
 		if errors.Is(err, ErrAtomicRenameUnsupported) && runtime.GOOS != "linux" && runtime.GOOS != "darwin" {

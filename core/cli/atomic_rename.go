@@ -65,7 +65,7 @@ func atomicRenameBetweenAtWithSyscall(
 	if err := validateAtomicRenameBasename(to); err != nil {
 		return err
 	}
-	if from == to {
+	if fromDirFD == toDirFD && from == to {
 		return errors.New("atomic rename names must be distinct")
 	}
 	if err := atomicRenameCapabilityCheck(mode); err != nil {
