@@ -104,11 +104,25 @@ if output=$(cd "$untracked_root" && GOTOOLCHAIN=local scripts/verify-phase06-mac
   fail 'verifier accepted an untracked implementation file'
 fi
 printf '%s\n' "$output" | grep -qx 'status: BLOCKED' || fail 'verifier did not emit BLOCKED status'
-printf '%s\n' "$output" | grep -qx 'reason: untracked implementation or verifier files are present' || {
+printf '%s\n' "$output" | grep -qx 'reason: untracked repository files are present' || {
   fail 'verifier did not report the closed untracked-input reason'
 }
 if printf '%s\n' "$output" | grep -q 'generated.go'; then
   fail 'verifier disclosed the untracked path'
+fi
+
+workspace_root="$test_root/workspace"
+workspace_sha=$(new_fixture "$workspace_root")
+printf 'go 1.25.0\n' >"$workspace_root/go.work"
+if workspace_output=$(cd "$workspace_root" && GOTOOLCHAIN=local scripts/verify-phase06-macos-runtime.sh "$workspace_sha" 2>&1); then
+  fail 'verifier accepted an untracked root go.work file'
+fi
+printf '%s\n' "$workspace_output" | grep -qx 'status: BLOCKED' || fail 'workspace input did not emit BLOCKED status'
+printf '%s\n' "$workspace_output" | grep -qx 'reason: untracked repository files are present' || {
+  fail 'workspace input did not report the closed untracked-input reason'
+}
+if printf '%s\n' "$workspace_output" | grep -q 'go.work'; then
+  fail 'verifier disclosed the untracked workspace path'
 fi
 
 native_root="$test_root/native"
@@ -134,4 +148,4 @@ if ! fallback_output=$(cd "$native_root" && PATH="$stub_dir:$PATH" PHASE6_VERIFI
 fi
 printf '%s\n' "$fallback_output" | grep -qx 'filesystem: unknown' || fail 'verifier did not fail closed to unknown filesystem metadata'
 
-printf 'PASS: phase 6 verifier rejects untracked inputs and reports mounted filesystem metadata\n'
+printf 'PASS: phase 6 verifier rejects untracked inputs including root go.work and reports mounted filesystem metadata\n'

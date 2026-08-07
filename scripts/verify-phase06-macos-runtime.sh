@@ -26,14 +26,14 @@ actual_sha=$(git rev-parse HEAD 2>/dev/null) || blocked 'cannot resolve reposito
 if [ "$actual_sha" != "$expected_sha" ]; then
   blocked "HEAD $actual_sha does not match requested implementation SHA $expected_sha"
 fi
-if ! git diff --quiet "$expected_sha" -- core scripts/verify-phase06-macos-runtime.sh scripts/verify-phase06-macos-runtime_test.sh; then
-  blocked 'implementation or verifier differs from the requested SHA'
+if ! git diff --quiet "$expected_sha" -- .; then
+  blocked 'repository worktree differs from the requested SHA'
 fi
-untracked_scope=$(git ls-files --others -- core scripts/verify-phase06-macos-runtime.sh scripts/verify-phase06-macos-runtime_test.sh 2>/dev/null) || {
-  blocked 'cannot inspect untracked implementation or verifier files'
+untracked_scope=$(git ls-files --others -- . 2>/dev/null) || {
+  blocked 'cannot inspect untracked repository files'
 }
 if [ -n "$untracked_scope" ]; then
-  blocked 'untracked implementation or verifier files are present'
+  blocked 'untracked repository files are present'
 fi
 if [ "$(uname -s)" != Darwin ]; then
   blocked 'native Darwin execution is required; cross-builds do not qualify'
