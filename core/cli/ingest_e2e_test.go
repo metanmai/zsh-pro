@@ -748,6 +748,9 @@ func literalBearingPaths(t *testing.T, literal string, roots ...string) []string
 }
 
 func TestIngestE2EProgrammaticSecretRefPassThroughKindOnly(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("guarded ingest transactions require Linux or Darwin")
+	}
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git is required")
 	}
