@@ -2308,6 +2308,79 @@ func TestCommitIngestFsyncsEveryLinkedObjectBeforeDirectoriesAndRef(t *testing.T
 	}
 }
 
+func TestCommitIngestFsyncsReusedLooseObjectsBeforeRef(t *testing.T) {
+	setup := func(t *testing.T) (*Store, InstallInitialization, model.IngestBeginOutcome, string) {
+		t.Helper()
+		store, initialization, _ := newPhase6IngestStore(t)
+		transaction := beginPhase6Ingest(t, store, initialization)
+		return store, initialization, transaction, *transaction.Baseline.ExpectedRevision
+	}
+	simulateExisting := func(reused map[string]struct{}) func(string, string) error {
+		return func(source, destination string) error {
+			err := os.Link(source, destination)
+			if err == nil {
+				reused[destination] = struct{}{}
+				return os.ErrExist
+			}
+			if errors.Is(err, os.ErrExist) {
+				reused[destination] = struct{}{}
+			}
+			return err
+		}
+	}
+
+	t.Run("success", func(t *testing.T) {
+		store, initialization, transaction, _ := setup(t)
+		reused := make(map[string]struct{})
+		store.commitPublishLink = simulateExisting(reused)
+		synced := 0
+		store.commitSyncObject = func(path string) error {
+			if _, ok := reused[path]; !ok {
+				t.Fatalf("sync called for object that was not reused: %s", path)
+			}
+			synced++
+			return nil
+		}
+		outcome, err := commitPhase6Ingest(t, store, initialization, transaction, phase6Profile("REUSED", "object"))
+		if err != nil || outcome.Status != model.IngestCommitCommitted || len(reused) == 0 || synced != len(reused) {
+			t.Fatalf("reused publication: status=%s reused=%d synced=%d err=%v",
+				outcome.Status, len(reused), synced, err)
+		}
+	})
+
+	t.Run("sync failure", func(t *testing.T) {
+		store, initialization, transaction, baseline := setup(t)
+		injected := errors.New("injected reused object fsync failure")
+		reused := make(map[string]struct{})
+		store.commitPublishLink = simulateExisting(reused)
+		store.commitSyncObject = func(path string) error {
+			if _, ok := reused[path]; ok {
+				return injected
+			}
+			return nil
+		}
+		refCommitWritten := false
+		store.commitEvent = func(event string) {
+			if event == "commit-write" {
+				refCommitWritten = true
+			}
+		}
+		outcome, err := commitPhase6Ingest(t, store, initialization, transaction, phase6Profile("REUSED", "object"))
+		if !errors.Is(err, injected) || len(reused) == 0 || refCommitWritten ||
+			outcome.Status != model.IngestCommitNotCommitted || outcome.Objects != model.IngestObjectsUncertain ||
+			outcome.Cleanup != model.QuarantineCleanupRetained ||
+			outcome.FailureCode != model.IngestFailureObjectPublish || !outcome.RecoveryRequired {
+			t.Fatalf("reused sync failure: reused=%d ref_commit=%t status=%s objects=%s cleanup=%s failure=%s recovery=%t err=%v",
+				len(reused), refCommitWritten, outcome.Status, outcome.Objects, outcome.Cleanup,
+				outcome.FailureCode, outcome.RecoveryRequired, err)
+		}
+		current, readErr := store.git.revParse(context.Background(), "refs/heads/main")
+		if readErr != nil || current != baseline {
+			t.Fatalf("reused sync failure moved ref: current=%q err=%v want=%q", current, readErr, baseline)
+		}
+	})
+}
+
 func TestCommitIngestPostPublicationLockFailurePreservesCommittedStatus(t *testing.T) {
 	store, initialization, root := newPhase6IngestStore(t)
 	transaction := beginPhase6Ingest(t, store, initialization)

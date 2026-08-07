@@ -695,7 +695,15 @@ func (s *Store) publishCandidateObjects(claim claimedIngestCommit) (objectPublic
 			if !errors.Is(err, os.ErrExist) {
 				return err
 			}
-			return verifyLooseObject(destination, objectID)
+			if err := verifyLooseObject(destination, objectID); err != nil {
+				return err
+			}
+			if err := s.syncLinkedObject(destination); err != nil {
+				publication.uncertain = true
+				return err
+			}
+			s.emitCommitEvent("object-fsync")
+			return nil
 		}
 		publication.created++
 		publication.dirs[fanout] = struct{}{}
