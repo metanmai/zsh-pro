@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -332,6 +333,16 @@ const (
 	exchangePeerBasename      = "exchange-peer"
 	candidateEvidenceBasename = "candidate-evidence.json"
 	journalBasename           = "journal.json"
+
+	// The journal inode is stable for the transaction lifetime. Transitions
+	// alternate between two digest-authenticated slots so a torn write can
+	// invalidate only the new slot, leaving the preceding state recoverable.
+	installJournalSlotMagic      = "ZPJRNL01"
+	installJournalSlotFormat     = uint32(1)
+	installJournalSlotCount      = 2
+	installJournalSlotSize       = 64 * 1024
+	installJournalSlotHeaderSize = len(installJournalSlotMagic) + 4 + 8 + 4 + sha256.Size
+	installJournalFileSize       = installJournalSlotCount * installJournalSlotSize
 )
 
 var (
@@ -389,6 +400,7 @@ type atomicRenameBetweenFn func(int, string, int, string, atomicRenameMode) erro
 type installTransactionSeams struct {
 	capabilityCheck func(atomicRenameMode) error
 	atomicRename    atomicRenameBetweenFn
+	writeJournal    func(*os.File, []byte, int64) (int, error)
 	syncFile        func(*os.File, string) error
 	syncDirectory   func(*os.File, string) error
 	beforeNamespace func(*guardedInstallTransaction, atomicRenameMode) error
@@ -407,6 +419,11 @@ func normalizedInstallTransactionSeams(input *installTransactionSeams) installTr
 	}
 	if seams.atomicRename == nil {
 		seams.atomicRename = atomicRenameBetweenAt
+	}
+	if seams.writeJournal == nil {
+		seams.writeJournal = func(file *os.File, content []byte, offset int64) (int, error) {
+			return file.WriteAt(content, offset)
+		}
 	}
 	if seams.syncFile == nil {
 		seams.syncFile = func(file *os.File, _ string) error { return file.Sync() }
@@ -514,6 +531,12 @@ func (journal installPromotionJournal) validate() error {
 		journal.RequestedPath == "" || journal.ResolvedPath == "" {
 		return ErrInstallRecoveryRequired
 	}
+	switch journal.State {
+	case promotionStatePrepared, promotionStateExchanged, promotionStateCreated,
+		promotionStateReversed, promotionStateParentSynced, promotionStateFinalized:
+	default:
+		return ErrInstallRecoveryRequired
+	}
 	for _, name := range []string{journal.TargetBasename, journal.TransactionBasename, journal.ExchangePeerBasename, journal.CandidateEvidenceBasename, journal.JournalBasename} {
 		if err := validateAtomicRenameBasename(name); err != nil {
 			return ErrInstallRecoveryRequired
@@ -548,6 +571,7 @@ type guardedInstallTransaction struct {
 	journalFile       installFileEvidence
 	journalAnchor     *os.File
 	journal           installPromotionJournal
+	journalGeneration uint64
 	seams             installTransactionSeams
 	disposition       promotionDisposition
 	namespaceMutated  bool
@@ -1250,10 +1274,12 @@ func (transaction *guardedInstallTransaction) createPreparedJournal() error {
 	if transaction == nil || transaction.guard == nil || transaction.transactionRoot == nil {
 		return ErrInstallRecoveryRequired
 	}
-	content, err := json.Marshal(transaction.journal)
+	slot, err := encodeInstallPromotionJournalSlot(transaction.journal, 1)
 	if err != nil {
 		return err
 	}
+	content := make([]byte, installJournalFileSize)
+	copy(content, slot)
 	journal, err := mutateInstallNamespace(installNamespaceMutation{
 		kind: installMutationCreateFile, authority: transaction.guard, root: transaction.transactionRoot,
 		name: journalBasename, mode: 0o600,
@@ -1262,76 +1288,190 @@ func (transaction *guardedInstallTransaction) createPreparedJournal() error {
 	if err != nil {
 		return err
 	}
-	if n, err := journal.Write(content); err != nil {
+	if n, err := transaction.seams.writeJournal(journal, content, 0); err != nil {
 		_ = journal.Close()
-		return err
+		return errors.Join(ErrInstallRecoveryRequired, err)
 	} else if n != len(content) {
 		_ = journal.Close()
-		return io.ErrShortWrite
+		return errors.Join(ErrInstallRecoveryRequired, io.ErrShortWrite)
 	}
 	if err := transaction.seams.syncFile(journal, "journal:prepared"); err != nil {
 		_ = journal.Close()
 		return err
 	}
-	if err := journal.Close(); err != nil {
-		return err
-	}
 	transaction.journalFile, _, err = captureInstallFileEvidence(transaction.transactionRoot, journalBasename)
 	if err != nil || !validPrivateInstallFile(transaction.journalFile) {
+		_ = journal.Close()
 		return ErrInstallRecoveryRequired
 	}
-	transaction.journalAnchor, err = transaction.transactionRoot.OpenFile(
-		journalBasename,
-		os.O_RDONLY|syscall.O_CLOEXEC|syscall.O_NOFOLLOW,
-		0,
-	)
+	anchorInfo, err := journal.Stat()
 	if err != nil {
+		_ = journal.Close()
 		return ErrInstallRecoveryRequired
 	}
-	anchorInfo, err := transaction.journalAnchor.Stat()
 	anchorDevice, anchorInode, _, _, identityErr := installStatIdentity(anchorInfo)
-	if err != nil || identityErr != nil || anchorDevice != transaction.journalFile.Device ||
+	if identityErr != nil || anchorDevice != transaction.journalFile.Device ||
 		anchorInode != transaction.journalFile.Inode {
-		_ = transaction.journalAnchor.Close()
-		transaction.journalAnchor = nil
+		_ = journal.Close()
 		return ErrInstallRecoveryRequired
 	}
+	transaction.journalAnchor = journal
+	transaction.journalGeneration = 1
 	return nil
 }
 
-func decodeInstallPromotionJournal(content []byte) (installPromotionJournal, error) {
-	decoder := json.NewDecoder(bytes.NewReader(content))
+type installPromotionJournalRecord struct {
+	generation uint64
+	journal    installPromotionJournal
+}
+
+func encodeInstallPromotionJournalSlot(journal installPromotionJournal, generation uint64) ([]byte, error) {
+	if generation == 0 {
+		return nil, ErrInstallRecoveryRequired
+	}
+	payload, err := json.Marshal(journal)
+	if err != nil {
+		return nil, err
+	}
+	if len(payload) == 0 || len(payload) > installJournalSlotSize-installJournalSlotHeaderSize {
+		return nil, ErrInstallRecoveryRequired
+	}
+	digest := sha256.Sum256(payload)
+	slot := make([]byte, installJournalSlotSize)
+	offset := 0
+	copy(slot[offset:], installJournalSlotMagic)
+	offset += len(installJournalSlotMagic)
+	binary.BigEndian.PutUint32(slot[offset:], installJournalSlotFormat)
+	offset += 4
+	binary.BigEndian.PutUint64(slot[offset:], generation)
+	offset += 8
+	binary.BigEndian.PutUint32(slot[offset:], uint32(len(payload)))
+	offset += 4
+	copy(slot[offset:], digest[:])
+	offset += sha256.Size
+	copy(slot[offset:], payload)
+	return slot, nil
+}
+
+func decodeInstallPromotionJournalSlot(slot []byte) (installPromotionJournalRecord, bool) {
+	if len(slot) != installJournalSlotSize {
+		return installPromotionJournalRecord{}, false
+	}
+	offset := 0
+	if string(slot[offset:offset+len(installJournalSlotMagic)]) != installJournalSlotMagic {
+		return installPromotionJournalRecord{}, false
+	}
+	offset += len(installJournalSlotMagic)
+	if binary.BigEndian.Uint32(slot[offset:]) != installJournalSlotFormat {
+		return installPromotionJournalRecord{}, false
+	}
+	offset += 4
+	generation := binary.BigEndian.Uint64(slot[offset:])
+	offset += 8
+	payloadLength := int(binary.BigEndian.Uint32(slot[offset:]))
+	offset += 4
+	if generation == 0 || payloadLength <= 0 || payloadLength > len(slot)-installJournalSlotHeaderSize {
+		return installPromotionJournalRecord{}, false
+	}
+	wantDigest := slot[offset : offset+sha256.Size]
+	offset += sha256.Size
+	payload := slot[offset : offset+payloadLength]
+	actualDigest := sha256.Sum256(payload)
+	if !bytes.Equal(wantDigest, actualDigest[:]) {
+		return installPromotionJournalRecord{}, false
+	}
+	decoder := json.NewDecoder(bytes.NewReader(payload))
 	decoder.DisallowUnknownFields()
 	var journal installPromotionJournal
 	if err := decoder.Decode(&journal); err != nil {
-		return installPromotionJournal{}, ErrInstallRecoveryRequired
+		return installPromotionJournalRecord{}, false
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return installPromotionJournal{}, ErrInstallRecoveryRequired
+		return installPromotionJournalRecord{}, false
 	}
 	if err := journal.validate(); err != nil {
-		return installPromotionJournal{}, err
+		return installPromotionJournalRecord{}, false
 	}
-	return journal, nil
+	return installPromotionJournalRecord{generation: generation, journal: journal}, true
+}
+
+func decodeInstallPromotionJournalRecord(content []byte) (installPromotionJournalRecord, error) {
+	if len(content) != installJournalFileSize {
+		return installPromotionJournalRecord{}, ErrInstallRecoveryRequired
+	}
+	records := make([]installPromotionJournalRecord, 0, installJournalSlotCount)
+	for slotIndex := 0; slotIndex < installJournalSlotCount; slotIndex++ {
+		start := slotIndex * installJournalSlotSize
+		if record, ok := decodeInstallPromotionJournalSlot(content[start : start+installJournalSlotSize]); ok {
+			records = append(records, record)
+		}
+	}
+	if len(records) == 0 {
+		return installPromotionJournalRecord{}, ErrInstallRecoveryRequired
+	}
+	if len(records) == 1 {
+		return records[0], nil
+	}
+	if records[0].generation > records[1].generation {
+		records[0], records[1] = records[1], records[0]
+	}
+	if records[1].generation != records[0].generation+1 ||
+		!validInstallPromotionJournalTransition(records[0].journal, records[1].journal) {
+		return installPromotionJournalRecord{}, ErrInstallRecoveryRequired
+	}
+	return records[1], nil
+}
+
+func installPromotionJournalsEqual(left, right installPromotionJournal) bool {
+	return left.Schema == right.Schema && left.TransactionID == right.TransactionID &&
+		left.State == right.State && left.RequestedPath == right.RequestedPath &&
+		left.ResolvedPath == right.ResolvedPath && left.TargetBasename == right.TargetBasename &&
+		left.TransactionBasename == right.TransactionBasename &&
+		left.ExchangePeerBasename == right.ExchangePeerBasename &&
+		left.CandidateEvidenceBasename == right.CandidateEvidenceBasename &&
+		left.JournalBasename == right.JournalBasename && left.OriginalExists == right.OriginalExists &&
+		left.RequestedLink == right.RequestedLink && left.Parent.equal(right.Parent) &&
+		left.TransactionDirectory.equal(right.TransactionDirectory) &&
+		left.ExpectedTarget == right.ExpectedTarget &&
+		left.ExpectedCandidate.authenticatedEqual(right.ExpectedCandidate) &&
+		fileEvidencePointersEqual(left.DisplacedObserved, right.DisplacedObserved)
+}
+
+func sameInstallPromotionJournalTransaction(left, right installPromotionJournal) bool {
+	left.State = right.State
+	left.DisplacedObserved = right.DisplacedObserved
+	return installPromotionJournalsEqual(left, right)
+}
+
+func validInstallPromotionJournalTransition(previous, next installPromotionJournal) bool {
+	if !sameInstallPromotionJournalTransaction(previous, next) {
+		return false
+	}
+	sameDisplaced := fileEvidencePointersEqual(previous.DisplacedObserved, next.DisplacedObserved)
+	switch previous.State {
+	case promotionStatePrepared:
+		switch next.State {
+		case promotionStateExchanged:
+			return previous.DisplacedObserved == nil && next.DisplacedObserved != nil
+		case promotionStateCreated, promotionStateFinalized:
+			return previous.DisplacedObserved == nil && next.DisplacedObserved == nil
+		}
+	case promotionStateExchanged:
+		return (next.State == promotionStateParentSynced || next.State == promotionStateReversed) &&
+			previous.DisplacedObserved != nil && sameDisplaced
+	case promotionStateCreated:
+		return next.State == promotionStateParentSynced &&
+			previous.DisplacedObserved == nil && next.DisplacedObserved == nil
+	case promotionStateParentSynced:
+		return (next.State == promotionStateReversed || next.State == promotionStateFinalized) && sameDisplaced
+	case promotionStateReversed:
+		return next.State == promotionStateFinalized && previous.DisplacedObserved != nil && sameDisplaced
+	}
+	return false
 }
 
 func (transaction *guardedInstallTransaction) journalsMatch(actual installPromotionJournal) bool {
-	if transaction == nil {
-		return false
-	}
-	want := transaction.journal
-	return actual.Schema == want.Schema && actual.TransactionID == want.TransactionID &&
-		actual.State == want.State && actual.RequestedPath == want.RequestedPath &&
-		actual.ResolvedPath == want.ResolvedPath && actual.TargetBasename == want.TargetBasename &&
-		actual.TransactionBasename == want.TransactionBasename &&
-		actual.ExchangePeerBasename == want.ExchangePeerBasename &&
-		actual.CandidateEvidenceBasename == want.CandidateEvidenceBasename &&
-		actual.JournalBasename == want.JournalBasename && actual.OriginalExists == want.OriginalExists &&
-		actual.RequestedLink == want.RequestedLink && actual.Parent.equal(want.Parent) &&
-		actual.TransactionDirectory.equal(want.TransactionDirectory) &&
-		actual.ExpectedTarget == want.ExpectedTarget &&
-		actual.ExpectedCandidate.authenticatedEqual(want.ExpectedCandidate) &&
-		fileEvidencePointersEqual(actual.DisplacedObserved, want.DisplacedObserved)
+	return transaction != nil && installPromotionJournalsEqual(actual, transaction.journal)
 }
 
 func fileEvidencePointersEqual(left, right *installFileEvidence) bool {
@@ -1383,8 +1523,9 @@ func (transaction *guardedInstallTransaction) authenticateJournalAndEvidence() e
 	if err != nil || anchorDevice != journalFile.Device || anchorInode != journalFile.Inode {
 		return ErrInstallRecoveryRequired
 	}
-	journal, err := decodeInstallPromotionJournal(journalContent)
-	if err != nil || !transaction.journalsMatch(journal) {
+	record, err := decodeInstallPromotionJournalRecord(journalContent)
+	if err != nil || record.generation != transaction.journalGeneration ||
+		!transaction.journalsMatch(record.journal) {
 		return ErrInstallRecoveryRequired
 	}
 	currentTopology, err := currentRequestedLinkTopology(transaction.expectedTarget.requestedPath)
@@ -1412,22 +1553,6 @@ func (transaction *guardedInstallTransaction) writeJournalTransition(
 	if err := transaction.authenticateJournalAndEvidence(); err != nil {
 		return err
 	}
-	journal, err := transaction.transactionRoot.OpenFile(
-		journalBasename,
-		os.O_RDWR|syscall.O_CLOEXEC|syscall.O_NOFOLLOW,
-		0,
-	)
-	if err != nil {
-		return ErrInstallRecoveryRequired
-	}
-	if err := journal.Truncate(0); err != nil {
-		_ = journal.Close()
-		return ErrInstallRecoveryRequired
-	}
-	if _, err := journal.Seek(0, io.SeekStart); err != nil {
-		_ = journal.Close()
-		return ErrInstallRecoveryRequired
-	}
 	next := transaction.journal
 	next.State = state
 	if displaced == nil {
@@ -1436,31 +1561,37 @@ func (transaction *guardedInstallTransaction) writeJournalTransition(
 		copy := *displaced
 		next.DisplacedObserved = &copy
 	}
-	content, err := json.Marshal(next)
+	if !validInstallPromotionJournalTransition(transaction.journal, next) ||
+		transaction.journalGeneration == ^uint64(0) {
+		return ErrInstallRecoveryRequired
+	}
+	nextGeneration := transaction.journalGeneration + 1
+	slot, err := encodeInstallPromotionJournalSlot(next, nextGeneration)
 	if err != nil {
-		_ = journal.Close()
 		return err
 	}
-	if n, err := journal.Write(content); err != nil {
-		_ = journal.Close()
-		return err
-	} else if n != len(content) {
-		_ = journal.Close()
-		return io.ErrShortWrite
+	slotIndex := int((nextGeneration - 1) % installJournalSlotCount)
+	slotOffset := int64(slotIndex * installJournalSlotSize)
+	if n, err := transaction.seams.writeJournal(transaction.journalAnchor, slot, slotOffset); err != nil {
+		return errors.Join(ErrInstallRecoveryRequired, err)
+	} else if n != len(slot) {
+		return errors.Join(ErrInstallRecoveryRequired, io.ErrShortWrite)
 	}
-	if err := transaction.seams.syncFile(journal, "journal:"+string(state)); err != nil {
-		_ = journal.Close()
+	if err := transaction.seams.syncFile(transaction.journalAnchor, "journal:"+string(state)); err != nil {
 		return ErrInstallRecoveryRequired
 	}
-	if err := journal.Close(); err != nil {
-		return ErrInstallRecoveryRequired
-	}
-	nextEvidence, _, err := captureInstallFileEvidence(transaction.transactionRoot, journalBasename)
+	nextEvidence, journalContent, err := captureInstallFileEvidence(transaction.transactionRoot, journalBasename)
 	if err != nil || !validPrivateInstallFile(nextEvidence) ||
 		nextEvidence.Device != transaction.journalFile.Device || nextEvidence.Inode != transaction.journalFile.Inode {
 		return ErrInstallRecoveryRequired
 	}
+	record, err := decodeInstallPromotionJournalRecord(journalContent)
+	if err != nil || record.generation != nextGeneration ||
+		!installPromotionJournalsEqual(record.journal, next) {
+		return ErrInstallRecoveryRequired
+	}
 	transaction.journal = next
+	transaction.journalGeneration = nextGeneration
 	transaction.journalFile = nextEvidence
 	if err := transaction.seams.syncDirectory(transaction.transactionFD, "journal-directory:"+string(state)); err != nil {
 		return ErrInstallRecoveryRequired
@@ -1915,14 +2046,19 @@ func recoverGuardedInstallTransaction(
 	}
 	transaction.journalAnchor, err = transaction.transactionRoot.OpenFile(
 		journalBasename,
-		os.O_RDONLY|syscall.O_CLOEXEC|syscall.O_NOFOLLOW,
+		os.O_RDWR|syscall.O_CLOEXEC|syscall.O_NOFOLLOW,
 		0,
 	)
 	if err != nil {
 		return retain(err)
 	}
-	transaction.journal, err = decodeInstallPromotionJournal(journalContent)
-	if err != nil || transaction.journal.TransactionBasename != locator.TransactionName ||
+	record, err := decodeInstallPromotionJournalRecord(journalContent)
+	if err != nil {
+		return retain(err)
+	}
+	transaction.journal = record.journal
+	transaction.journalGeneration = record.generation
+	if transaction.journal.TransactionBasename != locator.TransactionName ||
 		transaction.journal.ResolvedPath != filepath.Clean(locator.TargetPath) ||
 		!transaction.journal.ExpectedCandidate.authenticatedEqual(transaction.expectedCandidate) ||
 		!transaction.journal.Parent.equal(guard.parentInfo) ||

@@ -3,7 +3,6 @@ package cli
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"go/ast"
@@ -2136,15 +2135,18 @@ func mutateTask3Journal(t *testing.T, path string, mutate func(*installPromotion
 	if err != nil {
 		t.Fatal(err)
 	}
-	journal, err := decodeInstallPromotionJournal(content)
+	record, err := decodeInstallPromotionJournalRecord(content)
 	if err != nil {
 		t.Fatal(err)
 	}
-	mutate(&journal)
-	content, err = json.Marshal(journal)
+	mutate(&record.journal)
+	slot, err := encodeInstallPromotionJournalSlot(record.journal, record.generation)
 	if err != nil {
 		t.Fatal(err)
 	}
+	content = make([]byte, installJournalFileSize)
+	slotIndex := int((record.generation - 1) % installJournalSlotCount)
+	copy(content[slotIndex*installJournalSlotSize:], slot)
 	if err := os.WriteFile(path, content, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -2428,6 +2430,80 @@ func testTask3PostSwapAxes(t *testing.T) {
 	}
 }
 
+func testTask3TornJournalTransition(t *testing.T, afterExchanged bool) {
+	fixture, transaction := prepareTask3Transaction(t, true, nil, nil)
+	locator := transaction.recoveryLocator()
+	journalPath := filepath.Join(transaction.retainedTransactionPath(), journalBasename)
+	journalInode := transaction.journalFile.Inode
+	writes := 0
+	transaction.seams.writeJournal = func(file *os.File, slot []byte, offset int64) (int, error) {
+		writes++
+		if !afterExchanged || writes == 2 {
+			prefixLength := installJournalSlotHeaderSize + 1
+			n, err := file.WriteAt(slot[:prefixLength], offset)
+			if err != nil {
+				return n, err
+			}
+			return n, errors.New("injected torn journal slot")
+		}
+		return file.WriteAt(slot, offset)
+	}
+
+	outcome, err := transaction.promote()
+	if !errors.Is(err, ErrInstallRecoveryRequired) || !outcome.RecoveryRequired || !outcome.Promoted {
+		t.Fatalf("torn transition error=%v outcome=%+v", err, outcome)
+	}
+	content, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := decodeInstallPromotionJournalRecord(content)
+	if err != nil {
+		t.Fatalf("decode surviving journal record: %v", err)
+	}
+	wantState := promotionStatePrepared
+	if afterExchanged {
+		wantState = promotionStateExchanged
+	}
+	if record.journal.State != wantState {
+		t.Fatalf("surviving journal state = %q, want %q", record.journal.State, wantState)
+	}
+	currentJournal, _, err := captureInstallFileEvidence(transaction.transactionRoot, journalBasename)
+	if err != nil || currentJournal.Inode != journalInode {
+		t.Fatalf("journal inode changed across torn transition: before=%d after=%d err=%v", journalInode, currentJournal.Inode, err)
+	}
+
+	transaction.closeHandles()
+	recovered, err := recoverGuardedInstallTransaction(locator, nil)
+	if err != nil || !recovered.Restored || recovered.RecoveryRequired {
+		t.Fatalf("recover torn %s transition = outcome=%+v err=%v", wantState, recovered, err)
+	}
+	if got := readTask3Target(t, fixture.target); !bytes.Equal(got, fixture.original) {
+		t.Fatalf("recover torn %s transition target=%q", wantState, got)
+	}
+}
+
+func testTask3InvalidJournalSlots(t *testing.T, torn bool) {
+	fixture, transaction := prepareTask3Transaction(t, true, nil, nil)
+	locator := transaction.recoveryLocator()
+	journalPath := filepath.Join(transaction.retainedTransactionPath(), journalBasename)
+	transaction.closeHandles()
+	content := make([]byte, installJournalFileSize)
+	if torn {
+		copy(content, installJournalSlotMagic[:len(installJournalSlotMagic)/2])
+	}
+	if err := os.WriteFile(journalPath, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outcome, err := recoverGuardedInstallTransaction(locator, nil)
+	if !errors.Is(err, ErrInstallRecoveryRequired) || !outcome.RecoveryRequired {
+		t.Fatalf("invalid journal recovery = outcome=%+v err=%v", outcome, err)
+	}
+	if got := readTask3Target(t, fixture.target); !bytes.Equal(got, fixture.original) {
+		t.Fatalf("invalid journal recovery changed target: %q", got)
+	}
+}
+
 func TestAtomicRenameFilesystemProbePrecedesInitializerAndEffects(t *testing.T) {
 	requireTask3InstallContract(t, "pure check and filesystem probe ordering")
 }
@@ -2454,6 +2530,19 @@ func TestPromoteGuardedPreparedJournalDirectoryFsyncFailureBeforeNamespace(t *te
 
 func TestPromotionJournalTransitionDirectoryFsyncFailureRetainsRecovery(t *testing.T) {
 	requireTask3InstallContract(t, "journal transition directory fsync")
+}
+
+func TestPromotionJournalTornFirstTransitionRecoversPreparedRecord(t *testing.T) {
+	testTask3TornJournalTransition(t, false)
+}
+
+func TestPromotionJournalTornLaterTransitionRecoversExchangedRecord(t *testing.T) {
+	testTask3TornJournalTransition(t, true)
+}
+
+func TestPromotionJournalRejectsEmptyOrWhollyTornSlots(t *testing.T) {
+	t.Run("empty", func(t *testing.T) { testTask3InvalidJournalSlots(t, false) })
+	t.Run("torn", func(t *testing.T) { testTask3InvalidJournalSlots(t, true) })
 }
 
 func TestPromoteGuardedDetectsAndReversesSubstitution(t *testing.T) {
