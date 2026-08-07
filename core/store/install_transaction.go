@@ -441,7 +441,9 @@ func (s *Store) AbortIngest(
 		InitializerRollbackSafe: rollbackSafe,
 	}
 	record.abortOutcomeSet = true
-	if errors.Is(cleanupErr, context.Canceled) || errors.Is(cleanupErr, context.DeadlineExceeded) {
+	if recoveryRequired || cleanup != model.QuarantineCleanupRemoved {
+		record.abortErr = recoveryRequiredError(cleanupErr)
+	} else {
 		record.abortErr = cleanupErr
 	}
 	outcome := record.abortOutcome
@@ -476,6 +478,9 @@ func (s *Store) terminalAbortOutcomeLocked(
 		InitializerRollbackSafe: s.initializerRollbackSafeLocked(initialization),
 	}
 	record.abortOutcomeSet = true
+	if recoveryRequired {
+		record.abortErr = recoveryRequiredError(nil)
+	}
 	return record.abortOutcome, record.abortErr
 }
 

@@ -935,8 +935,8 @@ func TestAbortIngestLockContentionHonorsContextDeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
 	defer cancel()
 	outcome, err := store.AbortIngest(ctx, initialization.ID(), transaction.TransactionID)
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("AbortIngest contention error = %v, want context deadline exceeded", err)
+	if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, ErrIngestRecoveryRequired) {
+		t.Fatalf("AbortIngest contention error = %v, want deadline plus recovery classification", err)
 	}
 	if outcome.Lifecycle != model.IngestLifecycleTerminal ||
 		outcome.Cleanup != model.QuarantineCleanupRetained || !outcome.RecoveryRequired {
@@ -949,7 +949,8 @@ func TestAbortIngestLockContentionHonorsContextDeadline(t *testing.T) {
 
 	release()
 	replayed, replayErr := store.AbortIngest(context.Background(), initialization.ID(), transaction.TransactionID)
-	if !errors.Is(replayErr, context.DeadlineExceeded) || !reflect.DeepEqual(replayed, outcome) {
+	if !errors.Is(replayErr, context.DeadlineExceeded) || !errors.Is(replayErr, ErrIngestRecoveryRequired) ||
+		!reflect.DeepEqual(replayed, outcome) {
 		t.Fatalf("AbortIngest deadline replay: same_outcome=%t error=%v",
 			reflect.DeepEqual(replayed, outcome), replayErr)
 	}
@@ -1692,8 +1693,8 @@ func TestAbortIngestLockUnavailableOrInvalidatedRetainsRecovery(t *testing.T) {
 			t.Fatal(err)
 		}
 		outcome, err := store.AbortIngest(context.Background(), initialization.ID(), begin.TransactionID)
-		if err != nil {
-			t.Fatal(err)
+		if !errors.Is(err, ErrIngestRecoveryRequired) {
+			t.Fatalf("unsafe-lock AbortIngest = %v, want recovery required", err)
 		}
 		if outcome.Cleanup != model.QuarantineCleanupRetained || !outcome.RecoveryRequired {
 			t.Fatalf("unsafe-lock cleanup = %#v", outcome)
@@ -1708,8 +1709,8 @@ func TestAbortIngestLockUnavailableOrInvalidatedRetainsRecovery(t *testing.T) {
 		begin := beginPhase6Ingest(t, store, initialization)
 		store.cleanupDiscardLock = true
 		outcome, err := store.AbortIngest(context.Background(), initialization.ID(), begin.TransactionID)
-		if err != nil {
-			t.Fatal(err)
+		if !errors.Is(err, ErrIngestRecoveryRequired) {
+			t.Fatalf("discarded-lock AbortIngest = %v, want recovery required", err)
 		}
 		if outcome.Cleanup != model.QuarantineCleanupRetained || !outcome.RecoveryRequired {
 			t.Fatalf("discarded-lock cleanup = %#v", outcome)
@@ -1782,8 +1783,8 @@ func testAbortIngestRetainsReplacedChild(t *testing.T, kind string, after bool) 
 		store.cleanupBeforeFinalCheck = seam
 	}
 	outcome, err := store.AbortIngest(context.Background(), initialization.ID(), begin.TransactionID)
-	if err != nil {
-		t.Fatal(err)
+	if !errors.Is(err, ErrIngestRecoveryRequired) {
+		t.Fatalf("replacement AbortIngest = %v, want recovery required", err)
 	}
 	if outcome.Cleanup != model.QuarantineCleanupRetained || !outcome.RecoveryRequired {
 		t.Fatalf("replacement cleanup = %#v", outcome)
@@ -1888,6 +1889,29 @@ func TestAbortIngestReplaysEveryTerminalTransaction(t *testing.T) {
 			t.Fatalf("terminal commit Abort: outcome=%#v err=%v cleanup_calls=%d", outcome, err, cleanupCalls)
 		}
 	})
+
+	t.Run("recovery required", func(t *testing.T) {
+		store, initialization, _ := newPhase6IngestStore(t)
+		store.beginAfterQuarantineCreate = func(string) error {
+			return errors.New("injected setup failure")
+		}
+		store.cleanupBeforeFinalCheck = replacementTopLevelQuarantineSeam(t, false)
+		begin, err := store.BeginIngest(context.Background(), initialization.ID())
+		if err == nil || begin.Lifecycle != model.IngestLifecycleTerminal || !begin.RecoveryRequired {
+			t.Fatalf("terminal recovery BeginIngest = (%#v, %v)", begin, err)
+		}
+		cleanupCalls := 0
+		store.cleanupBeforeFinalCheck = func(quarantineCleanupSeam) error {
+			cleanupCalls++
+			return nil
+		}
+		outcome, err := store.AbortIngest(context.Background(), initialization.ID(), begin.TransactionID)
+		if !errors.Is(err, ErrIngestRecoveryRequired) ||
+			outcome.Lifecycle != model.IngestLifecycleTerminal || !outcome.RecoveryRequired ||
+			outcome.Cleanup != begin.Cleanup || outcome.FailureCode != begin.FailureCode || cleanupCalls != 0 {
+			t.Fatalf("terminal recovery Abort: outcome=%#v err=%v cleanup_calls=%d", outcome, err, cleanupCalls)
+		}
+	})
 }
 
 func TestAbortIngestRejectsUnknownCrossStoreAndFinalizing(t *testing.T) {
@@ -1956,8 +1980,8 @@ func testAbortIngestRetainsTopReplacement(t *testing.T, after bool) {
 		store.cleanupBeforeFinalCheck = seam
 	}
 	outcome, err := store.AbortIngest(context.Background(), initialization.ID(), begin.TransactionID)
-	if err != nil {
-		t.Fatal(err)
+	if !errors.Is(err, ErrIngestRecoveryRequired) {
+		t.Fatalf("top replacement AbortIngest = %v, want recovery required", err)
 	}
 	if outcome.Cleanup != model.QuarantineCleanupRetained || !outcome.RecoveryRequired {
 		t.Fatalf("top replacement cleanup = %#v", outcome)
