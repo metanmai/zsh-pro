@@ -2240,6 +2240,38 @@ func TestCommitIngestFsyncsEveryLinkedObjectBeforeDirectoriesAndRef(t *testing.T
 	}
 }
 
+func TestCommitIngestPostPublicationLockFailurePreservesCommittedStatus(t *testing.T) {
+	store, initialization, root := newPhase6IngestStore(t)
+	transaction := beginPhase6Ingest(t, store, initialization)
+	namespace, err := storeTransactionNamespacePath(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalidated := false
+	store.commitEvent = func(event string) {
+		if event != "commit-write" || invalidated {
+			return
+		}
+		invalidated = true
+		if chmodErr := os.Chmod(namespace, 0o755); chmodErr != nil {
+			t.Errorf("invalidate transaction namespace: %v", chmodErr)
+		}
+	}
+	outcome, err := commitPhase6Ingest(t, store, initialization, transaction, phase6Profile("LOCK", "published"))
+	if !invalidated || !errors.Is(err, ErrIngestRecoveryRequired) ||
+		outcome.Status != model.IngestCommitCommitted || outcome.RefState != model.IngestRefCandidate ||
+		outcome.Objects != model.IngestObjectsPublished || outcome.Cleanup != model.QuarantineCleanupRetained ||
+		outcome.FailureCode != model.IngestFailureQuarantine || !outcome.RecoveryRequired {
+		t.Fatalf("post-publication lock failure: invalidated=%t status=%s ref=%s objects=%s cleanup=%s failure=%s recovery=%t err=%v",
+			invalidated, outcome.Status, outcome.RefState, outcome.Objects, outcome.Cleanup,
+			outcome.FailureCode, outcome.RecoveryRequired, err)
+	}
+	back, readErr := store.Read(context.Background(), "main")
+	if readErr != nil || !reflect.DeepEqual(back, phase6Profile("LOCK", "published")) {
+		t.Fatalf("committed ref was not published: profile=%#v err=%v", back, readErr)
+	}
+}
+
 func TestCommitIngestLinkedObjectFsyncFailureRequiresRecoveryBeforeRef(t *testing.T) {
 	store, initialization, _ := newPhase6IngestStore(t)
 	transaction := beginPhase6Ingest(t, store, initialization)

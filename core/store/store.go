@@ -967,7 +967,9 @@ func (s *Store) CommitIngest(
 		})
 	})
 	if err != nil {
-		outcome.Status = model.IngestCommitRecoveryRequired
+		if outcome.Status != model.IngestCommitCommitted {
+			outcome.Status = model.IngestCommitRecoveryRequired
+		}
 		outcome.FailureCode = model.IngestFailureQuarantine
 		outcome.RecoveryRequired = true
 		commitErr = recoveryRequiredError(err)
