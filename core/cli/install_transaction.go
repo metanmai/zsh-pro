@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
@@ -754,7 +755,13 @@ func currentRequestedLinkTopology(path string) (requestedLinkTopology, error) {
 	return topology, nil
 }
 
-func openTargetTransactionGuard(targetPath string, seams installTransactionSeams) (*targetTransactionGuard, error) {
+func openTargetTransactionGuard(ctx context.Context, targetPath string, seams installTransactionSeams) (*targetTransactionGuard, error) {
+	if ctx == nil {
+		return nil, ErrInstallRecoveryRequired
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	targetPath = filepath.Clean(targetPath)
 	if !filepath.IsAbs(targetPath) {
 		return nil, errors.New("startup target must be absolute")
@@ -877,7 +884,11 @@ func openTargetTransactionGuard(targetPath string, seams installTransactionSeams
 		closeAll()
 		return nil, ErrInstallRecoveryRequired
 	}
-	if err := acquireTargetRootTransactionLock(lock); err != nil {
+	if err := acquireTargetRootTransactionLock(ctx, lock); err != nil {
+		closeAll()
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
 		closeAll()
 		return nil, err
 	}
@@ -977,7 +988,7 @@ func newInstallTransactionBasename(prefix string) (string, error) {
 	return prefix + "-" + hex.EncodeToString(random[:]), nil
 }
 
-func preflightAtomicRenameTarget(targetPath string, input *installTransactionSeams) error {
+func preflightAtomicRenameTarget(ctx context.Context, targetPath string, input *installTransactionSeams) error {
 	seams := normalizedInstallTransactionSeams(input)
 	seams.event("capability:exchange")
 	if err := seams.capabilityCheck(atomicRenameExchange); err != nil {
@@ -987,7 +998,7 @@ func preflightAtomicRenameTarget(targetPath string, input *installTransactionSea
 	if err := seams.capabilityCheck(atomicRenameNoReplace); err != nil {
 		return err
 	}
-	guard, err := openTargetTransactionGuard(targetPath, seams)
+	guard, err := openTargetTransactionGuard(ctx, targetPath, seams)
 	if err != nil {
 		return err
 	}
@@ -1107,11 +1118,12 @@ func preflightAtomicRenameTarget(targetPath string, input *installTransactionSea
 }
 
 func prepareGuardedInstallTransaction(
+	ctx context.Context,
 	prepared preparedIngestInstall,
 	input *installTransactionSeams,
 ) (*guardedInstallTransaction, error) {
 	seams := normalizedInstallTransactionSeams(input)
-	guard, err := openTargetTransactionGuard(prepared.originalSnapshot.resolvedPath, seams)
+	guard, err := openTargetTransactionGuard(ctx, prepared.originalSnapshot.resolvedPath, seams)
 	if err != nil {
 		return nil, err
 	}
@@ -2003,6 +2015,7 @@ func snapshotFromRecord(record installSnapshotRecord) (installSnapshot, error) {
 // journal and artifact matrix; no in-memory evidence from the interrupted
 // process is reused.
 func recoverGuardedInstallTransaction(
+	ctx context.Context,
 	locator installRecoveryLocator,
 	input *installTransactionSeams,
 ) (promotionOutcome, error) {
@@ -2010,8 +2023,11 @@ func recoverGuardedInstallTransaction(
 		return promotionOutcome{Disposition: promotionRecoveryRequired, RecoveryRequired: true}, ErrInstallRecoveryRequired
 	}
 	seams := normalizedInstallTransactionSeams(input)
-	guard, err := openTargetTransactionGuard(locator.TargetPath, seams)
+	guard, err := openTargetTransactionGuard(ctx, locator.TargetPath, seams)
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return promotionOutcome{Disposition: promotionRecoveryRequired, RecoveryRequired: true}, err
+		}
 		return promotionOutcome{Disposition: promotionRecoveryRequired, RecoveryRequired: true}, ErrInstallRecoveryRequired
 	}
 	transaction := &guardedInstallTransaction{

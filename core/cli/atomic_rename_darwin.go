@@ -3,10 +3,12 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"os"
 	"runtime"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -15,6 +17,11 @@ const (
 	darwinRenameSwapFlag      uintptr = 2
 	darwinRenameExclusiveFlag uintptr = 4
 )
+
+const targetRootLockRetryInterval = 10 * time.Millisecond
+
+type targetRootFlockFunc func(int, int) error
+type targetRootLockWaitFunc func(context.Context) error
 
 func atomicRenamePlatformCapability(mode atomicRenameMode) error {
 	if !validAtomicRenameMode(mode) {
@@ -49,15 +56,46 @@ func atomicRenameAtWithSyscallPlatform(
 	return classifyAtomicRenameErrno(errno)
 }
 
-func acquireTargetRootTransactionLock(lock *os.File) error {
-	if lock == nil {
+func acquireTargetRootTransactionLock(ctx context.Context, lock *os.File) error {
+	return acquireTargetRootTransactionLockWith(ctx, lock, syscall.Flock, waitForTargetRootLockRetry)
+}
+
+func acquireTargetRootTransactionLockWith(
+	ctx context.Context,
+	lock *os.File,
+	flock targetRootFlockFunc,
+	wait targetRootLockWaitFunc,
+) error {
+	if ctx == nil || lock == nil || flock == nil || wait == nil {
 		return ErrAtomicRenameUnsupported
 	}
 	for {
-		err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		err := flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 		if errors.Is(err, syscall.EINTR) {
 			continue
 		}
-		return err
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EAGAIN) {
+			return err
+		}
+		if err := wait(ctx); err != nil {
+			return err
+		}
+	}
+}
+
+func waitForTargetRootLockRetry(ctx context.Context) error {
+	timer := time.NewTimer(targetRootLockRetryInterval)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
 }

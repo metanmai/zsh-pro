@@ -130,10 +130,15 @@ func (c *CLI) runIngestCommand(args []string, stdout, stderr io.Writer) int {
 		return renderIngestResult(result, ingestFailureStoreUnavailable, parsed.asJSON, stdout, stderr)
 	}
 
-	return c.runIngestWithSeams(parsed, stdout, stderr, nil)
+	return c.runIngestWithSeams(context.Background(), parsed, stdout, stderr, nil)
 }
 
-func (c *CLI) runIngestWithSeams(arguments ingestArguments, stdout, stderr io.Writer, input *ingestControllerSeams) int {
+func (c *CLI) runIngestWithSeams(
+	ctx context.Context,
+	arguments ingestArguments,
+	stdout, stderr io.Writer,
+	input *ingestControllerSeams,
+) int {
 	result := newIngestResult(int(model.ExitRuntimeErr))
 	fail := func(reason ingestFailureReason) int {
 		return renderIngestResult(result, reason, arguments.asJSON, stdout, stderr)
@@ -155,7 +160,7 @@ func (c *CLI) runIngestWithSeams(arguments ingestArguments, stdout, stderr io.Wr
 		return fail(ingestFailureSourceUnavailable)
 	}
 	seams.event("preflight")
-	if err := preflightAtomicRenameTarget(preflightTarget, seams.install); err != nil {
+	if err := preflightAtomicRenameTarget(ctx, preflightTarget, seams.install); err != nil {
 		if errors.Is(err, ErrInstallRecoveryRequired) {
 			result.RecoveryRequired = true
 			return fail(ingestFailureRecoveryRequired)
@@ -168,7 +173,7 @@ func (c *CLI) runIngestWithSeams(arguments ingestArguments, stdout, stderr io.Wr
 		return fail(ingestFailureSourceUnavailable)
 	}
 	seams.event("initializer")
-	initialization, err := c.storeInitializer(context.Background())
+	initialization, err := c.storeInitializer(ctx)
 	if err != nil {
 		return fail(ingestFailureStoreUnavailable)
 	}
@@ -185,7 +190,7 @@ func (c *CLI) runIngestWithSeams(arguments ingestArguments, stdout, stderr io.Wr
 	}
 
 	seams.event("store:begin")
-	begin, err := initialization.Transactions.BeginIngest(context.Background(), initialization.InitializationID)
+	begin, err := initialization.Transactions.BeginIngest(ctx, initialization.InitializationID)
 	if err != nil || !validIngestBegin(initialization.InitializationID, begin) {
 		if begin.RecoveryRequired || !begin.InitializerRollbackSafe {
 			result.RecoveryRequired = begin.RecoveryRequired
@@ -244,7 +249,7 @@ func (c *CLI) runIngestWithSeams(arguments ingestArguments, stdout, stderr io.Wr
 	}
 
 	seams.event("target:prepare")
-	targetTransaction, err := prepareGuardedInstallTransaction(prepared, seams.install)
+	targetTransaction, err := prepareGuardedInstallTransaction(ctx, prepared, seams.install)
 	if err != nil {
 		if errors.Is(err, ErrInstallRecoveryRequired) {
 			result.RecoveryRequired = true
@@ -317,7 +322,7 @@ func (c *CLI) runIngestWithSeams(arguments ingestArguments, stdout, stderr io.Wr
 
 	seams.event("store:commit")
 	commit, commitErr := initialization.Transactions.CommitIngest(
-		context.Background(), initialization.InitializationID, begin.TransactionID,
+		ctx, initialization.InitializationID, begin.TransactionID,
 		profile, "zsh-pro: ingest baseline",
 	)
 	state.tokenActive = false

@@ -3,11 +3,100 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"os"
 	"syscall"
 	"testing"
+	"time"
 )
+
+func TestTargetRootTransactionLockRetriesNonblockingAndPreservesEINTR(t *testing.T) {
+	lock, err := os.CreateTemp(t.TempDir(), "lock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = lock.Close() }()
+
+	responses := []error{syscall.EINTR, syscall.EWOULDBLOCK, nil}
+	flockCalls := 0
+	waitCalls := 0
+	err = acquireTargetRootTransactionLockWith(
+		context.Background(),
+		lock,
+		func(_ int, operation int) error {
+			if operation != syscall.LOCK_EX|syscall.LOCK_NB {
+				t.Fatalf("flock operation = %d, want LOCK_EX|LOCK_NB", operation)
+			}
+			response := responses[flockCalls]
+			flockCalls++
+			return response
+		},
+		func(context.Context) error {
+			waitCalls++
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if flockCalls != 3 || waitCalls != 1 {
+		t.Fatalf("flock calls = %d, wait calls = %d; want 3 and 1", flockCalls, waitCalls)
+	}
+}
+
+func TestTargetRootTransactionLockReturnsCancellationDuringContention(t *testing.T) {
+	lock, err := os.CreateTemp(t.TempDir(), "lock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = lock.Close() }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	flockCalls := 0
+	err = acquireTargetRootTransactionLockWith(
+		ctx,
+		lock,
+		func(int, int) error {
+			flockCalls++
+			return syscall.EWOULDBLOCK
+		},
+		func(ctx context.Context) error {
+			cancel()
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("lock error = %v, want context canceled", err)
+	}
+	if flockCalls != 1 {
+		t.Fatalf("flock calls = %d, want 1", flockCalls)
+	}
+}
+
+func TestTargetRootTransactionLockReturnsDeadlineDuringContention(t *testing.T) {
+	lock, err := os.CreateTemp(t.TempDir(), "lock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = lock.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	err = acquireTargetRootTransactionLockWith(
+		ctx,
+		lock,
+		func(int, int) error { return syscall.EWOULDBLOCK },
+		func(ctx context.Context) error {
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("lock error = %v, want deadline exceeded", err)
+	}
+}
 
 func TestAtomicRenameAtExchangePreservesBothInodes(t *testing.T) {
 	dir := t.TempDir()

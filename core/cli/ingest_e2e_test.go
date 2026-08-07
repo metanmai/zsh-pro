@@ -276,6 +276,7 @@ func (f *ingestE2EFixture) run(seams *ingestControllerSeams) {
 	f.stdout.Reset()
 	f.stderr.Reset()
 	f.resultCode = f.program.runIngestWithSeams(
+		context.Background(),
 		ingestArguments{path: f.target, asJSON: true}, &f.stdout, &f.stderr, seams,
 	)
 }

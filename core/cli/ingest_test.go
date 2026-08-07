@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"zsh-pro/core/dto"
 	"zsh-pro/core/model"
@@ -457,6 +458,7 @@ func (fixture *ingestControllerFixture) runJSON() (int, dto.IngestResult, string
 	fixture.t.Helper()
 	var stdout, stderr bytes.Buffer
 	code := fixture.program.runIngestWithSeams(
+		context.Background(),
 		ingestArguments{path: fixture.target, asJSON: true},
 		&stdout,
 		&stderr,
@@ -781,6 +783,58 @@ func TestRunIngestNeverExecutesSource(t *testing.T) {
 	if len(fixture.store.commits) != 1 || fixture.store.commits[0].Entries[0].Text != strings.TrimSuffix(source, "\n") {
 		t.Fatalf("static source was not committed verbatim: %#v", fixture.store.commits)
 	}
+}
+
+func TestRunIngestTargetLockCancellationHasNoLaterEffects(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("target-root locking requires Linux or Darwin")
+	}
+	home := t.TempDir()
+	setInstallHome(t, home)
+	target := filepath.Join(home, ".zshrc")
+	original := []byte("export SAFE=1\n")
+	if err := os.WriteFile(target, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	holder := startTargetLockHelperProcess(t, target)
+	defer holder.release(t)
+
+	store := newControllerStore(t, nil)
+	initializerCalls := 0
+	program := newCLI(zsh.Provider{}, store, NotReadyEmitter(), func(context.Context) (StoreInitialization, error) {
+		initializerCalls++
+		return StoreInitialization{}, nil
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Millisecond)
+	defer cancel()
+	var stdout, stderr bytes.Buffer
+	started := time.Now()
+	code := program.runIngestWithSeams(
+		ctx,
+		ingestArguments{path: target, asJSON: true},
+		&stdout,
+		&stderr,
+		nil,
+	)
+	if code != int(model.ExitRuntimeErr) || stderr.Len() != 0 {
+		t.Fatalf("canceled ingest = code %d stdout %q stderr %q", code, stdout.String(), stderr.String())
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("canceled ingest returned after %s, want prompt return", elapsed)
+	}
+	if initializerCalls != 0 || store.beginCalls != 0 || store.commitCalls != 0 || store.abortCalls != 0 {
+		t.Fatalf(
+			"canceled ingest effects = initializer %d begin %d commit %d abort %d",
+			initializerCalls, store.beginCalls, store.commitCalls, store.abortCalls,
+		)
+	}
+	if got, err := os.ReadFile(target); err != nil || !bytes.Equal(got, original) {
+		t.Fatalf("canceled ingest changed target: %q err=%v", got, err)
+	}
+	if _, err := os.Lstat(filepath.Join(home, ".zsh-pro")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("canceled ingest created cache or loader: %v", err)
+	}
+	assertTargetLockNamespaceHasNoTransactionEffects(t, target)
 }
 
 func decodeOneIngestResult(t *testing.T, encoded []byte) dto.IngestResult {

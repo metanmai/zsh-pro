@@ -1613,10 +1613,10 @@ func prepareTask3Transaction(
 ) (task3InstallFixture, *guardedInstallTransaction) {
 	t.Helper()
 	fixture := newTask3InstallFixture(t, existing, block)
-	if err := preflightAtomicRenameTarget(fixture.target, seams); err != nil {
+	if err := preflightAtomicRenameTarget(context.Background(), fixture.target, seams); err != nil {
 		t.Fatalf("atomic preflight: %v", err)
 	}
-	transaction, err := prepareGuardedInstallTransaction(fixture.prepared, seams)
+	transaction, err := prepareGuardedInstallTransaction(context.Background(), fixture.prepared, seams)
 	if err != nil {
 		t.Fatalf("prepare guarded transaction: %v", err)
 	}
@@ -1655,7 +1655,7 @@ func testTask3Ordering(t *testing.T) {
 	initializer := func(context.Context) (StoreInitialization, error) {
 		return StoreInitialization{Finalize: func() error { return nil }}, nil
 	}
-	if err := runInstallWithStoreInitializationAndSeams(staticHooker("typeset -g TASK3_ORDER=1\n"), initializer, seams); err != nil {
+	if err := runInstallWithStoreInitializationAndSeams(context.Background(), staticHooker("typeset -g TASK3_ORDER=1\n"), initializer, seams); err != nil {
 		t.Fatal(err)
 	}
 	want := []string{
@@ -1677,7 +1677,7 @@ func testTask3UnsupportedIsolation(t *testing.T) {
 	}
 	initializerCalls := 0
 	seams := &installTransactionSeams{capabilityCheck: func(atomicRenameMode) error { return ErrAtomicRenameUnsupported }}
-	err := runInstallWithStoreInitializationAndSeams(staticHooker("typeset -g NEVER=1\n"), func(context.Context) (StoreInitialization, error) {
+	err := runInstallWithStoreInitializationAndSeams(context.Background(), staticHooker("typeset -g NEVER=1\n"), func(context.Context) (StoreInitialization, error) {
 		initializerCalls++
 		return StoreInitialization{}, nil
 	}, seams)
@@ -1703,7 +1703,7 @@ func testTask3ProbeCleanupUncertainty(t *testing.T) {
 		}
 		return file.Sync()
 	}}
-	err := preflightAtomicRenameTarget(fixture.target, seams)
+	err := preflightAtomicRenameTarget(context.Background(), fixture.target, seams)
 	if !errors.Is(err, ErrInstallRecoveryRequired) {
 		t.Fatalf("probe cleanup error = %v, want recovery required", err)
 	}
@@ -1741,11 +1741,11 @@ func testTask3PreparationBarrier(t *testing.T, failStage string, wantJournal boo
 		}
 		return file.Sync()
 	}
-	if err := preflightAtomicRenameTarget(fixture.target, seams); err != nil {
+	if err := preflightAtomicRenameTarget(context.Background(), fixture.target, seams); err != nil {
 		t.Fatal(err)
 	}
 	targetCalls.Store(0)
-	transaction, err := prepareGuardedInstallTransaction(fixture.prepared, seams)
+	transaction, err := prepareGuardedInstallTransaction(context.Background(), fixture.prepared, seams)
 	if !errors.Is(err, ErrInstallRecoveryRequired) || transaction == nil {
 		t.Fatalf("preparation barrier error = %v transaction=%v", err, transaction)
 	}
@@ -1889,7 +1889,7 @@ func testTask3RecoveryRow(t *testing.T, existing bool, stage string) {
 		}
 	}
 	transaction.closeHandles()
-	recovered, err := recoverGuardedInstallTransaction(locator, nil)
+	recovered, err := recoverGuardedInstallTransaction(context.Background(), locator, nil)
 	if existing {
 		if err != nil || !recovered.Restored {
 			t.Fatalf("existing recovery %s = outcome=%+v err=%v", stage, recovered, err)
@@ -1951,7 +1951,7 @@ func testTask3UnsupportedRows(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			fixture := newTask3InstallFixture(t, true, nil)
-			err := preflightAtomicRenameTarget(fixture.target, row.seams)
+			err := preflightAtomicRenameTarget(context.Background(), fixture.target, row.seams)
 			if !errors.Is(err, ErrAtomicRenameUnsupported) {
 				t.Fatalf("unsupported row error=%v", err)
 			}
@@ -1962,56 +1962,219 @@ func testTask3UnsupportedRows(t *testing.T) {
 	}
 }
 
-func testTask3RootLock(t *testing.T) {
-	firstFixture := newTask3InstallFixture(t, true, nil)
-	seams := normalizedInstallTransactionSeams(nil)
-	first, err := openTargetTransactionGuard(firstFixture.target, seams)
+const (
+	targetLockHelperEnvironment = "ZSH_PRO_TARGET_LOCK_HELPER"
+	targetLockHelperTarget      = "ZSH_PRO_TARGET_LOCK_TARGET"
+	targetLockHelperReady       = "ZSH_PRO_TARGET_LOCK_READY"
+	targetLockHelperRelease     = "ZSH_PRO_TARGET_LOCK_RELEASE"
+)
+
+type targetLockHelperProcess struct {
+	command     *exec.Cmd
+	releasePath string
+	done        chan error
+	output      *bytes.Buffer
+	released    bool
+}
+
+func startTargetLockHelperProcess(t *testing.T, target string) *targetLockHelperProcess {
+	t.Helper()
+	control := t.TempDir()
+	readyPath := filepath.Join(control, "ready")
+	releasePath := filepath.Join(control, "release")
+	output := &bytes.Buffer{}
+	command := exec.Command(os.Args[0], "-test.run=^TestTargetTransactionLockHelperProcess$")
+	command.Env = append(os.Environ(),
+		targetLockHelperEnvironment+"=1",
+		targetLockHelperTarget+"="+target,
+		targetLockHelperReady+"="+readyPath,
+		targetLockHelperRelease+"="+releasePath,
+	)
+	command.Stdout = output
+	command.Stderr = output
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	holder := &targetLockHelperProcess{
+		command: command, releasePath: releasePath, done: make(chan error, 1), output: output,
+	}
+	go func() { holder.done <- command.Wait() }()
+	t.Cleanup(func() { holder.release(t) })
+
+	deadline := time.NewTimer(3 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if _, err := os.Stat(readyPath); err == nil {
+			return holder
+		}
+		select {
+		case err := <-holder.done:
+			holder.released = true
+			t.Fatalf("target lock helper exited before ready: %v\n%s", err, output.String())
+		case <-deadline.C:
+			_ = command.Process.Kill()
+			<-holder.done
+			holder.released = true
+			t.Fatalf("target lock helper did not become ready\n%s", output.String())
+		case <-ticker.C:
+		}
+	}
+}
+
+func (holder *targetLockHelperProcess) release(t *testing.T) {
+	t.Helper()
+	if holder == nil || holder.released {
+		return
+	}
+	holder.released = true
+	if err := os.WriteFile(holder.releasePath, []byte("release"), 0o600); err != nil {
+		_ = holder.command.Process.Kill()
+		<-holder.done
+		t.Fatalf("release target lock helper: %v", err)
+	}
+	select {
+	case err := <-holder.done:
+		if err != nil {
+			t.Fatalf("target lock helper failed: %v\n%s", err, holder.output.String())
+		}
+	case <-time.After(3 * time.Second):
+		_ = holder.command.Process.Kill()
+		<-holder.done
+		t.Fatalf("target lock helper did not exit\n%s", holder.output.String())
+	}
+}
+
+func assertTargetLockNamespaceHasNoTransactionEffects(t *testing.T, target string) {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(filepath.Dir(target), installTransactionNamespaceName))
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(first.close)
-	type guardResult struct {
-		guard *targetTransactionGuard
-		err   error
+	if len(entries) != 1 || entries[0].Name() != installTransactionLockName {
+		t.Fatalf("target lock cancellation left namespace entries: %v", entries)
 	}
-	sameRoot := make(chan guardResult, 1)
+}
+
+func testTask3RootLock(t *testing.T) {
+	fixture := newTask3InstallFixture(t, true, nil)
+	holder := startTargetLockHelperProcess(t, fixture.target)
+	seams := normalizedInstallTransactionSeams(nil)
+
+	cancelCtx, cancel := context.WithCancel(context.Background())
 	go func() {
-		guard, err := openTargetTransactionGuard(firstFixture.target, seams)
-		sameRoot <- guardResult{guard: guard, err: err}
+		time.Sleep(25 * time.Millisecond)
+		cancel()
 	}()
-	select {
-	case result := <-sameRoot:
-		if result.guard != nil {
-			result.guard.close()
-		}
-		t.Fatalf("same-root lock did not block: %v", result.err)
-	case <-time.After(100 * time.Millisecond):
+	started := time.Now()
+	guard, err := openTargetTransactionGuard(cancelCtx, fixture.target, seams)
+	if guard != nil {
+		guard.close()
+		t.Fatal("canceled target lock acquisition returned a guard")
 	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled target lock error = %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("canceled target lock returned after %s, want prompt return", elapsed)
+	}
+
+	deadlineCtx, deadlineCancel := context.WithTimeout(context.Background(), 35*time.Millisecond)
+	defer deadlineCancel()
+	started = time.Now()
+	guard, err = openTargetTransactionGuard(deadlineCtx, fixture.target, seams)
+	if guard != nil {
+		guard.close()
+		t.Fatal("expired target lock acquisition returned a guard")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("deadline target lock error = %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("deadline target lock returned after %s, want prompt return", elapsed)
+	}
+	assertTargetLockNamespaceHasNoTransactionEffects(t, fixture.target)
+
 	secondFixture := newTask3InstallFixture(t, true, nil)
-	differentRoot := make(chan guardResult, 1)
-	go func() {
-		guard, err := openTargetTransactionGuard(secondFixture.target, seams)
-		differentRoot <- guardResult{guard: guard, err: err}
-	}()
-	select {
-	case result := <-differentRoot:
-		if result.err != nil {
-			t.Fatal(result.err)
-		}
-		result.guard.close()
-	case <-time.After(2 * time.Second):
-		t.Fatal("different-root lock was serialized")
+	differentRoot, err := openTargetTransactionGuard(context.Background(), secondFixture.target, seams)
+	if err != nil {
+		t.Fatalf("different-root lock was serialized: %v", err)
 	}
-	first.close()
-	select {
-	case result := <-sameRoot:
-		if result.err != nil {
-			t.Fatal(result.err)
-		}
-		result.guard.close()
-	case <-time.After(2 * time.Second):
-		t.Fatal("same-root waiter did not acquire after holder release")
+	differentRoot.close()
+
+	holder.release(t)
+	guard, err = openTargetTransactionGuard(context.Background(), fixture.target, seams)
+	if err != nil {
+		t.Fatalf("target lock remained unavailable after holder release: %v", err)
 	}
+	guard.close()
+}
+
+func TestTargetTransactionLockHelperProcess(t *testing.T) {
+	if os.Getenv(targetLockHelperEnvironment) != "1" {
+		return
+	}
+	target := os.Getenv(targetLockHelperTarget)
+	readyPath := os.Getenv(targetLockHelperReady)
+	releasePath := os.Getenv(targetLockHelperRelease)
+	guard, err := openTargetTransactionGuard(context.Background(), target, normalizedInstallTransactionSeams(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer guard.close()
+	if err := os.WriteFile(readyPath, []byte("ready"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(releasePath); err == nil {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for target lock release")
+}
+
+func TestInstallTargetLockCancellationHasNoLaterEffects(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("target-root locking requires Linux or Darwin")
+	}
+	home := t.TempDir()
+	setInstallHome(t, home)
+	target := filepath.Join(home, ".zshrc")
+	original := []byte("export SAFE=1\n")
+	if err := os.WriteFile(target, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	holder := startTargetLockHelperProcess(t, target)
+	defer holder.release(t)
+
+	initializerCalls := 0
+	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Millisecond)
+	defer cancel()
+	err := runInstallWithStoreInitializationAndSeams(
+		ctx,
+		staticHooker("typeset -g NEVER=1\n"),
+		func(context.Context) (StoreInitialization, error) {
+			initializerCalls++
+			return StoreInitialization{}, nil
+		},
+		nil,
+	)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("install lock error = %v, want deadline exceeded", err)
+	}
+	if initializerCalls != 0 {
+		t.Fatalf("initializer calls = %d, want 0", initializerCalls)
+	}
+	if got := readTask3Target(t, target); !bytes.Equal(got, original) {
+		t.Fatalf("canceled install changed target: %q", got)
+	}
+	if _, err := os.Lstat(filepath.Join(home, ".zsh-pro")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("canceled install created cache or loader: %v", err)
+	}
+	assertTargetLockNamespaceHasNoTransactionEffects(t, target)
 }
 
 func testTask3UnsafeLock(t *testing.T) {
@@ -2037,7 +2200,7 @@ func testTask3UnsafeLock(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if err := preflightAtomicRenameTarget(fixture.target, nil); err == nil {
+			if err := preflightAtomicRenameTarget(context.Background(), fixture.target, nil); err == nil {
 				t.Fatal("unsafe lock entry was accepted")
 			}
 			if got := readTask3Target(t, fixture.target); !bytes.Equal(got, fixture.original) {
@@ -2220,10 +2383,10 @@ func testTask3SecretPeer(t *testing.T, recovery bool) {
 	fixture.prepared = prepared
 	fixture.candidate = append([]byte(nil), prepared.candidate...)
 	seams := &installTransactionSeams{}
-	if err := preflightAtomicRenameTarget(fixture.target, seams); err != nil {
+	if err := preflightAtomicRenameTarget(context.Background(), fixture.target, seams); err != nil {
 		t.Fatal(err)
 	}
-	transaction, err := prepareGuardedInstallTransaction(prepared, seams)
+	transaction, err := prepareGuardedInstallTransaction(context.Background(), prepared, seams)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2493,7 +2656,7 @@ func testTask3TornJournalTransition(t *testing.T, afterExchanged bool) {
 	}
 
 	transaction.closeHandles()
-	recovered, err := recoverGuardedInstallTransaction(locator, nil)
+	recovered, err := recoverGuardedInstallTransaction(context.Background(), locator, nil)
 	if err != nil || !recovered.Restored || recovered.RecoveryRequired {
 		t.Fatalf("recover torn %s transition = outcome=%+v err=%v", wantState, recovered, err)
 	}
@@ -2514,7 +2677,7 @@ func testTask3InvalidJournalSlots(t *testing.T, torn bool) {
 	if err := os.WriteFile(journalPath, content, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	outcome, err := recoverGuardedInstallTransaction(locator, nil)
+	outcome, err := recoverGuardedInstallTransaction(context.Background(), locator, nil)
 	if !errors.Is(err, ErrInstallRecoveryRequired) || !outcome.RecoveryRequired {
 		t.Fatalf("invalid journal recovery = outcome=%+v err=%v", outcome, err)
 	}

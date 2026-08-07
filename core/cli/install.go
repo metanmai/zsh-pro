@@ -31,7 +31,11 @@ type installPaths struct {
 // ingest. Loader promotion precedes .zshrc promotion so startup never points
 // at an unavailable loader.
 func runInstall(provider shell.Hooker) error {
-	return runInstallWithStoreInitialization(provider, nil)
+	return runInstallWithContext(context.Background(), provider)
+}
+
+func runInstallWithContext(ctx context.Context, provider shell.Hooker) error {
+	return runInstallWithStoreInitializationAndSeams(ctx, provider, nil, nil)
 }
 
 // runInstallWithStoreInitialization validates the user-owned bootstrap first,
@@ -39,10 +43,11 @@ func runInstall(provider shell.Hooker) error {
 // loader and .zshrc replacements. Every later failure invokes the initializer's
 // narrowly scoped compensation before returning an installation error.
 func runInstallWithStoreInitialization(provider shell.Hooker, initializeStore StoreInitializer) error {
-	return runInstallWithStoreInitializationAndSeams(provider, initializeStore, nil)
+	return runInstallWithStoreInitializationAndSeams(context.Background(), provider, initializeStore, nil)
 }
 
 func runInstallWithStoreInitializationAndSeams(
+	ctx context.Context,
 	provider shell.Hooker,
 	initializeStore StoreInitializer,
 	transactionSeams *installTransactionSeams,
@@ -55,13 +60,13 @@ func runInstallWithStoreInitializationAndSeams(
 	if err != nil {
 		return err
 	}
-	if err := preflightAtomicRenameTarget(prepared.originalSnapshot.resolvedPath, transactionSeams); err != nil {
+	if err := preflightAtomicRenameTarget(ctx, prepared.originalSnapshot.resolvedPath, transactionSeams); err != nil {
 		return installTransactionError("verify atomic startup transaction", err, nil)
 	}
 	var storeInitialization StoreInitialization
 	if initializeStore != nil {
 		normalizedInstallTransactionSeams(transactionSeams).event("initializer")
-		storeInitialization, err = initializeStore(context.Background())
+		storeInitialization, err = initializeStore(ctx)
 		if err != nil {
 			return installTransactionError("initialize profile store", err, rollbackStoreInitialization(storeInitialization))
 		}
@@ -69,7 +74,7 @@ func runInstallWithStoreInitializationAndSeams(
 	if err := validateInstallRootRelationship(paths.runtimeDir, storeInitialization); err != nil {
 		return installTransactionError("validate profile store and runtime roots", err, rollbackStoreInitialization(storeInitialization))
 	}
-	targetTransaction, err := prepareGuardedInstallTransaction(prepared, transactionSeams)
+	targetTransaction, err := prepareGuardedInstallTransaction(ctx, prepared, transactionSeams)
 	if err != nil {
 		if errors.Is(err, ErrInstallRecoveryRequired) {
 			return installTransactionError("prepare "+paths.zshrcPath, err, nil)

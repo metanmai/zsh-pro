@@ -2,7 +2,10 @@
 
 package cli
 
-import "os"
+import (
+	"context"
+	"os"
+)
 
 func atomicRenamePlatformCapability(atomicRenameMode) error {
 	return ErrAtomicRenameUnsupported
@@ -12,6 +15,6 @@ func atomicRenameAtWithSyscallPlatform(syscall6Fn, int, string, int, string, ato
 	return ErrAtomicRenameUnsupported
 }
 
-func acquireTargetRootTransactionLock(*os.File) error {
+func acquireTargetRootTransactionLock(context.Context, *os.File) error {
 	return ErrAtomicRenameUnsupported
 }
