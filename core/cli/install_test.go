@@ -2380,6 +2380,7 @@ func testTask3StaleCompensation(t *testing.T) {
 	late := []byte("export EXTERNAL=1\n")
 	rollbackCalls := 0
 	finalizeCalls := 0
+	compensationOrderObserved := false
 	err := runInstallWithStoreInitialization(callbackHooker{
 		script: "typeset -g NEW_LOADER=1\n",
 		before: func() {
@@ -2389,7 +2390,17 @@ func testTask3StaleCompensation(t *testing.T) {
 		},
 	}, func(context.Context) (StoreInitialization, error) {
 		return StoreInitialization{
-			Rollback: func() error { rollbackCalls++; return nil },
+			Rollback: func() error {
+				rollbackCalls++
+				targetBytes, targetErr := os.ReadFile(target)
+				loaderBytes, loaderErr := os.ReadFile(filepath.Join(cache, cacheLoaderName))
+				compensationOrderObserved = targetErr == nil && loaderErr == nil &&
+					bytes.Equal(targetBytes, late) && bytes.Equal(loaderBytes, oldLoader)
+				if !compensationOrderObserved {
+					return fmt.Errorf("Store rollback preceded target/cache compensation: target=%q loader=%q errors=%v/%v", targetBytes, loaderBytes, targetErr, loaderErr)
+				}
+				return nil
+			},
 			Finalize: func() error { finalizeCalls++; return nil },
 		}, nil
 	})
@@ -2404,6 +2415,9 @@ func testTask3StaleCompensation(t *testing.T) {
 	}
 	if rollbackCalls != 1 || finalizeCalls != 0 {
 		t.Fatalf("initializer rollback/finalize=%d/%d, want 1/0", rollbackCalls, finalizeCalls)
+	}
+	if !compensationOrderObserved {
+		t.Fatal("Store rollback did not observe completed target/cache compensation")
 	}
 }
 

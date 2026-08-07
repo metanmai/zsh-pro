@@ -117,10 +117,9 @@ func runInstallWithStoreInitializationAndSeams(
 			loaderRollback.discard()
 			return installTransactionError("install cached loader", err, targetRollback)
 		}
-		rollbackErr := errors.Join(targetRollback, rollbackPromotedCache(&loaderWrite, &loaderRollback))
-		loaderWrite.discard()
-		loaderRollback.discard()
-		rollbackErr = errors.Join(rollbackErr, rollbackRuntimeAndStore(cacheState, storeInitialization))
+		rollbackErr := compensateAfterLoaderPromotion(
+			targetRollback, &loaderWrite, &loaderRollback, cacheState, storeInitialization,
+		)
 		return installTransactionError("install cached loader", err, rollbackErr)
 	}
 	targetOutcome, err := targetTransaction.promote()
@@ -141,10 +140,9 @@ func runInstallWithStoreInitializationAndSeams(
 		if errors.Is(targetRollback, ErrInstallRecoveryRequired) {
 			return installTransactionError("write "+paths.zshrcPath, err, targetRollback)
 		}
-		rollbackErr := errors.Join(targetRollback, rollbackPromotedCache(&loaderWrite, &loaderRollback))
-		loaderWrite.discard()
-		loaderRollback.discard()
-		rollbackErr = errors.Join(rollbackErr, rollbackRuntimeAndStore(cacheState, storeInitialization))
+		rollbackErr := compensateAfterLoaderPromotion(
+			targetRollback, &loaderWrite, &loaderRollback, cacheState, storeInitialization,
+		)
 		return installTransactionError("write "+paths.zshrcPath, err, rollbackErr)
 	}
 	if err := finalizeStoreInitialization(storeInitialization); err != nil {
@@ -152,10 +150,9 @@ func runInstallWithStoreInitializationAndSeams(
 		if errors.Is(targetRollback, ErrInstallRecoveryRequired) {
 			return installTransactionError("finalize profile store initialization", err, targetRollback)
 		}
-		rollbackErr := errors.Join(targetRollback, rollbackPromotedCache(&loaderWrite, &loaderRollback))
-		loaderWrite.discard()
-		loaderRollback.discard()
-		rollbackErr = errors.Join(rollbackErr, rollbackRuntimeAndStore(cacheState, storeInitialization))
+		rollbackErr := compensateAfterLoaderPromotion(
+			targetRollback, &loaderWrite, &loaderRollback, cacheState, storeInitialization,
+		)
 		return installTransactionError("finalize profile store initialization", err, rollbackErr)
 	}
 	if err := targetOutcome.Finalize(); err != nil {
@@ -187,6 +184,23 @@ func rollbackRuntimeAndStore(cache *cacheDirectoryState, initialization StoreIni
 		return rollbackStoreInitialization(initialization)
 	}
 	return errors.Join(cache.rollback(), rollbackStoreInitialization(initialization))
+}
+
+// compensateAfterLoaderPromotion is shared only by branches where target
+// rollback is known not to require retained recovery. Preserve the effect
+// order: target rollback has already run, then restore the promoted loader,
+// discard its staging handles, roll back the runtime, and finally the Store.
+func compensateAfterLoaderPromotion(
+	targetRollback error,
+	loaderWrite *preparedCacheWrite,
+	loaderRollback *cacheWriteRollback,
+	cache *cacheDirectoryState,
+	initialization StoreInitialization,
+) error {
+	rollbackErr := errors.Join(targetRollback, rollbackPromotedCache(loaderWrite, loaderRollback))
+	loaderWrite.discard()
+	loaderRollback.discard()
+	return errors.Join(rollbackErr, rollbackRuntimeAndStore(cache, initialization))
 }
 
 func validateInstallRootRelationship(runtimeRoot string, initialization StoreInitialization) error {
