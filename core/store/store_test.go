@@ -2146,6 +2146,83 @@ func TestCommitIngestRefCommitWaitsForDurableEffects(t *testing.T) {
 	}
 }
 
+func TestCommitIngestFsyncsEveryLinkedObjectBeforeDirectoriesAndRef(t *testing.T) {
+	store, initialization, _ := newPhase6IngestStore(t)
+	transaction := beginPhase6Ingest(t, store, initialization)
+	linkedObjects := 0
+	store.commitPublishLink = func(source, destination string) error {
+		err := os.Link(source, destination)
+		if err == nil {
+			linkedObjects++
+		}
+		return err
+	}
+	var events []string
+	store.commitEvent = func(event string) {
+		events = append(events, event)
+	}
+	outcome, err := commitPhase6Ingest(t, store, initialization, transaction, phase6Profile("FSYNC", "ordered"))
+	if err != nil || outcome.Status != model.IngestCommitCommitted {
+		t.Fatalf("ordered durability commit = (%#v, %v)", outcome, err)
+	}
+
+	objectSyncs := 0
+	lastObjectSync := -1
+	firstDirectorySync := -1
+	rootSync := -1
+	refCommit := -1
+	for index, event := range events {
+		switch event {
+		case "object-fsync":
+			objectSyncs++
+			lastObjectSync = index
+		case "fanout-fsync":
+			if firstDirectorySync == -1 {
+				firstDirectorySync = index
+			}
+		case "object-root-fsync":
+			rootSync = index
+		case "commit-write":
+			refCommit = index
+		}
+	}
+	if linkedObjects == 0 || objectSyncs != linkedObjects || lastObjectSync < 0 ||
+		firstDirectorySync <= lastObjectSync || rootSync <= firstDirectorySync || refCommit <= rootSync {
+		t.Fatalf("durability ordering: linked=%d object_syncs=%d last_object=%d first_dir=%d root=%d ref=%d",
+			linkedObjects, objectSyncs, lastObjectSync, firstDirectorySync, rootSync, refCommit)
+	}
+}
+
+func TestCommitIngestLinkedObjectFsyncFailureRequiresRecoveryBeforeRef(t *testing.T) {
+	store, initialization, _ := newPhase6IngestStore(t)
+	transaction := beginPhase6Ingest(t, store, initialization)
+	wantRef := *transaction.Baseline.ExpectedRevision
+	injected := errors.New("injected object fsync failure")
+	syncAttempts := 0
+	store.commitSyncObject = func(string) error {
+		syncAttempts++
+		return injected
+	}
+	var refCommitWritten bool
+	store.commitEvent = func(event string) {
+		if event == "commit-write" {
+			refCommitWritten = true
+		}
+	}
+	outcome, err := commitPhase6Ingest(t, store, initialization, transaction, phase6Profile("FSYNC", "failure"))
+	if !errors.Is(err, injected) || syncAttempts != 1 || refCommitWritten ||
+		outcome.Status != model.IngestCommitNotCommitted || outcome.Objects != model.IngestObjectsUncertain ||
+		outcome.Cleanup != model.QuarantineCleanupRetained ||
+		outcome.FailureCode != model.IngestFailureObjectPublish || !outcome.RecoveryRequired {
+		t.Fatalf("object fsync failure: attempts=%d ref_commit=%t status=%s objects=%s cleanup=%s failure=%s recovery=%t err=%v",
+			syncAttempts, refCommitWritten, outcome.Status, outcome.Objects, outcome.Cleanup,
+			outcome.FailureCode, outcome.RecoveryRequired, err)
+	}
+	if current, readErr := store.git.revParse(context.Background(), "refs/heads/main"); readErr != nil || current != wantRef {
+		t.Fatalf("object fsync failure moved ref: current=%q err=%v want=%q", current, readErr, wantRef)
+	}
+}
+
 func TestCommitIngestPreCommitFailureNeverWritesRefCommit(t *testing.T) {
 	keychain := &transactionKeychain{values: map[string]string{}, failKey: "API_KEY", failOnce: true}
 	root := filepath.Join(t.TempDir(), "store")

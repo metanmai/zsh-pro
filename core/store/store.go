@@ -139,6 +139,7 @@ type Store struct {
 	// Per-Store test seams for deterministic publication/durability failures and
 	// value-free event ordering. Production leaves these nil.
 	commitPublishLink func(string, string) error
+	commitSyncObject  func(string) error
 	commitSyncDir     func(string) error
 	commitEvent       func(string)
 	commitRefSession  func(*updateRefSession) error
@@ -565,6 +566,31 @@ func (s *Store) linkCandidateObject(source, destination string) error {
 	return os.Link(source, destination)
 }
 
+func (s *Store) syncLinkedObject(path string) error {
+	if s.commitSyncObject != nil {
+		return s.commitSyncObject(path)
+	}
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return ErrGitCommand
+	}
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_CLOEXEC|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return ErrGitCommand
+	}
+	opened, statErr := file.Stat()
+	if statErr != nil || !os.SameFile(info, opened) {
+		_ = file.Close()
+		return ErrGitCommand
+	}
+	syncErr := file.Sync()
+	closeErr := file.Close()
+	if syncErr != nil {
+		return syncErr
+	}
+	return closeErr
+}
+
 func (s *Store) syncObjectDirectory(path string) error {
 	if s.commitSyncDir != nil {
 		return s.commitSyncDir(path)
@@ -669,6 +695,11 @@ func (s *Store) publishCandidateObjects(claim claimedIngestCommit) (objectPublic
 		}
 		publication.created++
 		publication.dirs[fanout] = struct{}{}
+		if err := s.syncLinkedObject(destination); err != nil {
+			publication.uncertain = true
+			return err
+		}
+		s.emitCommitEvent("object-fsync")
 		return nil
 	})
 	if err != nil {
