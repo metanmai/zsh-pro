@@ -1,6 +1,6 @@
 # Phase 6 Findings Ledger
 
-**Updated:** 2026-08-02
+**Updated:** 2026-08-07
 **Scope:** CodeRabbit, plan-checker, and source-audit findings for Phase 6
 
 Status meanings:
@@ -41,7 +41,21 @@ A `VERIFIED` finding is reopened only when new code, test, runtime, or review ev
 | P6-025 | 06-03 claimed a late occupant is never relocated, although atomic exchange moves it to the exchange peer. | VERIFIED | Threat text promises no destruction/loss or relocation to a second recovery name, consistent with same-peer exchange/reverse/retain. Structure validation and the focused independent plan-checker passed. |
 | P6-026 | 06-02 conflated start acknowledgement with acquisition of the prepared ref lock. | VERIFIED | Truths, behavior, action, threat model, and exact `TestUpdateRefSessionLocksOnlyAfterPrepareOK` require live-unlocked after start OK and locked only after prepare OK. Structure validation and the focused independent plan-checker passed. |
 | P6-027 | 06-04/06-05 cited nonexistent `core/activate/activate.go`. | VERIFIED | All four plan references point to landed `core/activate/builder.go`, where `Build` skips `!EffectiveManaged()` and `!Representable()` entries. Both plan structures, the phase index, stale-reference scan, and `git diff --check` pass. |
+| P6-028 | Post-implementation state metadata names completed Plan 06-03 while the checkpoint is after Plan 06-04, and its derived completed-plan counts disagree. | FIXED | `.planning/STATE.md` now names completed Plan 06-04 in frontmatter/body and reports 39 completed plans consistently; pending focused validation/re-review. |
+| P6-029 | The exact-SHA macOS verifier ignores untracked files under executable implementation scope. | OPEN | CodeRabbit post-implementation review; verify the `git diff` boundary and block untracked `core`/verifier files. |
+| P6-030 | The SecretRef authority test indexes the reparsed source profile without independently checking its length. | OPEN | CodeRabbit post-implementation review; verify and add a value-free bounds assertion if valid. |
+| P6-031 | The ambiguity proxy assumes `/bin/bash` and Bash coprocess support without a version/capability preflight. | OPEN | CodeRabbit post-implementation review; verify the minimum Bash surface and use an authenticated resolved interpreter path if valid. |
+| P6-032 | A Unix `syscall.Stat_t` assertion lives in an untagged E2E test file and may break non-Unix compilation. | OPEN | CodeRabbit post-implementation review; verify with a Windows compile and split the helper by platform if valid. |
+| P6-033 | Ingest runtime-gated tests skip only when zsh is absent, not when the atomic adapter is unsupported. | OPEN | CodeRabbit post-implementation review; verify tagged/other-platform execution and align the runtime gate if valid. |
+| P6-034 | Journal transitions truncate and rewrite one stable inode, so interruption can leave no decodable pre- or post-transition record. | OPEN | CodeRabbit post-implementation review; verify the write/recovery protocol and add crash-atomic surviving-record semantics if valid. |
+| P6-035 | Repeated post-promotion compensation blocks in `install.go` should be centralized. | OPEN | CodeRabbit post-implementation review; determine whether this is a concrete correctness risk or a non-actionable refactor request using exact flow evidence. |
+| P6-036 | `defaultCommitOutcome` contains a branch that assigns the same ref state already selected by default. | OPEN | CodeRabbit post-implementation review; verify whether an absent-ref state is missing or the branch is dead. |
+| P6-037 | Darwin atomic rename passes Go-backed pathname pointers through a raw syscall without explicit `runtime.KeepAlive`. | OPEN | CodeRabbit post-implementation review; verify Go pointer lifetime requirements and patch the Darwin adapter if valid. |
+| P6-038 | Secret-preparation test failures format whole secret-bearing structs and can disclose literals in test output. | OPEN | CodeRabbit post-implementation review; replace with value-free derived diagnostics if confirmed. |
+| P6-039 | Wrong-mode lock fixtures rely on requested creation modes that the process umask can alter. | OPEN | CodeRabbit post-implementation review; verify fixture determinism and apply explicit chmod if valid. |
+| P6-040 | Store-root advisory lock acquisition is unconditionally blocking and does not observe caller cancellation/deadlines. | OPEN | CodeRabbit post-implementation review; trace contexts through CommitIngest/AbortIngest and implement cancellable contention if required. |
+| P6-041 | Transactional `git update-ref --stdin` is used without enforcing the Git version that introduced transaction commands. | OPEN | CodeRabbit post-implementation review; verify authoritative minimum-version history and fail closed on older Git if valid. |
 
 ## Current convergence gate
 
-P6-001 through P6-027 are `VERIFIED`. The single pre-execution CodeRabbit pass and focused independent fix review are complete, all exact structure/reference checks pass, and there are zero open or actionable pre-execution findings. Phase 6 execution is authorized.
+P6-001 through P6-027 remain `VERIFIED`. The post-implementation CodeRabbit pass opened P6-028 through P6-041; Phase 6 remains incomplete until each is fixed and verified or dismissed with exact code evidence.
