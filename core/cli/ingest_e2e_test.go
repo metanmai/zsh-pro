@@ -658,28 +658,33 @@ func TestIngestE2ESecretAbsentAfterUpdateRefObservationAmbiguity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var quarantine string
+	var quarantines []string
 	for _, entry := range entries {
 		if entry.IsDir() {
-			if quarantine != "" {
-				t.Fatal("ambiguity retained more than one Store quarantine")
-			}
-			quarantine = filepath.Join(storeNamespace, entry.Name())
+			quarantine := filepath.Join(storeNamespace, entry.Name())
+			requirePrivateCurrentUserDirectory(t, quarantine)
+			quarantines = append(quarantines, quarantine)
 		}
 	}
-	if quarantine == "" {
+	if len(quarantines) == 0 {
 		t.Fatal("ambiguity did not retain authenticated Store quarantine")
 	}
-	requirePrivateCurrentUserDirectory(t, quarantine)
-	quarantineObjects := filepath.Join(quarantine, "objects")
-	retainedObjects := allGitObjects(t, f.storeRoot,
-		"GIT_OBJECT_DIRECTORY="+quarantineObjects,
-		"GIT_ALTERNATE_OBJECT_DIRECTORIES="+filepath.Join(f.storeRoot, "objects"))
-	if !bytes.Contains(retainedObjects, []byte("PHASE6_FIRST")) {
-		t.Fatal("retained-quarantine scan did not enumerate candidate objects")
+	scannedQuarantines := 0
+	for _, quarantine := range quarantines {
+		quarantineObjects := filepath.Join(quarantine, "objects")
+		retainedObjects := allGitObjects(t, f.storeRoot,
+			"GIT_OBJECT_DIRECTORY="+quarantineObjects,
+			"GIT_ALTERNATE_OBJECT_DIRECTORIES="+filepath.Join(f.storeRoot, "objects"))
+		scannedQuarantines++
+		if !bytes.Contains(retainedObjects, []byte("PHASE6_FIRST")) {
+			t.Fatal("retained-quarantine scan did not enumerate candidate objects")
+		}
+		if bytes.Contains(retainedObjects, []byte(f.secret)) {
+			t.Fatal("retained quarantine object database disclosed runtime literal")
+		}
 	}
-	if bytes.Contains(retainedObjects, []byte(f.secret)) {
-		t.Fatal("retained quarantine object database disclosed runtime literal")
+	if scannedQuarantines != len(quarantines) {
+		t.Fatalf("retained quarantine scans=%d discovered=%d", scannedQuarantines, len(quarantines))
 	}
 	installNamespace := filepath.Join(f.home, installTransactionNamespaceName)
 	requirePrivateCurrentUserDirectory(t, installNamespace)
