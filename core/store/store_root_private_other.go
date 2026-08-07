@@ -3,6 +3,7 @@
 package store
 
 import (
+	"context"
 	"fmt"
 	"os"
 )
@@ -14,8 +15,8 @@ func storeTransactionNamespacePath(root string) (string, error) {
 	return "", ErrStoreTransactionLockUnavailable
 }
 
-func withStoreRootTransactionLock(root string, fn func(*storeRootTransactionGuard) error) error {
-	_, _ = root, fn
+func withStoreRootTransactionLock(ctx context.Context, root string, fn func(*storeRootTransactionGuard) error) error {
+	_, _, _ = ctx, root, fn
 	return ErrStoreTransactionLockUnavailable
 }
 

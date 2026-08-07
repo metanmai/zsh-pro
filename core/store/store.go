@@ -709,6 +709,7 @@ func defaultCommitOutcome(claim claimedIngestCommit) model.IngestCommitOutcome {
 }
 
 func (s *Store) cleanupCommittedTransaction(
+	ctx context.Context,
 	claim claimedIngestCommit,
 	outcome *model.IngestCommitOutcome,
 	commitErr error,
@@ -721,7 +722,7 @@ func (s *Store) cleanupCommittedTransaction(
 		claim.record.lifecycle = model.IngestLifecycleFinalizing
 	}
 	s.transactionMu.Unlock()
-	cleanup, recovery := s.cleanupIngestQuarantine(claim.record)
+	cleanup, recovery, cleanupErr := s.cleanupIngestQuarantine(ctx, claim.record)
 	outcome.Cleanup = cleanup
 	if cleanup == model.QuarantineCleanupRemoved {
 		if outcome.Status != model.IngestCommitCommitted {
@@ -732,6 +733,13 @@ func (s *Store) cleanupCommittedTransaction(
 	outcome.RecoveryRequired = recovery || cleanup != model.QuarantineCleanupRemoved
 	if outcome.FailureCode == model.IngestFailureNone {
 		outcome.FailureCode = model.IngestFailureCleanup
+	}
+	return recoveryRequiredError(cleanupErr)
+}
+
+func recoveryRequiredError(cause error) error {
+	if errors.Is(cause, context.Canceled) || errors.Is(cause, context.DeadlineExceeded) {
+		return errors.Join(ErrIngestRecoveryRequired, cause)
 	}
 	return ErrIngestRecoveryRequired
 }
@@ -756,7 +764,7 @@ func (s *Store) CommitIngest(
 	outcome := defaultCommitOutcome(claim)
 	if err := claim.baseline.Validate(); err != nil {
 		outcome.FailureCode = model.IngestFailureInvalidBaseline
-		commitErr := s.cleanupCommittedTransaction(claim, &outcome, ErrIngestNotCommitted)
+		commitErr := s.cleanupCommittedTransaction(ctx, claim, &outcome, ErrIngestNotCommitted)
 		return s.terminalizeIngestCommit(claim, outcome, commitErr)
 	}
 	if err := s.git.validateDirectRef(claim.ref); err != nil {
@@ -769,13 +777,13 @@ func (s *Store) CommitIngest(
 	prepared, err := prepareSecrets(profile, s.keychain)
 	if err != nil {
 		outcome.FailureCode = model.IngestFailureBackend
-		commitErr := s.cleanupCommittedTransaction(claim, &outcome, err)
+		commitErr := s.cleanupCommittedTransaction(ctx, claim, &outcome, err)
 		return s.terminalizeIngestCommit(claim, outcome, commitErr)
 	}
 	outcome.Withheld = append(model.WithheldReport(nil), prepared.report...)
 
 	var commitErr error
-	err = withStoreRootTransactionLock(s.dir, func(guard *storeRootTransactionGuard) error {
+	err = withStoreRootTransactionLock(ctx, s.dir, func(guard *storeRootTransactionGuard) error {
 		return s.authenticateClaimedQuarantine(guard, claim, func() error {
 			candidateOID, candidateErr := s.prepareIngestCandidate(ctx, claim, prepared.profile, message)
 			if candidateErr != nil {
@@ -927,10 +935,10 @@ func (s *Store) CommitIngest(
 		outcome.Status = model.IngestCommitRecoveryRequired
 		outcome.FailureCode = model.IngestFailureQuarantine
 		outcome.RecoveryRequired = true
-		commitErr = ErrIngestRecoveryRequired
+		commitErr = recoveryRequiredError(err)
 	}
 	if !outcome.RecoveryRequired {
-		commitErr = s.cleanupCommittedTransaction(claim, &outcome, commitErr)
+		commitErr = s.cleanupCommittedTransaction(ctx, claim, &outcome, commitErr)
 	}
 	return s.terminalizeIngestCommit(claim, outcome, commitErr)
 }

@@ -224,6 +224,7 @@ type ingestTransactionRecord struct {
 	beginOutcome     model.IngestBeginOutcome
 	abortOutcome     model.IngestAbortOutcome
 	abortOutcomeSet  bool
+	abortErr         error
 }
 
 // ingestQuarantine retains the authenticated top-level identity and descriptor
@@ -361,8 +362,9 @@ func (s *Store) AbortIngest(
 	}
 	if record.lifecycle == model.IngestLifecycleTerminal && record.abortOutcomeSet {
 		outcome := record.abortOutcome
+		err := record.abortErr
 		s.transactionMu.Unlock()
-		return outcome, nil
+		return outcome, err
 	}
 	if initialization.closing || initialization.terminal || record.lifecycle != model.IngestLifecycleActive {
 		s.transactionMu.Unlock()
@@ -371,7 +373,7 @@ func (s *Store) AbortIngest(
 	record.lifecycle = model.IngestLifecycleFinalizing
 	s.transactionMu.Unlock()
 
-	cleanup, recoveryRequired := s.cleanupIngestQuarantine(record)
+	cleanup, recoveryRequired, cleanupErr := s.cleanupIngestQuarantine(ctx, record)
 
 	s.transactionMu.Lock()
 	record.lifecycle = model.IngestLifecycleTerminal
@@ -392,9 +394,13 @@ func (s *Store) AbortIngest(
 		InitializerRollbackSafe: rollbackSafe,
 	}
 	record.abortOutcomeSet = true
+	if errors.Is(cleanupErr, context.Canceled) || errors.Is(cleanupErr, context.DeadlineExceeded) {
+		record.abortErr = cleanupErr
+	}
 	outcome := record.abortOutcome
+	abortErr := record.abortErr
 	s.transactionMu.Unlock()
-	return outcome, nil
+	return outcome, abortErr
 }
 
 func (s *Store) transactionQuarantinePath(transactionID model.IngestTransactionID) string {
@@ -416,7 +422,7 @@ func (s *Store) createIngestQuarantine(
 		cleanup          = model.QuarantineCleanupRemoved
 		recoveryRequired bool
 	)
-	err := withStoreRootTransactionLock(s.dir, func(guard *storeRootTransactionGuard) error {
+	err := withStoreRootTransactionLock(ctx, s.dir, func(guard *storeRootTransactionGuard) error {
 		return guard.withAuthenticatedMutation(func(namespace *os.Root) error {
 			name, err := newQuarantineBasename()
 			if err != nil {
@@ -577,13 +583,16 @@ func newQuarantineBasename() (string, error) {
 	return "ingest-" + hex.EncodeToString(random[:]), nil
 }
 
-func (s *Store) cleanupIngestQuarantine(record *ingestTransactionRecord) (model.QuarantineCleanupState, bool) {
+func (s *Store) cleanupIngestQuarantine(
+	ctx context.Context,
+	record *ingestTransactionRecord,
+) (model.QuarantineCleanupState, bool, error) {
 	if record == nil || record.quarantine == nil {
-		return model.QuarantineCleanupRemoved, false
+		return model.QuarantineCleanupRemoved, false, nil
 	}
 	cleanup := model.QuarantineCleanupRetained
 	recoveryRequired := true
-	err := withStoreRootTransactionLock(s.dir, func(guard *storeRootTransactionGuard) error {
+	err := withStoreRootTransactionLock(ctx, s.dir, func(guard *storeRootTransactionGuard) error {
 		if s.cleanupDiscardLock {
 			guard.discardForTest()
 		}
@@ -594,9 +603,9 @@ func (s *Store) cleanupIngestQuarantine(record *ingestTransactionRecord) (model.
 		return nil
 	})
 	if err != nil && cleanup == model.QuarantineCleanupRemoved {
-		return model.QuarantineCleanupRetained, true
+		return model.QuarantineCleanupRetained, true, err
 	}
-	return cleanup, recoveryRequired
+	return cleanup, recoveryRequired, err
 }
 
 // cleanupIngestQuarantineWithGuard implements the cooperating-process boundary:

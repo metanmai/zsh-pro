@@ -3,13 +3,18 @@
 package store
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"syscall"
+	"time"
 )
+
+const storeRootLockRetryInterval = 10 * time.Millisecond
 
 type storeRootTransactionGuard struct {
 	namespace     *os.Root
@@ -28,9 +33,12 @@ func storeTransactionNamespacePath(root string) (string, error) {
 	return filepath.Join(filepath.Dir(canonical), name), nil
 }
 
-func withStoreRootTransactionLock(root string, fn func(*storeRootTransactionGuard) error) error {
-	if fn == nil {
+func withStoreRootTransactionLock(ctx context.Context, root string, fn func(*storeRootTransactionGuard) error) error {
+	if ctx == nil || fn == nil {
 		return ErrStoreTransactionLockUnavailable
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	namespacePath, err := storeTransactionNamespacePath(root)
 	if err != nil {
@@ -81,8 +89,14 @@ func withStoreRootTransactionLock(root string, fn func(*storeRootTransactionGuar
 		guard.valid = false
 	}()
 
-	if err := lockStoreRootTransaction(lock); err != nil {
+	if err := lockStoreRootTransaction(ctx, lock); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
 		return ErrStoreTransactionLockUnavailable
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	guard.valid = true
 	if !guard.authenticationValid() {
@@ -203,13 +217,50 @@ func fileInfoOwnedByCurrentEUID(info os.FileInfo) bool {
 	return ok && stat.Uid == uint32(os.Geteuid())
 }
 
-func lockStoreRootTransaction(file *os.File) error {
+type storeRootFlockFunc func(int, int) error
+type storeRootLockWaitFunc func(context.Context) error
+
+func lockStoreRootTransaction(ctx context.Context, file *os.File) error {
+	return lockStoreRootTransactionWith(ctx, file, syscall.Flock, waitForStoreRootLockRetry)
+}
+
+func lockStoreRootTransactionWith(
+	ctx context.Context,
+	file *os.File,
+	flock storeRootFlockFunc,
+	wait storeRootLockWaitFunc,
+) error {
+	if ctx == nil || file == nil || flock == nil || wait == nil {
+		return ErrStoreTransactionLockUnavailable
+	}
 	for {
-		err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX)
-		if err == syscall.EINTR {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		err := flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if errors.Is(err, syscall.EINTR) {
 			continue
 		}
-		return err
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EAGAIN) {
+			return err
+		}
+		if err := wait(ctx); err != nil {
+			return err
+		}
+	}
+}
+
+func waitForStoreRootLockRetry(ctx context.Context) error {
+	timer := time.NewTimer(storeRootLockRetryInterval)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
 }
 

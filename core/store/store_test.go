@@ -665,7 +665,7 @@ func TestStoreTransactionRootLockProcessMatrix(t *testing.T) {
 		root := os.Getenv("ZSHPRO_STORE_LOCK_ROOT")
 		ready := os.Getenv("ZSHPRO_STORE_LOCK_READY")
 		release := os.Getenv("ZSHPRO_STORE_LOCK_RELEASE")
-		err := withStoreRootTransactionLock(root, func(guard *storeRootTransactionGuard) error {
+		err := withStoreRootTransactionLock(context.Background(), root, func(guard *storeRootTransactionGuard) error {
 			if err := guard.withAuthenticatedMutation(func(*os.Root) error { return nil }); err != nil {
 				return err
 			}
@@ -794,7 +794,7 @@ func TestStoreTransactionRootLockProcessMatrix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := withStoreRootTransactionLock(installRoot, func(*storeRootTransactionGuard) error { return nil }); err != nil {
+	if err := withStoreRootTransactionLock(context.Background(), installRoot, func(*storeRootTransactionGuard) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
 	namespace, err := storeTransactionNamespacePath(installRoot)
@@ -812,6 +812,99 @@ func TestStoreTransactionRootLockProcessMatrix(t *testing.T) {
 	}
 	if info, err := os.Stat(filepath.Join(namespace, "lock")); err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
 		t.Fatalf("persistent transaction lock = (%v, %v)", info, err)
+	}
+}
+
+func holdStoreRootTransactionLockForTest(t *testing.T, root string) func() {
+	t.Helper()
+	acquired := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- withStoreRootTransactionLock(context.Background(), root, func(*storeRootTransactionGuard) error {
+			close(acquired)
+			<-release
+			return nil
+		})
+	}()
+	select {
+	case <-acquired:
+	case err := <-done:
+		t.Fatalf("lock holder exited before acquisition: %v", err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for lock holder")
+	}
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			close(release)
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Errorf("release lock holder: %v", err)
+				}
+			case <-time.After(3 * time.Second):
+				t.Error("timed out releasing lock holder")
+			}
+		})
+	}
+}
+
+func TestCommitIngestLockContentionHonorsContextCancellation(t *testing.T) {
+	store, initialization, root := newPhase6IngestStore(t)
+	transaction := beginPhase6Ingest(t, store, initialization)
+	release := holdStoreRootTransactionLockForTest(t, root)
+	defer release()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	outcome, err := store.CommitIngest(
+		ctx,
+		initialization.ID(),
+		transaction.TransactionID,
+		phase6Profile("CANCELED", "one"),
+		"context cancellation",
+	)
+	if !errors.Is(err, context.Canceled) || !errors.Is(err, ErrIngestRecoveryRequired) {
+		t.Fatalf("CommitIngest contention error = %v, want cancellation plus recovery classification", err)
+	}
+	if outcome.Status != model.IngestCommitRecoveryRequired ||
+		outcome.Cleanup != model.QuarantineCleanupRetained || !outcome.RecoveryRequired {
+		t.Fatalf("CommitIngest cancellation facts: status=%s cleanup=%s recovery=%t",
+			outcome.Status, outcome.Cleanup, outcome.RecoveryRequired)
+	}
+	if _, statErr := os.Stat(store.transactionQuarantinePath(transaction.TransactionID)); statErr != nil {
+		t.Fatalf("CommitIngest cancellation lost retained quarantine: %v", statErr)
+	}
+}
+
+func TestAbortIngestLockContentionHonorsContextDeadline(t *testing.T) {
+	store, initialization, root := newPhase6IngestStore(t)
+	transaction := beginPhase6Ingest(t, store, initialization)
+	release := holdStoreRootTransactionLockForTest(t, root)
+	defer release()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	outcome, err := store.AbortIngest(ctx, initialization.ID(), transaction.TransactionID)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("AbortIngest contention error = %v, want context deadline exceeded", err)
+	}
+	if outcome.Lifecycle != model.IngestLifecycleTerminal ||
+		outcome.Cleanup != model.QuarantineCleanupRetained || !outcome.RecoveryRequired {
+		t.Fatalf("AbortIngest deadline facts: lifecycle=%s cleanup=%s recovery=%t",
+			outcome.Lifecycle, outcome.Cleanup, outcome.RecoveryRequired)
+	}
+	if _, statErr := os.Stat(store.transactionQuarantinePath(transaction.TransactionID)); statErr != nil {
+		t.Fatalf("AbortIngest deadline lost retained quarantine: %v", statErr)
+	}
+
+	release()
+	replayed, replayErr := store.AbortIngest(context.Background(), initialization.ID(), transaction.TransactionID)
+	if !errors.Is(replayErr, context.DeadlineExceeded) || !reflect.DeepEqual(replayed, outcome) {
+		t.Fatalf("AbortIngest deadline replay: same_outcome=%t error=%v",
+			reflect.DeepEqual(replayed, outcome), replayErr)
 	}
 }
 
@@ -891,7 +984,7 @@ func TestStoreTransactionRootLockRejectsUnsafeEntry(t *testing.T) {
 			}
 			test.setup(t, namespace)
 			called := false
-			if err := withStoreRootTransactionLock(root, func(*storeRootTransactionGuard) error {
+			if err := withStoreRootTransactionLock(context.Background(), root, func(*storeRootTransactionGuard) error {
 				called = true
 				return nil
 			}); err == nil {
@@ -913,7 +1006,7 @@ func TestStoreTransactionRootLockUnavailableOrDiscarded(t *testing.T) {
 		t.Fatal(err)
 	}
 	mutations := 0
-	err := withStoreRootTransactionLock(root, func(guard *storeRootTransactionGuard) error {
+	err := withStoreRootTransactionLock(context.Background(), root, func(guard *storeRootTransactionGuard) error {
 		guard.discardForTest()
 		return guard.withAuthenticatedMutation(func(*os.Root) error {
 			mutations++
@@ -1355,7 +1448,7 @@ func TestQuarantineCleanupCrossProcessLockSerializesCooperatingStores(t *testing
 		root := os.Getenv("ZSHPRO_QUARANTINE_LOCK_ROOT")
 		ready := os.Getenv("ZSHPRO_QUARANTINE_LOCK_READY")
 		release := os.Getenv("ZSHPRO_QUARANTINE_LOCK_RELEASE")
-		err := withStoreRootTransactionLock(root, func(*storeRootTransactionGuard) error {
+		err := withStoreRootTransactionLock(context.Background(), root, func(*storeRootTransactionGuard) error {
 			if err := os.WriteFile(ready, []byte("ready"), 0o600); err != nil {
 				return err
 			}
