@@ -618,9 +618,32 @@ func mutateInstallNamespace(request installNamespaceMutation) (*os.File, error) 
 	}
 	switch request.kind {
 	case installMutationMkdir:
-		return nil, request.root.Mkdir(request.name, request.mode)
+		if err := request.root.Mkdir(request.name, request.mode); err != nil {
+			return nil, err
+		}
+		if err := request.root.Chmod(request.name, request.mode.Perm()); err != nil {
+			return nil, err
+		}
+		info, err := request.root.Lstat(request.name)
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != request.mode.Perm() {
+			return nil, errors.Join(ErrInstallRecoveryRequired, err)
+		}
+		return nil, nil
 	case installMutationCreateFile:
-		return request.root.OpenFile(request.name, request.flags, request.mode)
+		file, err := request.root.OpenFile(request.name, request.flags, request.mode)
+		if err != nil {
+			return nil, err
+		}
+		if err := file.Chmod(request.mode.Perm()); err != nil {
+			_ = file.Close()
+			return nil, err
+		}
+		info, err := file.Stat()
+		if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != request.mode.Perm() {
+			_ = file.Close()
+			return nil, errors.Join(ErrInstallRecoveryRequired, err)
+		}
+		return file, nil
 	case installMutationRemove:
 		return nil, request.root.Remove(request.name)
 	case installMutationAtomicRename:

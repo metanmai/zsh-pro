@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -2175,6 +2176,46 @@ func TestInstallTargetLockCancellationHasNoLaterEffects(t *testing.T) {
 		t.Fatalf("canceled install created cache or loader: %v", err)
 	}
 	assertTargetLockNamespaceHasNoTransactionEffects(t, target)
+}
+
+func TestInstallPrivateArtifactsForceExactModesAfterCreate(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("guarded install transactions require Linux or Darwin")
+	}
+	fixture := newTask3InstallFixture(t, true, nil)
+	previousUmask := syscall.Umask(0o777)
+	defer syscall.Umask(previousUmask)
+
+	if err := preflightAtomicRenameTarget(context.Background(), fixture.target, nil); err != nil {
+		t.Fatalf("atomic preflight under restrictive umask: %v", err)
+	}
+	transaction, err := prepareGuardedInstallTransaction(context.Background(), fixture.prepared, nil)
+	if err != nil {
+		t.Fatalf("prepare guarded transaction under restrictive umask: %v", err)
+	}
+	t.Cleanup(transaction.closeHandles)
+
+	transactionPath := transaction.retainedTransactionPath()
+	for _, row := range []struct {
+		path string
+		mode os.FileMode
+		dir  bool
+	}{
+		{path: filepath.Join(fixture.home, installTransactionNamespaceName), mode: 0o700, dir: true},
+		{path: filepath.Join(fixture.home, installTransactionNamespaceName, installTransactionLockName), mode: 0o600},
+		{path: transactionPath, mode: 0o700, dir: true},
+		{path: filepath.Join(transactionPath, exchangePeerBasename), mode: 0o600},
+		{path: filepath.Join(transactionPath, candidateEvidenceBasename), mode: 0o600},
+		{path: filepath.Join(transactionPath, journalBasename), mode: 0o600},
+	} {
+		info, err := os.Lstat(row.path)
+		if err != nil {
+			t.Fatalf("inspect private artifact %s: %v", row.path, err)
+		}
+		if info.IsDir() != row.dir || info.Mode().Perm() != row.mode {
+			t.Fatalf("private artifact %s mode/type = %v dir=%v, want %v dir=%v", row.path, info.Mode(), info.IsDir(), row.mode, row.dir)
+		}
+	}
 }
 
 func testTask3UnsafeLock(t *testing.T) {
