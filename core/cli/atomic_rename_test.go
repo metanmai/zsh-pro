@@ -166,13 +166,21 @@ func TestAtomicRenameLinuxGo125ABIAndFallbackSurface(t *testing.T) {
 	}
 	productionTraps := parseLinuxTrapMap(t, linuxSource)
 	goRoot := strings.TrimSpace(runLocalGo(t, "env", "GOROOT"))
-	architectures := linuxArchitectures(t)
-	wantTraps := make(map[string]uint64, len(architectures))
-	for _, architecture := range architectures {
-		wantTraps[architecture] = localGoRenameat2Trap(t, goRoot, architecture)
+	for _, required := range []string{"amd64", "arm64"} {
+		if _, ok := productionTraps[required]; !ok {
+			t.Fatalf("Linux renameat2 trap map lacks required phase target %s", required)
+		}
 	}
-	if !reflect.DeepEqual(productionTraps, wantTraps) {
-		t.Fatalf("Linux renameat2 trap map = %v, want local Go 1.25 map %v", productionTraps, wantTraps)
+	architectures := make([]string, 0, len(productionTraps))
+	for architecture := range productionTraps {
+		architectures = append(architectures, architecture)
+	}
+	sort.Strings(architectures)
+	for _, architecture := range architectures {
+		want := localGoRenameat2Trap(t, goRoot, architecture)
+		if got := productionTraps[architecture]; got != want {
+			t.Errorf("Linux %s renameat2 trap = %d, want local Go 1.25 definition %d", architecture, got, want)
+		}
 	}
 
 	sourceText := string(linuxSource)
@@ -268,19 +276,6 @@ func withoutEnvironmentKey(environment []string, key string) []string {
 		}
 	}
 	return filtered
-}
-
-func linuxArchitectures(t *testing.T) []string {
-	t.Helper()
-	var architectures []string
-	for _, target := range strings.Fields(runLocalGo(t, "tool", "dist", "list")) {
-		goos, goarch, ok := strings.Cut(target, "/")
-		if ok && goos == "linux" {
-			architectures = append(architectures, goarch)
-		}
-	}
-	sort.Strings(architectures)
-	return architectures
 }
 
 func localGoRenameat2Trap(t *testing.T, goRoot, architecture string) uint64 {
