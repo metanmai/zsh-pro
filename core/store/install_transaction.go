@@ -247,6 +247,30 @@ type quarantineCleanupSeam struct {
 	Directory bool
 }
 
+func (s *Store) setIngestBaseline(record *ingestTransactionRecord, baseline model.IngestBaseline) {
+	s.transactionMu.Lock()
+	record.baseline = baseline
+	s.transactionMu.Unlock()
+}
+
+func (s *Store) ingestBaseline(record *ingestTransactionRecord) model.IngestBaseline {
+	s.transactionMu.Lock()
+	defer s.transactionMu.Unlock()
+	return record.baseline
+}
+
+func (s *Store) setIngestQuarantine(record *ingestTransactionRecord, quarantine *ingestQuarantine) {
+	s.transactionMu.Lock()
+	record.quarantine = quarantine
+	s.transactionMu.Unlock()
+}
+
+func (s *Store) ingestQuarantine(record *ingestTransactionRecord) *ingestQuarantine {
+	s.transactionMu.Lock()
+	defer s.transactionMu.Unlock()
+	return record.quarantine
+}
+
 func (s *Store) reserveIngestTransaction(id model.InstallInitializationID) (*ingestTransactionRecord, model.IngestBeginOutcome, error) {
 	s.transactionMu.Lock()
 	defer s.transactionMu.Unlock()
@@ -316,7 +340,7 @@ func (s *Store) beginIngestReserved(ctx context.Context, record *ingestTransacti
 	if err != nil {
 		return s.terminalizeBeginFailure(record, model.IngestFailureBaselineRead, model.QuarantineCleanupRemoved, false), err
 	}
-	record.baseline = baseline
+	s.setIngestBaseline(record, baseline)
 
 	cleanup, recoveryRequired, setupErr := s.createIngestQuarantine(ctx, record)
 	if setupErr != nil {
@@ -454,7 +478,7 @@ func (s *Store) createIngestQuarantine(
 				objectsPath:   filepath.Join(namespacePath, name, "objects"),
 				info:          info,
 			}
-			record.quarantine = quarantine
+			s.setIngestQuarantine(record, quarantine)
 
 			failAfterCreation := func(cause error) error {
 				setupErr = cause
@@ -502,10 +526,11 @@ func (s *Store) createIngestQuarantine(
 			}
 
 			candidate := s.git.candidate(quarantine.indexPath, quarantine.objectsPath)
-			if record.baseline.ExpectedRevision == nil {
+			baseline := s.ingestBaseline(record)
+			if baseline.ExpectedRevision == nil {
 				_, err = candidate.run(ctx, "read-tree", "--empty")
 			} else {
-				_, err = candidate.run(ctx, "read-tree", *record.baseline.ExpectedRevision)
+				_, err = candidate.run(ctx, "read-tree", *baseline.ExpectedRevision)
 			}
 			if err != nil {
 				return failAfterCreation(err)
@@ -562,7 +587,7 @@ func (s *Store) createIngestQuarantine(
 	if err != nil {
 		if setupErr == nil {
 			setupErr = err
-			if record.quarantine != nil {
+			if s.ingestQuarantine(record) != nil {
 				cleanup = model.QuarantineCleanupRetained
 				recoveryRequired = true
 			} else if errors.Is(err, ErrStoreTransactionLockUnavailable) {
@@ -587,7 +612,7 @@ func (s *Store) cleanupIngestQuarantine(
 	ctx context.Context,
 	record *ingestTransactionRecord,
 ) (model.QuarantineCleanupState, bool, error) {
-	if record == nil || record.quarantine == nil {
+	if record == nil || s.ingestQuarantine(record) == nil {
 		return model.QuarantineCleanupRemoved, false, nil
 	}
 	cleanup := model.QuarantineCleanupRetained
@@ -617,7 +642,7 @@ func (s *Store) cleanupIngestQuarantineWithGuard(
 	guard *storeRootTransactionGuard,
 	record *ingestTransactionRecord,
 ) (model.QuarantineCleanupState, bool) {
-	quarantine := record.quarantine
+	quarantine := s.ingestQuarantine(record)
 	if quarantine == nil {
 		return model.QuarantineCleanupRemoved, false
 	}

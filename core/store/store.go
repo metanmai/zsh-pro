@@ -1048,7 +1048,7 @@ func (s *Store) beginTransactionForRef(
 	if err != nil {
 		return s.terminalizeBeginFailure(record, model.IngestFailureBaselineRead, model.QuarantineCleanupRemoved, false), err
 	}
-	record.baseline = baseline
+	s.setIngestBaseline(record, baseline)
 	cleanup, recoveryRequired, err := s.createIngestQuarantine(ctx, record)
 	if err != nil {
 		return s.terminalizeBeginFailure(record, model.IngestFailureQuarantine, cleanup, recoveryRequired), err

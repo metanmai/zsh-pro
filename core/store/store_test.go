@@ -1392,6 +1392,80 @@ func TestBeginIngestConcurrentIndexesIsolated(t *testing.T) {
 	}
 }
 
+func TestBeginIngestRecordStatePublishesUnderTransactionLock(t *testing.T) {
+	store, initialization, _ := newPhase6IngestStore(t)
+	reserved := make(chan model.IngestTransactionID, 1)
+	release := make(chan struct{})
+	store.beginAfterReserve = func() error {
+		store.transactionMu.Lock()
+		initializationRecord := store.installInitializations[initialization.ID()]
+		var transactionID model.IngestTransactionID
+		if initializationRecord != nil {
+			for candidate := range initializationRecord.transactions {
+				transactionID = candidate
+				break
+			}
+		}
+		store.transactionMu.Unlock()
+		if transactionID.IsZero() {
+			return errors.New("reserved transaction was not registered")
+		}
+		reserved <- transactionID
+		<-release
+		return nil
+	}
+
+	type beginResult struct {
+		outcome model.IngestBeginOutcome
+		err     error
+	}
+	done := make(chan beginResult, 1)
+	go func() {
+		outcome, err := store.BeginIngest(context.Background(), initialization.ID())
+		done <- beginResult{outcome: outcome, err: err}
+	}()
+	transactionID := <-reserved
+
+	readerStarted := make(chan struct{})
+	stopReader := make(chan struct{})
+	readerDone := make(chan struct{})
+	go func() {
+		defer close(readerDone)
+		first := true
+		for {
+			select {
+			case <-stopReader:
+				return
+			default:
+			}
+			store.transactionMu.Lock()
+			record := store.ingestTransactions[transactionID]
+			if record != nil {
+				_ = record.baseline.RefPresent
+				if record.quarantine != nil {
+					_ = record.quarantine.path
+				}
+			}
+			store.transactionMu.Unlock()
+			if first {
+				close(readerStarted)
+				first = false
+			}
+			runtime.Gosched()
+		}
+	}()
+	<-readerStarted
+	close(release)
+	result := <-done
+	close(stopReader)
+	<-readerDone
+	if result.err != nil || result.outcome.Lifecycle != model.IngestLifecycleActive {
+		t.Fatalf("BeginIngest with concurrent record reader: lifecycle=%s err=%v",
+			result.outcome.Lifecycle, result.err)
+	}
+	abortPhase6Ingest(t, store, initialization, result.outcome.TransactionID)
+}
+
 func testBeginIngestSetupUnwind(t *testing.T, stage string) {
 	t.Helper()
 	store, initialization, _ := newPhase6IngestStore(t)
