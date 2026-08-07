@@ -53,7 +53,37 @@ if [ "$(GOTOOLCHAIN=local go env GOHOSTOS)" != darwin ] || [ "$(GOTOOLCHAIN=loca
   blocked 'native Darwin host and target are both required'
 fi
 
-filesystem=$(stat -f '%T' "$repo_root" 2>/dev/null || printf unknown)
+mounted_filesystem() {
+  local df_path diskutil_path plutil_path mount_point plist detected
+  df_path=$(command -v df 2>/dev/null) || {
+    printf 'unknown\n'
+    return
+  }
+  diskutil_path=$(command -v diskutil 2>/dev/null) || {
+    printf 'unknown\n'
+    return
+  }
+  plutil_path=$(command -v plutil 2>/dev/null) || {
+    printf 'unknown\n'
+    return
+  }
+  mount_point=$("$df_path" -P "$repo_root" 2>/dev/null | awk 'NR == 2 { line=$0; sub(/^.*[[:space:]][0-9]+%[[:space:]]+/, "", line); print line; exit }')
+  if [ -z "$mount_point" ]; then
+    printf 'unknown\n'
+    return
+  fi
+  plist=$("$diskutil_path" info -plist "$mount_point" 2>/dev/null) || {
+    printf 'unknown\n'
+    return
+  }
+  detected=$(printf '%s' "$plist" | "$plutil_path" -extract FilesystemType raw -o - - 2>/dev/null) || detected=
+  case "$detected" in
+    ''|*[![:alnum:]._+-]*) printf 'unknown\n' ;;
+    *) printf '%s\n' "$detected" ;;
+  esac
+}
+
+filesystem=$(mounted_filesystem)
 printf 'implementation_sha: %s\n' "$actual_sha"
 printf 'observed_at_utc: %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 printf 'native_os: macOS %s\n' "$(sw_vers -productVersion 2>/dev/null || uname -r)"
