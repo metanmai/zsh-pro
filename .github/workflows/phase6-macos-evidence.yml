@@ -1,0 +1,39 @@
+name: Phase 6 macOS symlink cleanup probe
+
+on:
+  push:
+    branches:
+      - agent/phase6-macos-evidence
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-runtime:
+    runs-on: macos-14
+    steps:
+      - name: Check out probe source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
+      - name: Set up the committed Go toolchain
+        uses: actions/setup-go@v5
+        with:
+          go-version: 1.25.0
+
+      - name: Run native symlink cleanup probe
+        shell: bash
+        run: |
+          set -o pipefail
+          GOTOOLCHAIN=local go test ./core/store -run '^TestDarwinQuarantineSymlinkDescriptorProbe$' -count=1 -v 2>&1 | tee "$RUNNER_TEMP/phase6-macos-symlink-probe-output.txt"
+
+      - name: Upload unedited probe output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase6-macos-symlink-probe-output
+          path: ${{ runner.temp }}/phase6-macos-symlink-probe-output.txt
+          if-no-files-found: error

@@ -68,6 +68,41 @@ func TestDarwinQuarantineCleanupRealSymlink(t *testing.T) {
 	})
 }
 
+func TestDarwinQuarantineSymlinkDescriptorProbe(t *testing.T) {
+	store, initialization, _ := newPhase6IngestStore(t)
+	begin := beginPhase6Ingest(t, store, initialization)
+	store.transactionMu.Lock()
+	record := store.ingestTransactions[begin.TransactionID]
+	quarantine := record.quarantine
+	store.transactionMu.Unlock()
+	if quarantine == nil || quarantine.root == nil {
+		t.Fatal("missing test quarantine root")
+	}
+	if err := os.Symlink("owned-target", filepath.Join(quarantine.path, "link")); err != nil {
+		t.Fatal(err)
+	}
+	original, err := quarantine.root.Lstat("link")
+	if err != nil {
+		t.Fatal(err)
+	}
+	link, err := openAuthenticatedQuarantineSymlink(quarantine.root, "link")
+	if err != nil {
+		t.Fatalf("open link: %v", err)
+	}
+	opened, err := link.Stat()
+	if err != nil {
+		_ = link.Close()
+		t.Fatalf("stat link: %v", err)
+	}
+	t.Logf("lstat mode=%#o stat mode=%#o same=%t", original.Mode(), opened.Mode(), sameQuarantineEntry(original, opened))
+	if err := link.Close(); err != nil {
+		t.Fatalf("close link: %v", err)
+	}
+	if err := quarantine.root.Remove("link"); err != nil {
+		t.Fatalf("remove link after close: %v", err)
+	}
+}
+
 func TestDarwinQuarantineCleanupRealReplacementBeforeFinalCheckMatrix(t *testing.T) {
 	for _, kind := range []string{"file", "symlink", "directory"} {
 		t.Run(kind, func(t *testing.T) {
