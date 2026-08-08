@@ -1,30 +1,30 @@
-implementation_sha: c2df26dfc695227c39f6620cd76f47efac185244
-observed_at_utc: 2026-08-08T19:08:33Z
+implementation_sha: 1a83446b5911e65137f1c4eba37d84914dee96d9
+observed_at_utc: 2026-08-08T19:17:48Z
 native_os: macOS 14.8.7
 native_arch: arm64
 filesystem: apfs
 go_toolchain: local
 go_env_goversion: go1.25.0
-exact_command: GOTOOLCHAIN=local scripts/verify-phase06-macos-runtime.sh c2df26dfc695227c39f6620cd76f47efac185244
+exact_command: GOTOOLCHAIN=local scripts/verify-phase06-macos-runtime.sh 1a83446b5911e65137f1c4eba37d84914dee96d9
 ok  	zsh-pro/core/cli	0.006s
 exchange: PASS
-ok  	zsh-pro/core/cli	0.006s
+ok  	zsh-pro/core/cli	0.005s
 no_replace_absent: PASS
-ok  	zsh-pro/core/cli	0.006s
+ok  	zsh-pro/core/cli	0.008s
 no_replace_late_target: PASS
-ok  	zsh-pro/core/store	0.096s
+ok  	zsh-pro/core/store	0.097s
 cleanup_capability_supported: PASS
-ok  	zsh-pro/core/store	0.055s
+ok  	zsh-pro/core/store	0.051s
 cleanup_top_level: PASS
-ok  	zsh-pro/core/store	0.066s
+ok  	zsh-pro/core/store	0.054s
 cleanup_nested_file: PASS
-ok  	zsh-pro/core/store	0.059s
+ok  	zsh-pro/core/store	0.055s
 cleanup_nested_directory: PASS
-ok  	zsh-pro/core/store	0.052s
+ok  	zsh-pro/core/store	0.073s
 cleanup_symlink: PASS
-ok  	zsh-pro/core/store	0.183s
+ok  	zsh-pro/core/store	0.241s
 cleanup_replacement_before: PASS
-ok  	zsh-pro/core/store	0.184s
+ok  	zsh-pro/core/store	0.183s
 cleanup_replacement_after: PASS
 cleanup_capability: supported
 status: PASS
