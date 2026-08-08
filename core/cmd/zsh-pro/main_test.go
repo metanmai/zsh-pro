@@ -1388,13 +1388,20 @@ func TestMainIngestAndActivationWithOSKeychains(t *testing.T) {
 			fixture := newPhase6BuiltFixture(t)
 			statePath, logPath := fixture.installFakeOSKeychain(t, backend)
 
-			encoded, err := fixture.run("ingest", "--json")
+			human, err := fixture.run("ingest")
 			if err != nil {
 				log, logErr := os.ReadFile(logPath)
 				if logErr != nil || bytes.Contains(log, []byte(fixture.secret)) {
 					t.Fatal("keychain-backed ingest failed without safe backend diagnostics")
 				}
-				t.Fatalf("keychain-backed ingest failed after backend calls %q", log)
+				if human == "" {
+					t.Fatalf("keychain-backed ingest failed after backend calls %q without safe command output", log)
+				}
+				t.Fatalf("keychain-backed ingest failed after backend calls %q: %s", log, human)
+			}
+			encoded, err := fixture.run("ingest", "--json")
+			if err != nil {
+				t.Fatal("second keychain-backed ingest failed")
 			}
 			result := decodePhase6IngestResult(t, encoded)
 			if !result.OK || !result.ProfileCommitted || !result.StartupInstalled || result.RecoveryRequired {
