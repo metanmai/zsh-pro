@@ -1,0 +1,30 @@
+implementation_sha: c2df26dfc695227c39f6620cd76f47efac185244
+observed_at_utc: 2026-08-08T19:08:33Z
+native_os: macOS 14.8.7
+native_arch: arm64
+filesystem: apfs
+go_toolchain: local
+go_env_goversion: go1.25.0
+exact_command: GOTOOLCHAIN=local scripts/verify-phase06-macos-runtime.sh c2df26dfc695227c39f6620cd76f47efac185244
+ok  	zsh-pro/core/cli	0.006s
+exchange: PASS
+ok  	zsh-pro/core/cli	0.006s
+no_replace_absent: PASS
+ok  	zsh-pro/core/cli	0.006s
+no_replace_late_target: PASS
+ok  	zsh-pro/core/store	0.096s
+cleanup_capability_supported: PASS
+ok  	zsh-pro/core/store	0.055s
+cleanup_top_level: PASS
+ok  	zsh-pro/core/store	0.066s
+cleanup_nested_file: PASS
+ok  	zsh-pro/core/store	0.059s
+cleanup_nested_directory: PASS
+ok  	zsh-pro/core/store	0.052s
+cleanup_symlink: PASS
+ok  	zsh-pro/core/store	0.183s
+cleanup_replacement_before: PASS
+ok  	zsh-pro/core/store	0.184s
+cleanup_replacement_after: PASS
+cleanup_capability: supported
+status: PASS
