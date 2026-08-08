@@ -1084,6 +1084,7 @@ type phase6BuiltFixture struct {
 	storeRoot         string
 	target            string
 	zshPath           string
+	toolDir           string
 	secret            string
 	sourceTemplate    []byte
 	source            []byte
@@ -1376,6 +1377,47 @@ func TestMainIngestSecretBehaviorWithoutDisclosure(t *testing.T) {
 	}
 }
 
+// The normal Phase 6 fixture intentionally proves the portable file-vault
+// fallback. This independent built-binary proof puts each production OS
+// keychain executable on PATH, then exercises the ingest snapshot/store path
+// and emit-time SecretRef resolution without allowing the raw secret into test
+// diagnostics or the fake backend's persisted state.
+func TestMainIngestAndActivationWithOSKeychains(t *testing.T) {
+	for _, backend := range []string{"security", "secret-tool"} {
+		t.Run(backend, func(t *testing.T) {
+			fixture := newPhase6BuiltFixture(t)
+			statePath := fixture.installFakeOSKeychain(t, backend)
+
+			encoded, err := fixture.run("ingest", "--json")
+			if err != nil {
+				t.Fatal("keychain-backed ingest failed")
+			}
+			result := decodePhase6IngestResult(t, encoded)
+			if !result.OK || !result.ProfileCommitted || !result.StartupInstalled || result.RecoveryRequired {
+				t.Fatalf("keychain-backed ingest result was not committed and installed: %#v", result)
+			}
+			if !phase6ProfileHasKeychainSecret(fixture.readMainProfile(t)) {
+				t.Fatal("keychain-backed ingest did not persist a keychain SecretRef")
+			}
+
+			emitted, err := fixture.runRaw("emit", "apply", "main")
+			if err != nil {
+				t.Fatal("keychain-backed activation emission failed")
+			}
+			if !bytes.Contains(emitted, []byte(fixture.secret)) {
+				t.Fatal("keychain-backed activation did not resolve the stored secret")
+			}
+			stored, err := os.ReadFile(statePath)
+			if err != nil {
+				t.Fatal("read fake keychain state")
+			}
+			if !bytes.HasPrefix(stored, []byte("zsh-pro:v1:")) || bytes.Contains(stored, []byte(fixture.secret)) {
+				t.Fatal("fake keychain did not retain only the versioned transport")
+			}
+		})
+	}
+}
+
 func TestMainIngestAllowsOnlyExactLoaderSymbols(t *testing.T) {
 	fixture := newPhase6BuiltFixture(t)
 	pristineParameters, pristineFunctions := fixture.symbolSnapshot(t)
@@ -1483,7 +1525,7 @@ func newPhase6BuiltFixture(t *testing.T) *phase6BuiltFixture {
 		"PHASE6_DYNAMIC_SOURCE=dynamic-runtime-value",
 	}
 	return &phase6BuiltFixture{
-		binary: buildInstalledBinary(t), home: home, dataHome: dataHome,
+		binary: buildInstalledBinary(t), home: home, dataHome: dataHome, toolDir: toolDir,
 		storeRoot: filepath.Join(dataHome, "zsh-pro"), target: target, zshPath: zshPath,
 		secret: secret, sourceTemplate: sourceTemplate, source: source, expectedInstalled: expected,
 		env: env, executionCanary: executionCanary, subprocessCounter: subprocessCounter,
@@ -1527,14 +1569,78 @@ func (fixture *phase6BuiltFixture) replaceTargetFromFixture(t *testing.T, name s
 }
 
 func (fixture *phase6BuiltFixture) run(args ...string) (string, error) {
-	cmd := exec.Command(fixture.binary, args...)
-	cmd.Env = fixture.env
-	out, err := cmd.CombinedOutput()
+	out, err := fixture.runRaw(args...)
 	if bytes.Contains(out, []byte(fixture.secret)) {
 		return "", errors.New("command output disclosed the runtime literal")
 	}
 	return string(out), err
 }
+
+func (fixture *phase6BuiltFixture) runRaw(args ...string) ([]byte, error) {
+	cmd := exec.Command(fixture.binary, args...)
+	cmd.Env = fixture.env
+	return cmd.CombinedOutput()
+}
+
+func (fixture *phase6BuiltFixture) installFakeOSKeychain(t *testing.T, binary string) string {
+	t.Helper()
+	statePath := filepath.Join(t.TempDir(), "keychain-state")
+	if err := os.WriteFile(filepath.Join(fixture.toolDir, binary), []byte(fakePhase6OSKeychainProgram), 0o700); err != nil {
+		t.Fatal("write fake keychain executable")
+	}
+	fixture.env = phase6ReplaceEnv(fixture.env, map[string]string{
+		"PHASE6_KEYCHAIN_STATE": statePath,
+		"PHASE6_KEYCHAIN_KIND":  binary,
+	})
+	return statePath
+}
+
+func phase6ProfileHasKeychainSecret(profile model.Profile) bool {
+	for _, entry := range profile.Entries {
+		if entry.Secret != nil && entry.Secret.Kind == model.SecretRefKeychain {
+			return true
+		}
+	}
+	return false
+}
+
+const fakePhase6OSKeychainProgram = `#!/bin/sh
+set -eu
+
+missing() {
+	if [ ! -f "$PHASE6_KEYCHAIN_STATE" ]; then
+		if [ "$PHASE6_KEYCHAIN_KIND" = security ]; then exit 44; fi
+		exit 1
+	fi
+}
+
+case "$1" in
+	add-generic-password)
+		IFS= read -r stored || true
+		IFS= read -r confirmation || true
+		[ "$stored" = "$confirmation" ] || exit 64
+		printf '%s' "$stored" >"$PHASE6_KEYCHAIN_STATE"
+		;;
+	find-generic-password)
+		missing
+		IFS= read -r stored <"$PHASE6_KEYCHAIN_STATE" || true
+		printf '%s\n' "$stored"
+		;;
+	store)
+		IFS= read -r stored || true
+		printf '%s' "$stored" >"$PHASE6_KEYCHAIN_STATE"
+		;;
+	lookup)
+		missing
+		IFS= read -r stored <"$PHASE6_KEYCHAIN_STATE" || true
+		printf '%s\n' "$stored"
+		;;
+	delete-generic-password|clear)
+		: # Not needed by this committed-ingest fixture.
+		;;
+	*) exit 64 ;;
+esac
+`
 
 func decodePhase6IngestResult(t *testing.T, encoded string) dto.IngestResult {
 	t.Helper()
