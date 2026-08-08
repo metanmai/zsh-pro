@@ -108,8 +108,9 @@ func TestNewOSKeychainDriverNonNil(t *testing.T) {
 }
 
 // TestMacOSKeychainRoundTrip exercises the real `security` backend when present
-// (skipped otherwise). It Store/Retrieve/Delete round-trips a test-scoped key and
-// cleans up via t.Cleanup so it never leaves an entry in the developer's keychain.
+// (skipped otherwise). Its table mirrors the transport edge cases covered by the
+// fake executable tests and cleans up via t.Cleanup so it never leaves an entry in
+// the developer's keychain.
 func TestMacOSKeychainRoundTrip(t *testing.T) {
 	if _, err := exec.LookPath("security"); err != nil {
 		t.Skip("security not installed; skipping macOS keychain round-trip")
@@ -118,18 +119,30 @@ func TestMacOSKeychainRoundTrip(t *testing.T) {
 	key := "ZSHPRO_TEST_" + t.Name()
 	t.Cleanup(func() { _ = m.Delete(key) })
 
-	if err := m.Store(key, "sk-roundtrip"); err != nil {
-		t.Fatalf("Store: %v", err)
-	}
-	got, err := m.Retrieve(key)
-	if err != nil {
-		t.Fatalf("Retrieve: %v", err)
-	}
-	if got != "sk-roundtrip" {
-		t.Errorf("Retrieve = %q, want sk-roundtrip", got)
+	for _, test := range []struct {
+		name  string
+		value string
+	}{
+		{name: "existing", value: "sk-roundtrip"},
+		{name: "empty", value: ""},
+		{name: "trailing newline", value: "tail\n"},
+		{name: "multiline", value: "line-one\nline-two\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := m.Store(key, test.value); err != nil {
+				t.Fatal("Store returned an error")
+			}
+			got, err := m.Retrieve(key)
+			if err != nil {
+				t.Fatal("Retrieve returned an error")
+			}
+			if got != test.value {
+				t.Error("Retrieve did not preserve the stored bytes")
+			}
+		})
 	}
 	if err := m.Delete(key); err != nil {
-		t.Fatalf("Delete: %v", err)
+		t.Fatal("Delete returned an error")
 	}
 }
 
@@ -148,8 +161,8 @@ func TestMacOSKeychainNotFoundIsPhrased(t *testing.T) {
 	if err == nil {
 		t.Fatal("Retrieve(absent) = nil error, want a not-found error")
 	}
-	if !errors.Is(err, ErrSecretBackendUnavailable) {
-		t.Errorf("Retrieve(absent) = %v, want ErrSecretBackendUnavailable", err)
+	if !errors.Is(err, ErrSecretNotFound) {
+		t.Errorf("Retrieve(absent) = %v, want ErrSecretNotFound", err)
 	}
 	if strings.Contains(err.Error(), "SecKeychain") {
 		t.Errorf("returned error leaked raw keychain stderr: %q", err.Error())
