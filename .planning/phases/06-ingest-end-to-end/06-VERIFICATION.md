@@ -1,6 +1,6 @@
 ---
 phase: 06-ingest-end-to-end
-verified: 2026-08-08T19:30:23Z
+verified: 2026-08-08T20:54:52Z
 status: passed
 score: 5/5 must-haves verified
 behavior_unverified: 0
@@ -11,9 +11,9 @@ overrides_applied: 0
 
 **Phase Goal:** Polish the on-ramp last, against the final IR shape. Compose the already-built pieces into the full path: parse a real `~/.zshrc` → classify (declarative/imperative split) → partial-eval → commit the complete redacted, source-ordered profile to the baseline branch — while preserving every preexisting startup byte outside the canonical managed loader region and warning about post-END appends.
 
-**Verified:** 2026-08-08T19:30:23Z
-**Status:** passed
-**Re-verification:** No — initial verification
+**Verified:** 2026-08-08T20:54:52Z  
+**Status:** passed  
+**Re-verification:** No — the prior report contained no `gaps:` section, so this is an independent initial-mode check.
 
 ## Goal Achievement
 
@@ -21,11 +21,11 @@ overrides_applied: 0
 
 | # | Truth | Status | Evidence |
 | --- | --- | --- | --- |
-| 1 | Ingest commits the complete redacted, source-ordered Profile to `main`; `EffectiveManaged` is only a projection and no source statement is silently dropped or reordered. | ✓ VERIFIED | `CLI.Run` dispatches `ingest` to `runIngestCommand` (`core/cli/cli.go:74-75`); the controller prepares the original source, calls `provider.Parse` then `ir.Build`, and commits that full Profile (`core/cli/ingest.go:222-231,324-328`). The exact 12-selector real-provider/real-Store E2E matrix passed, including `TestIngestE2EStoreReadReturnsCompleteOrderedProfile`, `...RegeneratePreservesNonSecretOrderTextAndSemantics`, and the accounting/order tests. |
-| 2 | Detected literal secrets are excluded from committed baseline objects by default and the user is told exactly what was withheld. | ✓ VERIFIED | `CommitIngest` invokes `prepareSecrets` before candidate persistence (`core/store/store.go:793-826`); redaction replaces literal entries with inert `SecretRef` metadata and records name/line only (`core/store/secret.go:83-199`). The DTO has no value field (`core/dto/ingest.go:3-25`) and the controller renders only name/line (`core/cli/ingest.go:363,471-475,583-584`). The E2E all-object and ambiguity-quarantine tests, plus built-binary secret-behavior test, passed. |
-| 3 | Adoption alters only exact loader-marker regions, is idempotent, preserves every outside byte in order, and warns without clobbering post-END content. | ✓ VERIFIED | `prepareIngestInstallAt` supplies the parse-eligible source and canonical candidate before promotion (`core/cli/ingest.go:222-248`); promotion occurs once before Store commit and finalization never rewrites the target (`core/cli/ingest.go:288,324-376`). The built-binary matrix passed `TestMainIngestExpectedInstalledAndOutsideBytes`, `...Idempotent`, and `...AppendWarningPreservesAndPersists`. |
-| 4 | Store-read regeneration, activation projection/SecretRef resolution, and actual built-binary `zsh -f` startup proof all hold; installed startup adds no subprocess. | ✓ VERIFIED | The real-Store E2E matrix passed regeneration, activation-only, resolver, and unmanaged-canary tests. The built-binary matrix passed `TestMainIngestActualInstalledStartupEquivalent`, `...OrderSensitiveDefinitionBeforeUse`, `...AllowsOnlyExactLoaderSymbols`, and `...StartupHasNoSubprocess`. Those tests build and invoke the binary (`core/cmd/zsh-pro/main_test.go:892,1530`), source pristine/installed targets with `zsh -f` (`:1645`), compare observable state, and fail on the stubbed subprocess counter (`:1657`). |
-| 5 | **PROF-03:** end-to-end ingest reuses secret detection so committed profiles exclude literals and report withheld entries. | ✓ VERIFIED | The same tested Store redaction → typed `WithheldReport` → value-free CLI output path proves the requirement. `TestIngestE2ESecretAllObjectDatabases` covers reachable, unreachable, packed, and dynamically discovered retained-quarantine objects; `TestIngestE2ESecretAbsentAfterUpdateRefObservationAmbiguity` covers the recovery boundary; the actual binary test verifies behavior without disclosure. |
+| 1 | Ingest commits the complete redacted, source-ordered Profile to `main`; `EffectiveManaged` is only a projection, with no dropped or reordered source statement. | ✓ VERIFIED | `CLI.Run` dispatches `ingest` to `runIngestCommand` ([`core/cli/cli.go:74`](../../core/cli/cli.go)); the controller prepares the original source, calls `provider.Parse` then `ir.Build`, and passes that complete Profile to `CommitIngest` ([`core/cli/ingest.go:222`](../../core/cli/ingest.go), [`:227`](../../core/cli/ingest.go), [`:231`](../../core/cli/ingest.go), [`:324`](../../core/cli/ingest.go)). The independently authored-provenance real-provider/real-Store E2E matrix passed, including `TestIngestE2EStoreReadReturnsCompleteOrderedProfile` and `TestIngestE2ERegeneratePreservesNonSecretOrderTextAndSemantics`. |
+| 2 | Literal secrets are excluded from committed baseline objects by default and the user is told exactly what was withheld. | ✓ VERIFIED | `CommitIngest` invokes `prepareSecrets` before candidate creation ([`core/store/store.go:793`](../../core/store/store.go), [`:816`](../../core/store/store.go)); redaction replaces literal `Text`, `Value`, and `RuntimeValue` with inert `SecretRef` metadata and only retains name/line report fields ([`core/store/secret.go:100`](../../core/store/secret.go), [`:185`](../../core/store/secret.go), [`:199`](../../core/store/secret.go)). The E2E object scan and the built-binary no-disclosure test both passed. |
+| 3 | Adoption changes only exact loader-marker regions, is idempotent, preserves all outside bytes in order, and warns rather than clobbers post-END content. | ✓ VERIFIED | `prepareIngestInstallAt` derives both eligible source and the canonical candidate from the same original snapshot ([`core/cli/install_transaction.go:213`](../../core/cli/install_transaction.go)); the controller promotes loader then target once before Store commit and finalizes that transaction without another target write ([`core/cli/ingest.go:283`](../../core/cli/ingest.go), [`:288`](../../core/cli/ingest.go), [`:324`](../../core/cli/ingest.go), [`:365`](../../core/cli/ingest.go)). Named built-binary tests passed for outside bytes, idempotency, exact one-promotion ordering, and post-END persistence/warning. |
+| 4 | Store-read regeneration, effective-managed activation/SecretRef resolution, and actual installed `zsh -f` startup equivalence all hold; startup adds no subprocess. | ✓ VERIFIED | `ir.Regenerate` keeps stored entry order and emits unmanaged text verbatim ([`core/ir/regen.go:22`](../../core/ir/regen.go)); `activate.Build` filters only ineffective/unrepresentable entries ([`core/activate/builder.go:16`](../../core/activate/builder.go)). The exact E2E matrix passed activation/SecretRef/inert-canary tests, and the built-binary matrix passed actual-installed startup, order-sensitive definition-before-use, exact loader-symbol, and no-subprocess tests. |
+| 5 | **PROF-03:** end-to-end ingest reuses secret detection so committed profiles exclude literals and report withheld entries. | ✓ VERIFIED | This is exercised end-to-end rather than inferred from types: Store-owned pre-object redaction, value-free DTO/rendering ([`core/dto/ingest.go:3`](../../core/dto/ingest.go)), exhaustive final/retained-quarantine object scans, and the built-binary secret-behavior test all passed. |
 
 **Score:** 5/5 truths verified (0 present, behavior-unverified)
 
@@ -33,76 +33,74 @@ overrides_applied: 0
 
 | Artifact | Expected | Status | Details |
 | --- | --- | --- | --- |
-| `core/cli/ingest.go` | Strict orchestration from source snapshot through full-Profile commit and one startup promotion | ✓ VERIFIED | Substantive controller with Parse → Build → Commit ordering, filesystem-first compensation, safe output, and no source execution path; wired from `CLI.Run`. |
-| `core/store/store.go`, `core/store/install_transaction.go`, `core/store/secret.go`, `core/store/git.go` | Main-bound transaction, pre-object redaction, hermetic candidate Git environment | ✓ VERIFIED | `BeginIngest`/`AbortIngest` are intentionally implemented in `install_transaction.go:137,398`, while `CommitIngest` is in `store.go:793`; all are package methods on the same `Store` and are invoked by the controller. Hermetic Git environment disables system/global config and configures private objects/alternates (`git.go:115-126`). |
-| `core/cli/install.go`, `core/cli/install_transaction.go` | Exact-marker candidate and authenticated one-promotion filesystem transition | ✓ VERIFIED | Called from ingest preparation/promotion and exercised by built-binary outside-byte/idempotence/append tests. |
-| `core/cli/ingest_e2e_test.go` | Real provider/Store complete-profile, activation, privacy, and no-execution evidence | ✓ VERIFIED | Uses actual zsh provider, Git-backed Store, secret backend, controller, and dynamically generated literal; the exact 12-selector matrix passed. |
-| `core/cmd/zsh-pro/main_test.go` | Built-binary actual-installed-startup oracle | ✓ VERIFIED | Builds the binary, runs `ingest`, then uses isolated `zsh -f` snapshots, an order-sensitive fixture, exact loader-symbol allowlist, and a subprocess-counter trap. Exact 13-selector matrix passed. |
-| `scripts/verify-phase06-macos-runtime.sh` and `06-MACOS-RUNTIME-EVIDENCE.md` | Native Darwin atomic and cleanup evidence | ✓ VERIFIED | Regression script passed locally. GitHub Actions run `31274061615` succeeded on macOS 14 at workflow SHA `aa0f996`; its workflow explicitly checks out implementation `1a83446b`. Evidence commit `8774bc1` is later, with no `core`, module, or verifier-script diff from the implementation through `HEAD`; sidecar SHA-256 is `b35aa4d620e07e417bc038262a3dbdece745f383e84bd48165d1b2d445cf9b90`, matching the evidence record. |
+| `core/cli/ingest.go` | Source → complete Profile → one promotion → Store transaction controller | ✓ VERIFIED | Exists and is substantive (597 lines); wired from `CLI.Run`; its target/source/Profile/Store data flow is exercised by the exact CLI E2E matrix. |
+| `core/store/store.go`, `core/store/install_transaction.go`, `core/store/secret.go`, `core/store/git.go` | Main-bound commit, redaction before objects, and authenticated transaction state | ✓ VERIFIED | `CommitIngest` is in `store.go`; `BeginIngest`/`AbortIngest` are intentionally factored into the substantive companion `install_transaction.go` ([`core/store/install_transaction.go:137`](../../core/store/install_transaction.go), [`:398`](../../core/store/install_transaction.go)) and are reached through the injected transaction interface. |
+| `core/cli/install.go`, `core/cli/install_transaction.go`, `core/cli/atomic_rename*.go` | Exact-marker candidate and one guarded filesystem promotion | ✓ VERIFIED | Present, substantive, and reached by the controller. Named built-binary and transaction tests demonstrate marker fidelity, idempotence, and target-promotion cardinality. |
+| `core/cmd/zsh-pro/main.go` | One concrete Store/provider composition root | ✓ VERIFIED | `cliStore` is constructed once and captured by the initializer ([`core/cmd/zsh-pro/main.go:67`](../../core/cmd/zsh-pro/main.go), [`:74`](../../core/cmd/zsh-pro/main.go), [`:92`](../../core/cmd/zsh-pro/main.go)); the real composition test is included in the passing full suite. |
+| `core/cli/ingest_e2e_test.go`, `core/cmd/zsh-pro/main_test.go` | Real Store/provider and built-binary behavioral evidence | ✓ VERIFIED | Both are substantive, runnable tests. The exact 12-selector and 13-selector matrices were independently enumerated and run uncached. |
+| `scripts/verify-phase06-macos-runtime.sh` plus macOS evidence record | Native Darwin atomic/cleanup proof at implementation SHA | ✓ VERIFIED | The local shell regression passed; the evidence binds a PASS native macOS 14.8.7 arm64 run at `2443a0e`, records all atomic/cleanup rows, and its sidecar SHA-256 matches (`6cff…d9e9b`). `2443a0e` is an ancestor of the later evidence commit `405f8d0`; no implementation or verifier-script file changed between them. |
 
-`verify.artifacts` reported a static pattern miss for `core/store/store.go` because that plan listed `BeginIngest` in that file. Manual L1/L2/L3 inspection shows the public method was factored into the substantive companion `core/store/install_transaction.go` in the same package and is wired to the controller; this is not an implementation or behavior gap.
+`verify.artifacts` found 35/36 static artifacts. Its sole miss was the Plan 06-01 text pattern `BeginIngest` in `core/store/store.go`; the public method is deliberately in the companion file above, in the same Store package, is implemented and wired. This is a plan-path pattern mismatch, not a missing implementation.
 
 ### Key Link Verification
 
 | From | To | Via | Status | Details |
 | --- | --- | --- | --- | --- |
-| `CLI.Run` | Parse → Build → `CommitIngest(main)` | `runIngestCommand` / `runIngestWithSeams` | ✓ WIRED | Dispatch at `core/cli/cli.go:74-75`; source parsing/build at `ingest.go:222-231`; complete Profile commit at `:324-328`. |
-| Store redaction | Committed Git profile and user output | `prepareSecrets` + `WithheldReport` | ✓ WIRED | Redaction precedes commit (`store.go:820-826`), result transfers to DTO (`ingest.go:363,471-475`), and renderer emits name/line only. |
-| Original snapshot | One promoted installed target | prepared candidate → `promote` → `CommitIngest` → `Finalize` | ✓ WIRED | Target promotion is before commit (`ingest.go:288,324`) and finalization follows committed status (`:365-376`); built-binary AST/runtime test verifies one promotion and no post-commit rewrite. |
-| `Store.Read(main)` | Regenerate / activation / runtime emitter | full Profile and `EffectiveManaged` projection | ✓ WIRED | E2E tests pass the read profile through `ir.Regenerate`, `activate.Build`, and the real emitter, asserting order, inert unmanaged entries, and resolved SecretRefs. |
-| Pristine target | Actual installed target | built binary + isolated `zsh -f` snapshots | ✓ WIRED | `TestMainIngestActualInstalledStartupEquivalent` and adjacent exact-symbol/no-subprocess tests passed against the actual installed temporary `.zshrc`. |
+| `CLI.Run` | Parse → Build → `CommitIngest(main)` | `runIngestCommand` / `runIngestWithSeams` | ✓ WIRED | Dispatch, static parsing, full Profile build, and commit call are directly present and exercised by real provider/Store E2E tests. |
+| Store redaction | Git objects and user output | `prepareSecrets` + value-free `WithheldReport`/DTO | ✓ WIRED | Redaction precedes candidate preparation; all-object scans prove literals absent, while output tests prove only name/line metadata can render. |
+| Original snapshot | One installed target transition | canonical candidate → loader promotion → target promotion → commit → finalize | ✓ WIRED | The controller order is explicit and `TestMainIngestPromotesTargetExactlyOnce` verifies one target `promote`, then commit, then finalize. |
+| `Store.Read(main)` | Regenerate / activation / runtime emission | full Profile then `EffectiveManaged` projection | ✓ WIRED | Regeneration, activation, resolver, and inert-canary named tests passed against the Store-read Profile. |
+| Pristine target | Actual installed target | built binary + isolated `zsh -f` snapshots | ✓ WIRED | The test sources the actual modified target, compares its structured runtime snapshot to pristine, checks order-sensitive behavior, exact outside bytes, and subprocess counter. |
+
+The generic key-link helper reports zero parseable links because all Phase 6 plan links use semantic component names rather than source-file paths. The connections above were therefore traced manually in source and exercised behaviorally.
 
 ### Data-Flow Trace (Level 4)
 
-| Artifact | Data | Source | Produces Real Data | Status |
+| Artifact | Data variable | Source | Produces real data | Status |
 | --- | --- | --- | --- | --- |
-| Ingest controller | `profile` | Real target bytes → `provider.Parse` → `ir.Build` | Yes — actual profile is committed then read from the Git Store in E2E | ✓ FLOWING |
-| Secret path | `WithheldReport` / redacted Profile | `prepareSecrets` and Store backend | Yes — generated runtime literal is redacted before object creation and reflected as name/line output | ✓ FLOWING |
-| Startup path | installed `.zshrc` | Original exact snapshot plus canonical loader candidate | Yes — built binary writes target and `zsh -f` sources that path | ✓ FLOWING |
+| Ingest controller | `profile` | original target bytes → eligible source → `provider.Parse` → `ir.Build` | Real zsh provider and Git Store in passing E2E test | ✓ FLOWING |
+| Secret path | redacted Profile and `WithheldReport` | Store `prepareSecrets` before object creation | Runtime-generated literal is absent from scanned objects/output, but name/line render | ✓ FLOWING |
+| Startup path | installed `.zshrc` | exact original snapshot plus independently authored expected candidate | Actual built binary mutates and then `zsh -f` sources target | ✓ FLOWING |
 
 ### Behavioral Spot-Checks
 
 | Behavior | Command | Result | Status |
 | --- | --- | --- | --- |
-| Built binary preserves bytes/idempotence/startup behavior/order/symbol boundary/no subprocess | Exact 13-name `go test ./core/cmd/zsh-pro -run ... -count=1` selector from 06-05 | `ok` in 5.388s | ✓ PASS |
-| Real provider/Store Profile, regeneration, activation, secret, and no-execution E2E | Exact 12-name `go test ./core/cli -run ... -count=1` selector from 06-05 | `ok` in 2.090s | ✓ PASS |
-| Marker and Store-secret boundary regressions | Focused CLI and Store selectors | both `ok` | ✓ PASS |
-| Touched packages and repository quality gates | `GOTOOLCHAIN=local go test ./core/model ./core/store ./core/cli ./core/cmd/zsh-pro -count=1`; `go vet ./...`; `make check` | all passed; lint reported `0 issues`; `make check` ran full `go test ./...` successfully | ✓ PASS |
-| Native macOS atomic exchange and cleanup | CI run `31274061615`, verifier at exact implementation SHA | completed/success; all exchange, no-replace, capability, top-level/nested/symlink/replacement rows PASS | ✓ PASS |
+| Real provider/Store full-profile, regeneration, activation, privacy, and no-execution behaviors | Exact 12-name `GOTOOLCHAIN=local go test ./core/cli -run '^(…)$' -count=1` selector from 06-05 | `ok zsh-pro/core/cli 1.310s` | ✓ PASS |
+| Built-binary ingest, bytes, idempotency, actual startup, order, secret, and subprocess behaviors | Exact 13-name `GOTOOLCHAIN=local go test ./core/cmd/zsh-pro -run '^(…)$' -count=1` selector from 06-05 | `ok zsh-pro/core/cmd/zsh-pro 5.813s` | ✓ PASS |
+| Workspace quality gate | `GOTOOLCHAIN=local make check` | `go vet ./...`, `golangci-lint run` (0 issues), and `go test ./...` passed | ✓ PASS |
+| Native-evidence regression and binding | `scripts/verify-phase06-macos-runtime_test.sh`; SHA/ancestry/source-diff checks | Script PASS; sidecar hash matched; source unchanged from `2443a0e` through `405f8d0` | ✓ PASS |
 
 ### Probe Execution
 
-Step 7c: SKIPPED — Phase 6 declares no `probe-*.sh` path and the repository has no conventional probe script. The native verifier is not a probe; its regression test and attributable CI execution were both verified above.
+Step 7c: SKIPPED — no conventional `scripts/**/tests/probe-*.sh` exists and no Phase 6 PLAN/SUMMARY declares a probe. The native verifier is a separately tested runtime-evidence script, not a probe.
 
 ### Requirements Coverage
 
 | Requirement | Source Plan | Description | Status | Evidence |
 | --- | --- | --- | --- | --- |
-| PROF-03 | 06-01 through 06-05 | Literal secrets are excluded from the committed profile by default and the user is told what was withheld. | ✓ SATISFIED | Store-before-object redaction, value-free DTO rendering, exhaustive primary/retained-quarantine object scans, and built-binary no-disclosure behavior all passed. |
+| PROF-03 | 06-01 through 06-05 | Detected secrets are excluded from the committed profile by default and the user is told what was withheld. | ✓ SATISFIED | Store-before-object redaction, name/line-only DTO, all reachable/unreachable/packed/retained-quarantine scans, and built-binary no-disclosure behavior passed. |
 
-All five Phase 6 plans declare `PROF-03`; REQUIREMENTS.md maps no additional requirement solely to Phase 6, so there are no orphaned Phase 6 requirements.
+Every Phase 6 plan declares `PROF-03`; `REQUIREMENTS.md` maps no additional requirement solely to Phase 6, so there are no orphaned Phase 6 requirements.
 
 ### Anti-Patterns Found
 
 | File | Line | Pattern | Severity | Impact |
 | --- | --- | --- | --- | --- |
-| `scripts/verify-phase06-macos-runtime_test.sh` | 79 | `mktemp` test fixture directory | ℹ️ Info | Test-only isolated workspace; not a stub or debt marker. |
+| `core/store/secret.go` | 180 | `placeholder` | ℹ️ Info | Intentional inert SecretRef placeholder; the redaction/object-scan tests exercise it. |
+| `core/cli/ingest_e2e_test.go` | 153 | `placeholder` | ℹ️ Info | Independently authored runtime-secret test placeholder; not persisted as the generated literal. |
 
-No `TBD`, `FIXME`, or `XXX` marker was found in the 40 Phase 6 changed `core/` and `scripts/` files. The only `placeholder` matches are intentional inert secret-reference strings and test fixtures, which are exercised by the secret-boundary tests.
+No `TBD`, `FIXME`, or `XXX` marker exists in the 51 Phase 6 changed `core/` and `scripts/` implementation files. Empty-return scan hits are normal Go success/error returns, not user-visible stubs; full and named behavioral tests exercise the affected paths.
 
 ### Human Verification Required
 
-None. This phase has no visual or external interactive flow left unexercised: runtime state transitions are covered by named tests, and the normally unavailable native-Darwin requirement has attributable, exact-SHA CI evidence.
-
-### Informational Notes
-
-- Plan key-link entries use semantic labels instead of source paths, so the generic `verify.key-links` helper cannot parse them. Each required connection above was traced manually in code and exercised by its named behavioral test.
+None. All behavior-dependent roadmap truths have passing named behavioral tests. The otherwise external Darwin requirement has attributable exact-SHA CI evidence with a matching unedited sidecar and an implementation/evidence commit-boundary check.
 
 ### Gaps Summary
 
-No goal-blocking gaps found. The Phase 6 goal and PROF-03 are achieved.
+No goal-blocking gaps found. The Phase 6 goal and PROF-03 are achieved at source SHA `2443a0efbff263c27e0dc2db1bd075af18879d3a`; `HEAD` `405f8d0ee6e707f785d7efed811654a0b2e25657` changes only the macOS evidence files.
 
 ---
 
-_Verified: 2026-08-08T19:30:23Z_
+_Verified: 2026-08-08T20:54:52Z_  
 _Verifier: the agent (gsd-verifier)_
