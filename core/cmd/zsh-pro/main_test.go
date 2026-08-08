@@ -1390,12 +1390,15 @@ func TestMainIngestAndActivationWithOSKeychains(t *testing.T) {
 
 			human, err := fixture.run("ingest")
 			if err != nil {
-				log, logErr := os.ReadFile(logPath)
-				if logErr != nil || bytes.Contains(log, []byte(fixture.secret)) {
-					t.Fatal("keychain-backed ingest failed without safe backend diagnostics")
-				}
 				if human == "" {
-					t.Fatalf("keychain-backed ingest failed after backend calls %q without safe command output", log)
+					t.Fatal("keychain-backed ingest failed without safe command output")
+				}
+				log, logErr := os.ReadFile(logPath)
+				if logErr != nil {
+					t.Fatalf("keychain-backed ingest failed before fake backend execution: %s", human)
+				}
+				if bytes.Contains(log, []byte(fixture.secret)) {
+					t.Fatal("keychain-backed ingest left unsafe backend diagnostics")
 				}
 				t.Fatalf("keychain-backed ingest failed after backend calls %q: %s", log, human)
 			}
