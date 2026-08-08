@@ -39,7 +39,7 @@ Previous-milestone phases are archived. Full detail in [milestones/](milestones/
 - [x] **Phase 3: Git-Backed Store** - Store the IR as a git repo (via the `git` binary) where each branch is a profile; create/list/switch profiles tracked per-terminal, with detected secrets excluded by default (completed 2026-06-27)
 - [x] **Phase 4: Manifest Builder + Emit** - Turn a profile into a reversible `Manifest` (record-and-reverse with a drift guard; PATH as a delta vs captured base) and emit the apply/deactivate zsh code from the one place zsh syntax lives (completed 2026-07-27)
 - [x] **Phase 5: Runtime Loader + CLI + Bootstrap** - Wire the live terminal via a sourced emit-and-source loader and the `checkout`/`activate`/`deactivate`/`list`/`status` verbs, bootstrapped by an idempotent `.zshrc` block that is fail-open and fast (completed 2026-07-30)
-- [ ] **Phase 6: Ingest End-to-End** - Polish the on-ramp: parse a real `~/.zshrc` → classify → partial-eval → regenerate → commit to the baseline branch, against the final IR shape
+- [x] **Phase 6: Ingest End-to-End** - Polish the on-ramp: parse a real `~/.zshrc` → classify → partial-eval → regenerate → commit to the baseline branch, against the final IR shape (completed 2026-08-08)
 
 ## Phase Details
 
@@ -258,7 +258,7 @@ Plans:
   3. First adoption appends the canonical Phase 5 loader region; installed/re-ingest replaces or collapses only exact marker regions. Re-running ingest/install is idempotent, every byte outside those regions remains exact and in order, and post-END appends are warned about rather than clobbered.
   4. Three linked proofs hold: `Store.Read(main) → ir.Regenerate` preserves the full redacted profile's non-secret order/text/semantics; activation applies only `EffectiveManaged` entries and resolves `SecretRef`s; and a built-binary `zsh -f` comparison of the pristine source with the actual installed `.zshrc` is behavior-equivalent apart from exact zsh-pro-owned loader symbols, with no startup subprocess.
 
-**Plans**: 4/5 plans executed
+**Plans**: 5/5 plans executed
 
 Plans:
 **Wave 1**
@@ -279,7 +279,7 @@ Plans:
 
 **Wave 5** *(blocked on Wave 4 completion)*
 
-- [ ] 06-05-PLAN.md — Prove the built binary, real store/provider round trip, all-object secret boundary, no-execution rule, layering, and immutable dependencies
+- [x] 06-05-PLAN.md — Prove the built binary, real store/provider round trip, all-object secret boundary, no-execution rule, layering, and immutable dependencies
 
 ## Progress
 
@@ -293,7 +293,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 | 3. Git-Backed Store | 3/3 | Complete   | 2026-06-27 |
 | 4. Manifest Builder + Emit | 19/19 | Complete    | 2026-07-27 |
 | 5. Runtime Loader + CLI + Bootstrap | 8/8 | Complete    | 2026-07-30 |
-| 6. Ingest End-to-End | 4/5 | In Progress|  |
+| 6. Ingest End-to-End | 5/5 | Complete    | 2026-08-08 |
 
 ## Requirement Coverage
 

@@ -128,6 +128,61 @@ func TestBuiltBinaryInstallRejectsTrailingArgumentsWithoutMutation(t *testing.T)
 	}
 }
 
+// The real composition-root binary supplies context.Background to both commands.
+// A held target lock must therefore fail within the production lock bound before
+// it can mutate the startup target, runtime loader/cache, or profile store.
+func TestBuiltBinaryTargetLockContentionIsBoundedWithoutLaterEffects(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("target-root locking requires Linux or Darwin")
+	}
+	binary := buildZshProBinary(t)
+	for _, row := range []struct {
+		name string
+		args func(string) []string
+	}{
+		{name: "install", args: func(string) []string { return []string{"install"} }},
+		{name: "ingest", args: func(target string) []string { return []string{"ingest", target} }},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			home := t.TempDir()
+			target := filepath.Join(home, ".zshrc")
+			original := []byte("export SAFE=1\n")
+			if err := os.WriteFile(target, original, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			holder := startTargetLockHelperProcess(t, target)
+			defer holder.release(t)
+
+			command := exec.Command(binary, row.args(target)...)
+			command.Env = installBinaryEnv(home)
+			started := time.Now()
+			output, err := command.CombinedOutput()
+			if err == nil {
+				t.Fatalf("held-lock %s unexpectedly succeeded: %s", row.name, output)
+			}
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) || exitErr.ExitCode() != int(model.ExitRuntimeErr) {
+				t.Fatalf("held-lock %s exit = %v, want runtime error; output=%s", row.name, err, output)
+			}
+			if elapsed := time.Since(started); elapsed > targetRootLockAcquisitionLimit+2*time.Second {
+				t.Fatalf("held-lock %s returned after %s, want bounded acquisition", row.name, elapsed)
+			}
+			if got := readTask3Target(t, target); !bytes.Equal(got, original) {
+				t.Fatalf("held-lock %s changed target: %q", row.name, got)
+			}
+			for _, path := range []string{
+				filepath.Join(home, ".zsh-pro"),
+				filepath.Join(home, ".local", "share", "zsh-pro"),
+			} {
+				if _, statErr := os.Lstat(path); !errors.Is(statErr, os.ErrNotExist) {
+					t.Fatalf("held-lock %s created %s: %v", row.name, path, statErr)
+				}
+			}
+			assertTargetLockNamespaceHasNoTransactionEffects(t, target)
+		})
+	}
+}
+
 func buildZshProBinary(t *testing.T) string {
 	t.Helper()
 	root := repositoryRoot(t)

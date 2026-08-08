@@ -26,6 +26,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -43,6 +44,13 @@ const keychainTimeout = 5 * time.Second
 // (service "zsh-pro", account = the secret name). It is the global-by-name deref
 // contract Ph4/5 reads.
 const keychainService = "zsh-pro"
+
+// keychainTransportPrefix identifies the ASCII-only, versioned representation
+// stored in OS keychains. Both `security` and `secret-tool` communicate values
+// through streams whose output framing differs by platform; base64 means the
+// stored payload can never be confused with that framing, while the version
+// makes an incompatible legacy value fail closed instead of being corrupted.
+const keychainTransportPrefix = "zsh-pro:v1:"
 
 // vaultFileName is the basename of the git-ignored fallback vault. It lives as a
 // SIBLING of the bare repo dir (never inside it), see newVaultKeychain.
@@ -94,18 +102,19 @@ type macOSKeychain struct{}
 // resolves via the OS keychain at deref time.
 func (macOSKeychain) Kind() model.SecretRefKind { return model.SecretRefKeychain }
 
-// Store writes value under account=key, service=zsh-pro, updating in place (-U).
-// The value is piped via cmd.Stdin using the VERIFIED doubled-stdin form
-// (value\nvalue\n — `security -w` with no value arg prompts AND asks to confirm),
-// so the secret NEVER appears on argv / in `ps` (Pitfall 3). The arg list ends in
-// `-w` with no trailing value element.
+// Store writes a versioned transport of value under account=key, service=zsh-pro,
+// updating in place (-U). The transport is piped via cmd.Stdin using the VERIFIED
+// doubled-stdin form (value\nvalue\n — `security -w` with no value arg prompts AND
+// asks to confirm), so the plaintext secret NEVER appears on argv / in `ps`.
+// The arg list ends in `-w` with no trailing value element.
 func (macOSKeychain) Store(key, value string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), keychainTimeout)
 	defer cancel()
 
+	transport := encodeKeychainTransport(value)
 	cmd := exec.CommandContext(ctx, "security", "add-generic-password",
 		"-a", key, "-s", keychainService, "-U", "-w")
-	cmd.Stdin = strings.NewReader(value + "\n" + value + "\n")
+	cmd.Stdin = strings.NewReader(transport + "\n" + transport + "\n")
 	var errb bytes.Buffer
 	cmd.Stderr = &errb
 	if err := cmd.Run(); err != nil {
@@ -114,8 +123,8 @@ func (macOSKeychain) Store(key, value string) error {
 	return nil
 }
 
-// Retrieve returns the trimmed value stored under account=key, service=zsh-pro.
-// A not-found item is a nonzero exit mapped to a zsh-pro-phrased error — the raw
+// Retrieve decodes the versioned value stored under account=key, service=zsh-pro.
+// A missing macOS item exits with errSecItemNotFound's shell status (44); raw
 // `SecKeychain...` stderr is never surfaced (D-11).
 func (macOSKeychain) Retrieve(key string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), keychainTimeout)
@@ -126,11 +135,9 @@ func (macOSKeychain) Retrieve(key string) (string, error) {
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if err := cmd.Run(); err != nil {
-		return "", mapKeychainError()
+		return "", mapMacOSKeychainRetrieveError(err)
 	}
-	// security's framing cannot distinguish its output terminator from a user
-	// newline, so returning altered bytes would be unsafe.
-	return "", ErrSecretBackendUnavailable
+	return decodeKeychainTransport(out.Bytes())
 }
 
 // Delete removes the account=key, service=zsh-pro entry. A not-found delete is
@@ -161,16 +168,16 @@ type linuxKeychain struct{}
 // Kind reports this as a keychain-class backend (the Linux system secret service).
 func (linuxKeychain) Kind() model.SecretRefKind { return model.SecretRefKeychain }
 
-// Store pipes value via stdin (secret-tool reads the value from stdin natively, so
-// it never reaches argv) under the attribute schema `service zsh-pro key <key>`,
-// which Retrieve/Delete look up identically. [CITED]
+// Store pipes a versioned transport of value via stdin (secret-tool reads the
+// value from stdin natively, so plaintext never reaches argv) under the attribute
+// schema `service zsh-pro key <key>`, which Retrieve/Delete look up identically.
 func (linuxKeychain) Store(key, value string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), keychainTimeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "secret-tool", "store",
 		"--label=zsh-pro "+key, "service", keychainService, "key", key)
-	cmd.Stdin = strings.NewReader(value)
+	cmd.Stdin = strings.NewReader(encodeKeychainTransport(value))
 	var errb bytes.Buffer
 	cmd.Stderr = &errb
 	if err := cmd.Run(); err != nil {
@@ -179,8 +186,9 @@ func (linuxKeychain) Store(key, value string) error {
 	return nil
 }
 
-// Retrieve looks up the value by the same attribute schema and trims the trailing
-// newline secret-tool appends. [CITED]
+// Retrieve decodes the versioned value looked up by the same attribute schema.
+// libsecret returns exit status 1 with no stderr when there is no matching item;
+// a status-1 error with diagnostics remains an unavailable backend.
 func (linuxKeychain) Retrieve(key string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), keychainTimeout)
 	defer cancel()
@@ -190,10 +198,45 @@ func (linuxKeychain) Retrieve(key string) (string, error) {
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
 	if err := cmd.Run(); err != nil {
-		return "", mapKeychainError()
+		return "", mapLinuxKeychainRetrieveError(err, errb.Len())
 	}
-	// secret-tool's newline framing is likewise ambiguous for secret data.
-	return "", ErrSecretBackendUnavailable
+	return decodeKeychainTransport(out.Bytes())
+}
+
+func encodeKeychainTransport(value string) string {
+	return keychainTransportPrefix + base64.StdEncoding.EncodeToString([]byte(value))
+}
+
+// decodeKeychainTransport removes only a command-output record terminator. The
+// encoded transport itself never contains CR or LF, so empty, trailing-newline,
+// and multi-line plaintext values all decode byte-for-byte without broad trimming.
+func decodeKeychainTransport(output []byte) (string, error) {
+	transport := strings.TrimSuffix(string(output), "\n")
+	transport = strings.TrimSuffix(transport, "\r")
+	if !strings.HasPrefix(transport, keychainTransportPrefix) {
+		return "", ErrSecretBackendUnavailable
+	}
+	value, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(transport, keychainTransportPrefix))
+	if err != nil {
+		return "", ErrSecretBackendUnavailable
+	}
+	return string(value), nil
+}
+
+func mapMacOSKeychainRetrieveError(err error) error {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 44 { // errSecItemNotFound modulo 256
+		return ErrSecretNotFound
+	}
+	return ErrSecretBackendUnavailable
+}
+
+func mapLinuxKeychainRetrieveError(err error, stderrLen int) error {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 && stderrLen == 0 {
+		return ErrSecretNotFound
+	}
+	return ErrSecretBackendUnavailable
 }
 
 // Delete clears the entry matching the attribute schema. [CITED]
