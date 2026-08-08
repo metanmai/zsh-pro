@@ -16,7 +16,7 @@ import (
 
 const (
 	storeRootLockRetryInterval    = 10 * time.Millisecond
-	storeRootLockAcquisitionLimit = 5 * time.Second
+	storeRootLockAcquisitionLimit = gitTimeout + storeRootLockRetryInterval
 )
 
 type storeRootTransactionGuard struct {

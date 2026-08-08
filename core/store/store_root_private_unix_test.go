@@ -98,6 +98,9 @@ func TestStoreRootTransactionLockContentionHonorsCancellationAndDeadline(t *test
 }
 
 func TestStoreRootTransactionLockBoundsNonExpiringContext(t *testing.T) {
+	if storeRootLockAcquisitionLimit <= gitTimeout {
+		t.Fatalf("store root lock acquisition limit = %s, want longer than Git timeout %s", storeRootLockAcquisitionLimit, gitTimeout)
+	}
 	lock, err := os.CreateTemp(t.TempDir(), "lock-")
 	if err != nil {
 		t.Fatal(err)
