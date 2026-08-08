@@ -793,10 +793,6 @@ func (s *Store) removeAuthenticatedQuarantineEntry(parent *os.Root, name, relati
 		return errQuarantineIdentityChanged
 	}
 	directory := original.IsDir()
-	// Symlinks are authenticated by the descriptor-relative Lstat checks below.
-	// os.Root always adds O_NOFOLLOW, and Darwin returns ENOENT for an attempt to
-	// open a dangling symlink even with O_SYMLINK. Root.Remove unlinks the
-	// authenticated link itself and never follows its target.
 	if directory {
 		child, err := parent.OpenRoot(name)
 		if err != nil {
@@ -833,6 +829,19 @@ func (s *Store) removeAuthenticatedQuarantineEntry(parent *os.Root, name, relati
 		}
 		defer func() { _ = file.Close() }()
 		opened, statErr := file.Stat()
+		if statErr != nil || !sameQuarantineEntry(original, opened) {
+			if statErr != nil {
+				return statErr
+			}
+			return errQuarantineIdentityChanged
+		}
+	} else if original.Mode()&os.ModeSymlink != 0 {
+		link, err := openAuthenticatedQuarantineSymlink(parent, name)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = link.Close() }()
+		opened, statErr := link.Stat()
 		if statErr != nil || !sameQuarantineEntry(original, opened) {
 			if statErr != nil {
 				return statErr
