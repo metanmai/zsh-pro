@@ -24,6 +24,10 @@ func secureCacheDirectory(path string) (*cacheDirectoryState, error) {
 	if !filepath.IsAbs(path) || path == "/" {
 		return nil, errors.New("cached loader directory must name a private absolute directory")
 	}
+	path, err := cacheTraversalPath(path)
+	if err != nil {
+		return nil, err
+	}
 
 	fd, err := syscall.Open("/", syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_CLOEXEC, 0)
 	if err != nil {

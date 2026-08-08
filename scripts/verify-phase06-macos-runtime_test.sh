@@ -139,6 +139,7 @@ if ! native_output=$(cd "$native_root" && PATH="$stub_dir:$PATH" PHASE6_VERIFIER
   fail 'verifier rejected the deterministic native filesystem probe'
 fi
 printf '%s\n' "$native_output" | grep -qx 'filesystem: apfs' || fail 'verifier did not report the mounted filesystem type'
+printf '%s\n' "$native_output" | grep -qx 'cache_traversal_aliases: PASS' || fail 'verifier did not run the native macOS cache traversal row'
 printf '%s\n' "$native_output" | grep -qx 'macos_keychain_round_trip: PASS' || fail 'verifier did not run the native macOS keychain row'
 printf '%s\n' "$native_output" | grep -qx 'keychain_ingest_activation: PASS' || fail 'verifier did not run the keychain ingest/activation row'
 grep -Fqx 'diskutil:info -plist /Volumes/Phase Six' "$stub_log" || fail 'verifier did not inspect the resolved mount point with diskutil plist output'

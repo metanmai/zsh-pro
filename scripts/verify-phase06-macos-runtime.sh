@@ -117,6 +117,7 @@ run_exact() {
 run_exact ./core/cli TestAtomicRenameAtExchangePreservesBothInodes exchange
 run_exact ./core/cli TestAtomicRenameAtNoReplaceCreatesAbsentTarget no_replace_absent
 run_exact ./core/cli TestAtomicRenameAtNoReplacePreservesLateTarget no_replace_late_target
+run_exact ./core/cli TestCacheTraversalPathRecognizesTrustedMacOSCompatibilityAliases cache_traversal_aliases
 run_exact ./core/store TestMacOSKeychainRoundTrip macos_keychain_round_trip
 run_exact ./core/cmd/zsh-pro TestMainIngestAndActivationWithOSKeychains keychain_ingest_activation
 run_exact ./core/store TestDarwinQuarantineCleanupCapabilitySupported cleanup_capability_supported
