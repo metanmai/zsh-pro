@@ -81,7 +81,7 @@ Which phases cover which requirements. Populated during roadmap creation.
 | SW-02 | Phase 4 — Manifest Builder + Emit | Complete |
 | BOOT-01 | Phase 5 — Runtime Loader + CLI + Bootstrap | Complete |
 | BOOT-02 | Phase 5 — Runtime Loader + CLI + Bootstrap | Complete |
-| PROF-03 | Phase 3 (store-side exclusion + reference) → Phase 4/5 (runtime deref) → Phase 6 (end-to-end ingest) | In progress (started Phase 3) |
+| PROF-03 | Phase 3 (store-side exclusion + reference) → Phase 4/5 (runtime deref) → Phase 6 (end-to-end ingest) | Complete |
 
 **Coverage:**
 

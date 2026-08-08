@@ -258,7 +258,7 @@ Plans:
   3. First adoption appends the canonical Phase 5 loader region; installed/re-ingest replaces or collapses only exact marker regions. Re-running ingest/install is idempotent, every byte outside those regions remains exact and in order, and post-END appends are warned about rather than clobbered.
   4. Three linked proofs hold: `Store.Read(main) → ir.Regenerate` preserves the full redacted profile's non-secret order/text/semantics; activation applies only `EffectiveManaged` entries and resolves `SecretRef`s; and a built-binary `zsh -f` comparison of the pristine source with the actual installed `.zshrc` is behavior-equivalent apart from exact zsh-pro-owned loader symbols, with no startup subprocess.
 
-**Plans**: 4/5 plans executed
+**Plans**: 5/5 plans executed
 
 Plans:
 **Wave 1**
