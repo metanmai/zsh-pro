@@ -1,0 +1,39 @@
+name: Phase 6 native macOS runtime evidence
+
+on:
+  push:
+    branches:
+      - agent/phase6-macos-evidence
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-runtime:
+    runs-on: macos-14
+    steps:
+      - name: Check out exact Phase 6 implementation
+        uses: actions/checkout@v4
+        with:
+          ref: 1a83446b5911e65137f1c4eba37d84914dee96d9
+          fetch-depth: 1
+
+      - name: Set up the committed Go toolchain
+        uses: actions/setup-go@v5
+        with:
+          go-version: 1.25.0
+
+      - name: Run native runtime verifier
+        shell: bash
+        run: |
+          set -o pipefail
+          GOTOOLCHAIN=local scripts/verify-phase06-macos-runtime.sh 1a83446b5911e65137f1c4eba37d84914dee96d9 2>&1 | tee "$RUNNER_TEMP/phase6-macos-runtime-output.txt"
+
+      - name: Upload unedited verifier output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase6-macos-runtime-output
+          path: ${{ runner.temp }}/phase6-macos-runtime-output.txt
+          if-no-files-found: error
