@@ -29,6 +29,9 @@ func TestStoreRootTransactionLockRetriesNonblockingAndHandlesEINTR(t *testing.T)
 			if operation != syscall.LOCK_EX|syscall.LOCK_NB {
 				t.Fatalf("flock operation = %d, want exclusive nonblocking", operation)
 			}
+			if flockCalls >= len(responses) {
+				t.Fatalf("flock called %d times, want at most %d", flockCalls+1, len(responses))
+			}
 			response := responses[flockCalls]
 			flockCalls++
 			return response

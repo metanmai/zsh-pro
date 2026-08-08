@@ -230,7 +230,11 @@ func validateIngestE2EAuthoredSource(t *testing.T, source []byte) {
 	}
 	for _, row := range ingestE2EProvenanceTable {
 		span := strings.Join(lines[row.startLine-1:row.endLine], "\n")
-		if !strings.Contains(span, checks[row.label]) {
+		check, ok := checks[row.label]
+		if !ok {
+			t.Fatalf("authored provenance row %q has no authored check", row.label)
+		}
+		if !strings.Contains(span, check) {
 			t.Fatalf("authored provenance row %q no longer matches lines %d-%d", row.label, row.startLine, row.endLine)
 		}
 	}
