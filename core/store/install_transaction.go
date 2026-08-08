@@ -793,6 +793,17 @@ func (s *Store) removeAuthenticatedQuarantineEntry(parent *os.Root, name, relati
 		return errQuarantineIdentityChanged
 	}
 	directory := original.IsDir()
+	isSymlink := original.Mode()&os.ModeSymlink != 0
+	var symlinkTarget string
+	if isSymlink {
+		// Darwin's no-follow Root API cannot open a dangling link descriptor.
+		// Include its no-follow target in both identity checks so an inode-reused
+		// replacement cannot evade the authenticated cleanup boundary.
+		symlinkTarget, err = parent.Readlink(name)
+		if err != nil {
+			return err
+		}
+	}
 	if directory {
 		child, err := parent.OpenRoot(name)
 		if err != nil {
@@ -835,19 +846,6 @@ func (s *Store) removeAuthenticatedQuarantineEntry(parent *os.Root, name, relati
 			}
 			return errQuarantineIdentityChanged
 		}
-	} else if original.Mode()&os.ModeSymlink != 0 {
-		link, err := openAuthenticatedQuarantineSymlink(parent, name)
-		if err != nil {
-			return err
-		}
-		defer func() { _ = link.Close() }()
-		opened, statErr := link.Stat()
-		if statErr != nil || !sameQuarantineEntry(original, opened) {
-			if statErr != nil {
-				return statErr
-			}
-			return errQuarantineIdentityChanged
-		}
 	}
 
 	seam := quarantineCleanupSeam{Parent: parent, Name: name, Relative: relative, Directory: directory}
@@ -857,7 +855,8 @@ func (s *Store) removeAuthenticatedQuarantineEntry(parent *os.Root, name, relati
 		}
 	}
 	current, err := parent.Lstat(name)
-	if err != nil || !sameQuarantineEntry(original, current) {
+	if err != nil || !sameQuarantineEntry(original, current) ||
+		(isSymlink && !sameQuarantineSymlinkTarget(parent, name, symlinkTarget)) {
 		if err != nil {
 			return err
 		}
@@ -869,7 +868,8 @@ func (s *Store) removeAuthenticatedQuarantineEntry(parent *os.Root, name, relati
 		}
 	}
 	current, err = parent.Lstat(name)
-	if err != nil || !sameQuarantineEntry(original, current) {
+	if err != nil || !sameQuarantineEntry(original, current) ||
+		(isSymlink && !sameQuarantineSymlinkTarget(parent, name, symlinkTarget)) {
 		if err != nil {
 			return err
 		}
@@ -891,6 +891,11 @@ func validQuarantineChildInfo(info os.FileInfo) bool {
 func sameQuarantineEntry(expected, actual os.FileInfo) bool {
 	return expected != nil && actual != nil && os.SameFile(expected, actual) &&
 		expected.Mode() == actual.Mode() && fileInfoOwnedByCurrentEUID(actual)
+}
+
+func sameQuarantineSymlinkTarget(parent *os.Root, name, expected string) bool {
+	actual, err := parent.Readlink(name)
+	return err == nil && actual == expected
 }
 
 func (s *Store) terminalizeBeginFailure(
