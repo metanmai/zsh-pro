@@ -1373,6 +1373,9 @@ func TestInstallSnapshotMatchesBoundedFields(t *testing.T) {
 	if err := os.WriteFile(target, []byte("export SNAPSHOT=1\n"), 0o640); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Chmod(target, 0o640); err != nil {
+		t.Fatal(err)
+	}
 	requested := filepath.Join(dir, ".zshrc")
 	if err := os.Symlink(target, requested); err != nil {
 		t.Fatal(err)

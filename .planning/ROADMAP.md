@@ -39,7 +39,7 @@ Previous-milestone phases are archived. Full detail in [milestones/](milestones/
 - [x] **Phase 3: Git-Backed Store** - Store the IR as a git repo (via the `git` binary) where each branch is a profile; create/list/switch profiles tracked per-terminal, with detected secrets excluded by default (completed 2026-06-27)
 - [x] **Phase 4: Manifest Builder + Emit** - Turn a profile into a reversible `Manifest` (record-and-reverse with a drift guard; PATH as a delta vs captured base) and emit the apply/deactivate zsh code from the one place zsh syntax lives (completed 2026-07-27)
 - [x] **Phase 5: Runtime Loader + CLI + Bootstrap** - Wire the live terminal via a sourced emit-and-source loader and the `checkout`/`activate`/`deactivate`/`list`/`status` verbs, bootstrapped by an idempotent `.zshrc` block that is fail-open and fast (completed 2026-07-30)
-- [x] **Phase 6: Ingest End-to-End** - Polish the on-ramp: parse a real `~/.zshrc` → classify → partial-eval → regenerate → commit to the baseline branch, against the final IR shape (completed 2026-08-08)
+- [ ] **Phase 6: Ingest End-to-End** - Implementation is complete; final verification is pending CodeRabbit convergence. The on-ramp parses a real `~/.zshrc` → classify → partial-eval → regenerate → commit to the baseline branch against the final IR shape.
 
 ## Phase Details
 
@@ -293,7 +293,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 | 3. Git-Backed Store | 3/3 | Complete   | 2026-06-27 |
 | 4. Manifest Builder + Emit | 19/19 | Complete    | 2026-07-27 |
 | 5. Runtime Loader + CLI + Bootstrap | 8/8 | Complete    | 2026-07-30 |
-| 6. Ingest End-to-End | 5/5 | Complete    | 2026-08-08 |
+| 6. Ingest End-to-End | 5/5 | Verification pending | — |
 
 ## Requirement Coverage
 

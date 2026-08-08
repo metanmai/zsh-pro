@@ -1,8 +1,9 @@
-# Phase 6 Current-Source Evidence
+# Phase 6 Historical Pre-Execution Source Snapshot
 
-**Refreshed:** 2026-08-02
-**Status:** Planning evidence; executor must repeat the syscall audit before implementation
-**Authority order:** Current source/read-first files > completed plan summaries > historical CONTEXT code-line commentary.
+**Captured:** 2026-08-02
+**Status:** Historical planning evidence only. It records the source state before Phase 6 execution and must not be used as a completion or implementation-status report.
+**Superseded by:** The committed Phase 6 implementation, [final verification](06-VERIFICATION.md), [findings ledger](06-FINDINGS.md), and [exact-SHA native macOS evidence](06-MACOS-RUNTIME-EVIDENCE.md).
+**Historical authority order:** The source/read-first files captured at planning time > completed plan summaries > historical CONTEXT code-line commentary.
 
 ## Landed source snapshot
 
