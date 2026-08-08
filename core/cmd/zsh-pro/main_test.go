@@ -1319,6 +1319,17 @@ func TestMainIngestAppendWarningPreservesAndPersists(t *testing.T) {
 	}
 }
 
+func TestPhase6BuiltFixtureReplacementExpandsReviewedSecretPlaceholder(t *testing.T) {
+	fixture := newPhase6BuiltFixture(t)
+	fixture.replaceTargetFromFixture(t, "real.zshrc")
+	if !bytes.Contains(fixture.source, []byte(fixture.secret)) {
+		t.Fatal("replacement fixture did not receive the runtime secret")
+	}
+	if bytes.Contains(fixture.source, []byte(phase6SecretPlaceholder)) {
+		t.Fatal("replacement fixture retained the reviewed secret placeholder")
+	}
+}
+
 func TestMainIngestActualInstalledStartupEquivalent(t *testing.T) {
 	fixture := newPhase6BuiltFixture(t)
 	pristine := fixture.startupSnapshot(t)
@@ -1585,7 +1596,16 @@ func phase6ReadFixture(t *testing.T, root, name string) []byte {
 func (fixture *phase6BuiltFixture) replaceTargetFromFixture(t *testing.T, name string) {
 	t.Helper()
 	fixture.sourceTemplate = phase6ReadFixture(t, phase6RepositoryRoot(t), name)
-	fixture.source = append([]byte(nil), fixture.sourceTemplate...)
+	placeholders := bytes.Count(fixture.sourceTemplate, []byte(phase6SecretPlaceholder))
+	if placeholders > 1 {
+		t.Fatalf("fixture %s contains %d reviewed placeholders, want at most one", name, placeholders)
+	}
+	fixture.source = bytes.Replace(
+		fixture.sourceTemplate,
+		[]byte(phase6SecretPlaceholder),
+		[]byte(fixture.secret),
+		1,
+	)
 	if err := os.WriteFile(fixture.target, fixture.source, 0o600); err != nil {
 		t.Fatal(err)
 	}

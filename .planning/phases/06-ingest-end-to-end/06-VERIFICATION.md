@@ -96,7 +96,6 @@ None. This phase has no visual or external interactive flow left unexercised: ru
 
 ### Informational Notes
 
-- This report's original 4/5-plan metadata note was reconciled immediately afterward by commit `c99b89a`: `ROADMAP.md` now renders Phase 6 as 5/5 plans executed. The discrepancy was planning metadata only and did not affect the verified product evidence in this report.
 - Plan key-link entries use semantic labels instead of source paths, so the generic `verify.key-links` helper cannot parse them. Each required connection above was traced manually in code and exercised by its named behavioral test.
 
 ### Gaps Summary
