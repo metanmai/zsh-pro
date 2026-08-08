@@ -1383,6 +1383,15 @@ func TestMainIngestSecretBehaviorWithoutDisclosure(t *testing.T) {
 // and emit-time SecretRef resolution without allowing the raw secret into test
 // diagnostics or the fake backend's persisted state.
 func TestMainIngestAndActivationWithOSKeychains(t *testing.T) {
+	// Exercise the same built-binary install transaction first. This keeps the
+	// OS-keychain composition proof attributable when a native filesystem
+	// primitive rejects the cache/target preparation before Store.CommitIngest
+	// invokes the selected backend.
+	installFixture := newPhase6BuiltFixture(t)
+	if output, err := installFixture.run("install"); err != nil {
+		t.Fatalf("built install prerequisite for keychain composition: %s", output)
+	}
+
 	for _, backend := range []string{"security", "secret-tool"} {
 		t.Run(backend, func(t *testing.T) {
 			fixture := newPhase6BuiltFixture(t)
