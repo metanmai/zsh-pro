@@ -1,6 +1,6 @@
 ---
 phase: 06-ingest-end-to-end
-verified: 2026-08-08T20:54:52Z
+verified: 2026-08-08T21:09:51Z
 status: passed
 score: 5/5 must-haves verified
 behavior_unverified: 0
@@ -11,7 +11,7 @@ overrides_applied: 0
 
 **Phase Goal:** Polish the on-ramp last, against the final IR shape. Compose the already-built pieces into the full path: parse a real `~/.zshrc` → classify (declarative/imperative split) → partial-eval → commit the complete redacted, source-ordered profile to the baseline branch — while preserving every preexisting startup byte outside the canonical managed loader region and warning about post-END appends.
 
-**Verified:** 2026-08-08T20:54:52Z  
+**Verified:** 2026-08-08T21:09:51Z
 **Status:** passed  
 **Re-verification:** No — the prior report contained no `gaps:` section, so this is an independent initial-mode check.
 
@@ -38,7 +38,7 @@ overrides_applied: 0
 | `core/cli/install.go`, `core/cli/install_transaction.go`, `core/cli/atomic_rename*.go` | Exact-marker candidate and one guarded filesystem promotion | ✓ VERIFIED | Present, substantive, and reached by the controller. Named built-binary and transaction tests demonstrate marker fidelity, idempotence, and target-promotion cardinality. |
 | `core/cmd/zsh-pro/main.go` | One concrete Store/provider composition root | ✓ VERIFIED | `cliStore` is constructed once and captured by the initializer ([`core/cmd/zsh-pro/main.go:67`](../../core/cmd/zsh-pro/main.go), [`:74`](../../core/cmd/zsh-pro/main.go), [`:92`](../../core/cmd/zsh-pro/main.go)); the real composition test is included in the passing full suite. |
 | `core/cli/ingest_e2e_test.go`, `core/cmd/zsh-pro/main_test.go` | Real Store/provider and built-binary behavioral evidence | ✓ VERIFIED | Both are substantive, runnable tests. The exact 12-selector and 13-selector matrices were independently enumerated and run uncached. |
-| `scripts/verify-phase06-macos-runtime.sh` plus macOS evidence record | Native Darwin atomic/cleanup proof at implementation SHA | ✓ VERIFIED | The local shell regression passed; the evidence binds a PASS native macOS 14.8.7 arm64 run at `2443a0e`, records all atomic/cleanup rows, and its sidecar SHA-256 matches (`6cff…d9e9b`). `2443a0e` is an ancestor of the later evidence commit `405f8d0`; no implementation or verifier-script file changed between them. |
+| `scripts/verify-phase06-macos-runtime.sh` plus macOS evidence record | Native Darwin atomic/cleanup proof at implementation SHA | ✓ VERIFIED | The local shell regression passed; renewed evidence binds a PASS native macOS 14.8.7 arm64 run at `cdb82ef`, records all atomic/cleanup rows, and its sidecar SHA-256 matches (`7cc6…39d7`). `cdb82ef` is an ancestor of later evidence commit `eb597a3`; no implementation or verifier-script file changed between them. |
 
 `verify.artifacts` found 35/36 static artifacts. Its sole miss was the Plan 06-01 text pattern `BeginIngest` in `core/store/store.go`; the public method is deliberately in the companion file above, in the same Store package, is implemented and wired. This is a plan-path pattern mismatch, not a missing implementation.
 
@@ -66,10 +66,11 @@ The generic key-link helper reports zero parseable links because all Phase 6 pla
 
 | Behavior | Command | Result | Status |
 | --- | --- | --- | --- |
-| Real provider/Store full-profile, regeneration, activation, privacy, and no-execution behaviors | Exact 12-name `GOTOOLCHAIN=local go test ./core/cli -run '^(…)$' -count=1` selector from 06-05 | `ok zsh-pro/core/cli 1.310s` | ✓ PASS |
-| Built-binary ingest, bytes, idempotency, actual startup, order, secret, and subprocess behaviors | Exact 13-name `GOTOOLCHAIN=local go test ./core/cmd/zsh-pro -run '^(…)$' -count=1` selector from 06-05 | `ok zsh-pro/core/cmd/zsh-pro 5.813s` | ✓ PASS |
+| Real provider/Store full-profile, regeneration, activation, privacy, and no-execution behaviors | Exact 12-name `GOTOOLCHAIN=local go test ./core/cli -run '^(…)$' -count=1` selector from 06-05 | `ok zsh-pro/core/cli 1.440s` | ✓ PASS |
+| Built-binary ingest, bytes, idempotency, actual startup, order, secret, and subprocess behaviors | Exact 13-name `GOTOOLCHAIN=local go test ./core/cmd/zsh-pro -run '^(…)$' -count=1` selector from 06-05 | `ok zsh-pro/core/cmd/zsh-pro 5.956s` | ✓ PASS |
 | Workspace quality gate | `GOTOOLCHAIN=local make check` | `go vet ./...`, `golangci-lint run` (0 issues), and `go test ./...` passed | ✓ PASS |
-| Native-evidence regression and binding | `scripts/verify-phase06-macos-runtime_test.sh`; SHA/ancestry/source-diff checks | Script PASS; sidecar hash matched; source unchanged from `2443a0e` through `405f8d0` | ✓ PASS |
+| Updated test-source delta | `GOTOOLCHAIN=local go test ./core/cli -run '^TestInstallSnapshotMatchesBoundedFields$' -count=1` | `ok zsh-pro/core/cli 0.004s`; the only implementation diff is its explicit `chmod(0640)` normalization before snapshot capture | ✓ PASS |
+| Native-evidence regression and binding | `scripts/verify-phase06-macos-runtime_test.sh`; SHA/ancestry/source-diff checks | Script PASS; sidecar hash matched; source unchanged from `cdb82ef` through `eb597a3` | ✓ PASS |
 
 ### Probe Execution
 
@@ -98,9 +99,9 @@ None. All behavior-dependent roadmap truths have passing named behavioral tests.
 
 ### Gaps Summary
 
-No goal-blocking gaps found. The Phase 6 goal and PROF-03 are achieved at source SHA `2443a0efbff263c27e0dc2db1bd075af18879d3a`; `HEAD` `405f8d0ee6e707f785d7efed811654a0b2e25657` changes only the macOS evidence files.
+No goal-blocking gaps found. The Phase 6 goal and PROF-03 are achieved at implementation SHA `cdb82ef21f8f3f10034a0c07442e1c52a8ef7802`; `HEAD` `eb597a3c804944e9e0d97ac5dc47e7af2dc4123e` changes only the renewed macOS evidence files. Relative to the prior implementation, this implementation changes only a three-line test setup normalization and its named regression passes.
 
 ---
 
-_Verified: 2026-08-08T20:54:52Z_  
+_Verified: 2026-08-08T21:09:51Z_
 _Verifier: the agent (gsd-verifier)_
