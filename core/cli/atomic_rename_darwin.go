@@ -18,8 +18,6 @@ const (
 	darwinRenameExclusiveFlag uintptr = 4
 )
 
-const targetRootLockRetryInterval = 10 * time.Millisecond
-
 type targetRootFlockFunc func(int, int) error
 type targetRootLockWaitFunc func(context.Context) error
 
@@ -57,7 +55,9 @@ func atomicRenameAtWithSyscallPlatform(
 }
 
 func acquireTargetRootTransactionLock(ctx context.Context, lock *os.File) error {
-	return acquireTargetRootTransactionLockWith(ctx, lock, syscall.Flock, waitForTargetRootLockRetry)
+	bounded, cancel := boundedTargetRootLockContext(ctx)
+	defer cancel()
+	return acquireTargetRootTransactionLockWith(bounded, lock, syscall.Flock, waitForTargetRootLockRetry)
 }
 
 func acquireTargetRootTransactionLockWith(
