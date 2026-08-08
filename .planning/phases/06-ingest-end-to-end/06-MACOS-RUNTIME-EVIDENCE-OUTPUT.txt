@@ -1,36 +1,36 @@
-implementation_sha: 2443a0efbff263c27e0dc2db1bd075af18879d3a
-observed_at_utc: 2026-08-08T20:46:59Z
+implementation_sha: cdb82ef21f8f3f10034a0c07442e1c52a8ef7802
+observed_at_utc: 2026-08-08T21:06:30Z
 native_os: macOS 14.8.7
 native_arch: arm64
 filesystem: apfs
 go_toolchain: local
 go_env_goversion: go1.25.0
-exact_command: GOTOOLCHAIN=local scripts/verify-phase06-macos-runtime.sh 2443a0efbff263c27e0dc2db1bd075af18879d3a
+exact_command: GOTOOLCHAIN=local scripts/verify-phase06-macos-runtime.sh cdb82ef21f8f3f10034a0c07442e1c52a8ef7802
 ok  	zsh-pro/core/cli	0.006s
 exchange: PASS
-ok  	zsh-pro/core/cli	0.007s
+ok  	zsh-pro/core/cli	0.006s
 no_replace_absent: PASS
 ok  	zsh-pro/core/cli	0.006s
 no_replace_late_target: PASS
 ok  	zsh-pro/core/cli	0.006s
 cache_traversal_aliases: PASS
-ok  	zsh-pro/core/store	0.182s
+ok  	zsh-pro/core/store	0.194s
 macos_keychain_round_trip: PASS
-ok  	zsh-pro/core/cmd/zsh-pro	1.762s
+ok  	zsh-pro/core/cmd/zsh-pro	1.643s
 keychain_ingest_activation: PASS
-ok  	zsh-pro/core/store	0.070s
-cleanup_capability_supported: PASS
-ok  	zsh-pro/core/store	0.058s
-cleanup_top_level: PASS
-ok  	zsh-pro/core/store	0.226s
-cleanup_nested_file: PASS
 ok  	zsh-pro/core/store	0.075s
+cleanup_capability_supported: PASS
+ok  	zsh-pro/core/store	0.070s
+cleanup_top_level: PASS
+ok  	zsh-pro/core/store	0.067s
+cleanup_nested_file: PASS
+ok  	zsh-pro/core/store	0.090s
 cleanup_nested_directory: PASS
-ok  	zsh-pro/core/store	0.060s
+ok  	zsh-pro/core/store	0.090s
 cleanup_symlink: PASS
-ok  	zsh-pro/core/store	0.206s
+ok  	zsh-pro/core/store	0.233s
 cleanup_replacement_before: PASS
-ok  	zsh-pro/core/store	0.238s
+ok  	zsh-pro/core/store	0.221s
 cleanup_replacement_after: PASS
 cleanup_capability: supported
 status: PASS
