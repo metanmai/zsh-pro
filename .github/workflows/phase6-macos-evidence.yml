@@ -16,7 +16,7 @@ jobs:
       - name: Check out exact Phase 6 implementation
         uses: actions/checkout@v4
         with:
-          ref: 2443a0efbff263c27e0dc2db1bd075af18879d3a
+          ref: cdb82ef21f8f3f10034a0c07442e1c52a8ef7802
           fetch-depth: 1
 
       - name: Set up the committed Go toolchain
@@ -28,7 +28,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          GOTOOLCHAIN=local scripts/verify-phase06-macos-runtime.sh 2443a0efbff263c27e0dc2db1bd075af18879d3a 2>&1 | tee "$RUNNER_TEMP/phase6-macos-runtime-output.txt"
+          GOTOOLCHAIN=local scripts/verify-phase06-macos-runtime.sh cdb82ef21f8f3f10034a0c07442e1c52a8ef7802 2>&1 | tee "$RUNNER_TEMP/phase6-macos-runtime-output.txt"
 
       - name: Upload unedited verifier output
         if: always()
