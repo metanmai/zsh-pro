@@ -1386,11 +1386,15 @@ func TestMainIngestAndActivationWithOSKeychains(t *testing.T) {
 	for _, backend := range []string{"security", "secret-tool"} {
 		t.Run(backend, func(t *testing.T) {
 			fixture := newPhase6BuiltFixture(t)
-			statePath := fixture.installFakeOSKeychain(t, backend)
+			statePath, logPath := fixture.installFakeOSKeychain(t, backend)
 
 			encoded, err := fixture.run("ingest", "--json")
 			if err != nil {
-				t.Fatal("keychain-backed ingest failed")
+				log, logErr := os.ReadFile(logPath)
+				if logErr != nil || bytes.Contains(log, []byte(fixture.secret)) {
+					t.Fatal("keychain-backed ingest failed without safe backend diagnostics")
+				}
+				t.Fatalf("keychain-backed ingest failed after backend calls %q", log)
 			}
 			result := decodePhase6IngestResult(t, encoded)
 			if !result.OK || !result.ProfileCommitted || !result.StartupInstalled || result.RecoveryRequired {
@@ -1582,17 +1586,19 @@ func (fixture *phase6BuiltFixture) runRaw(args ...string) ([]byte, error) {
 	return cmd.CombinedOutput()
 }
 
-func (fixture *phase6BuiltFixture) installFakeOSKeychain(t *testing.T, binary string) string {
+func (fixture *phase6BuiltFixture) installFakeOSKeychain(t *testing.T, binary string) (string, string) {
 	t.Helper()
 	statePath := filepath.Join(t.TempDir(), "keychain-state")
+	logPath := filepath.Join(t.TempDir(), "keychain-log")
 	if err := os.WriteFile(filepath.Join(fixture.toolDir, binary), []byte(fakePhase6OSKeychainProgram), 0o700); err != nil {
 		t.Fatal("write fake keychain executable")
 	}
 	fixture.env = phase6ReplaceEnv(fixture.env, map[string]string{
 		"PHASE6_KEYCHAIN_STATE": statePath,
 		"PHASE6_KEYCHAIN_KIND":  binary,
+		"PHASE6_KEYCHAIN_LOG":   logPath,
 	})
-	return statePath
+	return statePath, logPath
 }
 
 func phase6ProfileHasKeychainSecret(profile model.Profile) bool {
@@ -1606,6 +1612,8 @@ func phase6ProfileHasKeychainSecret(profile model.Profile) bool {
 
 const fakePhase6OSKeychainProgram = `#!/bin/sh
 set -eu
+
+printf '%s\n' "$1" >>"$PHASE6_KEYCHAIN_LOG"
 
 missing() {
 	if [ ! -f "$PHASE6_KEYCHAIN_STATE" ]; then
