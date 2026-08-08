@@ -793,7 +793,10 @@ func (s *Store) removeAuthenticatedQuarantineEntry(parent *os.Root, name, relati
 		return errQuarantineIdentityChanged
 	}
 	directory := original.IsDir()
-	var closeBeforeRemove func() error
+	// Symlinks are authenticated by the descriptor-relative Lstat checks below.
+	// os.Root always adds O_NOFOLLOW, and Darwin returns ENOENT for an attempt to
+	// open a dangling symlink even with O_SYMLINK. Root.Remove unlinks the
+	// authenticated link itself and never follows its target.
 	if directory {
 		child, err := parent.OpenRoot(name)
 		if err != nil {
@@ -836,24 +839,6 @@ func (s *Store) removeAuthenticatedQuarantineEntry(parent *os.Root, name, relati
 			}
 			return errQuarantineIdentityChanged
 		}
-	} else if original.Mode()&os.ModeSymlink != 0 {
-		// 0x200000 is O_PATH on Linux and O_SYMLINK on Darwin. Combined with
-		// O_NOFOLLOW it retains the symlink object itself across the final-check
-		// seams. Darwin will not unlink an O_SYMLINK descriptor, so close it only
-		// after the final identity check and immediately before Root.Remove.
-		link, err := parent.OpenFile(name, os.O_RDONLY|syscall.O_CLOEXEC|syscall.O_NOFOLLOW|0x200000, 0)
-		if err != nil {
-			return err
-		}
-		defer func() { _ = link.Close() }()
-		opened, statErr := link.Stat()
-		if statErr != nil || !sameQuarantineEntry(original, opened) {
-			if statErr != nil {
-				return statErr
-			}
-			return errQuarantineIdentityChanged
-		}
-		closeBeforeRemove = link.Close
 	}
 
 	seam := quarantineCleanupSeam{Parent: parent, Name: name, Relative: relative, Directory: directory}
@@ -880,11 +865,6 @@ func (s *Store) removeAuthenticatedQuarantineEntry(parent *os.Root, name, relati
 			return err
 		}
 		return errQuarantineIdentityChanged
-	}
-	if closeBeforeRemove != nil {
-		if err := closeBeforeRemove(); err != nil {
-			return err
-		}
 	}
 	if err := parent.Remove(name); err != nil {
 		return err
