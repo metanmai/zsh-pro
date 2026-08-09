@@ -2,7 +2,7 @@
 
 **Gathered:** 2026-07-02
 **Corrected:** 2026-08-02 (P6-011/P6-012 architecture decision)
-**Status:** Ready for planning
+**Status:** Executed; final CodeRabbit convergence pending
 **Mode:** Autonomous smart-discuss (`--auto`, unattended), followed by an authorized architecture correction. The correction is final: startup adoption is non-destructive, the store persists the complete redacted source-ordered Profile, and `EffectiveManaged` is only a projection.
 
 <domain>
@@ -113,4 +113,4 @@ Five deliverables remain in scope:
 
 *Phase: 06-ingest-end-to-end*
 *Context corrected: 2026-08-02 — complete Profile persistence, non-destructive startup adoption, one filesystem promotion, and three-linked-assertion proof are locked.*
-*Next step: execute 06-01 through 06-05 after plan-structure/index review and the P6-011/P6-012/P6-013 post-document review gate.*
+*Next step: close the final CodeRabbit convergence gate, then record Phase 6 completion from its already-passed implementation, verification, and exact-SHA native evidence.*

@@ -66,11 +66,53 @@ The generic key-link helper reports zero parseable links because all Phase 6 pla
 
 | Behavior | Command | Result | Status |
 | --- | --- | --- | --- |
-| Real provider/Store full-profile, regeneration, activation, privacy, and no-execution behaviors | Exact 12-name `GOTOOLCHAIN=local go test ./core/cli -run '^(…)$' -count=1` selector from 06-05 | `ok zsh-pro/core/cli 1.440s` | ✓ PASS |
-| Built-binary ingest, bytes, idempotency, actual startup, order, secret, and subprocess behaviors | Exact 13-name `GOTOOLCHAIN=local go test ./core/cmd/zsh-pro -run '^(…)$' -count=1` selector from 06-05 | `ok zsh-pro/core/cmd/zsh-pro 5.956s` | ✓ PASS |
+| Real provider/Store full-profile, regeneration, activation, privacy, and no-execution behaviors | Exact 12-name selector recorded below from 06-05 | Uncached verbose run: `ok zsh-pro/core/cli 1.082s` | ✓ PASS |
+| Built-binary ingest, bytes, idempotency, actual startup, order, secret, and subprocess behaviors | Exact 14-name selector recorded below from 06-05 | Uncached verbose run: `ok zsh-pro/core/cmd/zsh-pro 5.549s` | ✓ PASS |
 | Workspace quality gate | `GOTOOLCHAIN=local make check` | `go vet ./...`, `golangci-lint run` (0 issues), and `go test ./...` passed | ✓ PASS |
 | Updated test-source delta | `GOTOOLCHAIN=local go test ./core/cli -run '^TestInstallSnapshotMatchesBoundedFields$' -count=1` | `ok zsh-pro/core/cli 0.004s`; the only implementation diff is its explicit `chmod(0640)` normalization before snapshot capture | ✓ PASS |
 | Native-evidence regression and binding | `scripts/verify-phase06-macos-runtime_test.sh`; SHA/ancestry/source-diff checks | Script PASS; sidecar hash matched; source unchanged from `cdb82ef` through `eb597a3` | ✓ PASS |
+
+#### Exact selector evidence
+
+The following are the complete Phase 06-05 selectors. Both commands used `-count=1 -v`; their verbose output enumerated every selected top-level test.
+
+```text
+GOTOOLCHAIN=local go test -v ./core/cli -run '^(TestIngestE2EStoreReadReturnsCompleteOrderedProfile|TestIngestE2ERegeneratePreservesNonSecretOrderTextAndSemantics|TestIngestE2ESecretRefComparatorDoesNotForgeAuthority|TestIngestE2EActivationUsesOnlyEffectiveManagedEntries|TestIngestE2EActivationResolvesSecretRefs|TestIngestE2EUnmanagedExecutionCanariesAreInert|TestIngestE2ESecretAllObjectDatabases|TestIngestE2ESecretAbsentAfterUpdateRefObservationAmbiguity|TestIngestE2EProgrammaticSecretRefPassThroughKindOnly|TestIngestE2ESourceLiteralRerunMayRecapture|TestRunIngestDynamicEntryRerunPreservesFieldsAndReporting|TestIngestE2ENeverExecutesSource)$' -count=1
+=== RUN   TestIngestE2EStoreReadReturnsCompleteOrderedProfile
+=== RUN   TestIngestE2ERegeneratePreservesNonSecretOrderTextAndSemantics
+=== RUN   TestIngestE2ESecretRefComparatorDoesNotForgeAuthority
+=== RUN   TestIngestE2EActivationUsesOnlyEffectiveManagedEntries
+=== RUN   TestIngestE2EActivationResolvesSecretRefs
+=== RUN   TestIngestE2EUnmanagedExecutionCanariesAreInert
+=== RUN   TestIngestE2ESecretAllObjectDatabases
+=== RUN   TestIngestE2ESecretAbsentAfterUpdateRefObservationAmbiguity
+=== RUN   TestIngestE2EProgrammaticSecretRefPassThroughKindOnly
+=== RUN   TestIngestE2ESourceLiteralRerunMayRecapture
+=== RUN   TestIngestE2ENeverExecutesSource
+=== RUN   TestRunIngestDynamicEntryRerunPreservesFieldsAndReporting
+PASS
+ok   zsh-pro/core/cli 1.082s
+```
+
+```text
+GOTOOLCHAIN=local go test -v ./core/cmd/zsh-pro -run '^(TestMainInitToBeginUsesExactCLIStore|TestMainIngestHumanAndJSON|TestMainIngestUsageExitTwo|TestMainIngestExplicitSharedRoot|TestMainIngestPromotesTargetExactlyOnce|TestMainIngestExpectedInstalledAndOutsideBytes|TestMainIngestIdempotent|TestMainIngestAppendWarningPreservesAndPersists|TestMainIngestActualInstalledStartupEquivalent|TestMainIngestOrderSensitiveDefinitionBeforeUse|TestMainIngestSecretBehaviorWithoutDisclosure|TestMainIngestAndActivationWithOSKeychains|TestMainIngestAllowsOnlyExactLoaderSymbols|TestMainIngestStartupHasNoSubprocess)$' -count=1
+=== RUN   TestMainInitToBeginUsesExactCLIStore
+=== RUN   TestMainIngestHumanAndJSON
+=== RUN   TestMainIngestUsageExitTwo
+=== RUN   TestMainIngestExplicitSharedRoot
+=== RUN   TestMainIngestPromotesTargetExactlyOnce
+=== RUN   TestMainIngestExpectedInstalledAndOutsideBytes
+=== RUN   TestMainIngestIdempotent
+=== RUN   TestMainIngestAppendWarningPreservesAndPersists
+=== RUN   TestMainIngestActualInstalledStartupEquivalent
+=== RUN   TestMainIngestOrderSensitiveDefinitionBeforeUse
+=== RUN   TestMainIngestSecretBehaviorWithoutDisclosure
+=== RUN   TestMainIngestAndActivationWithOSKeychains
+=== RUN   TestMainIngestAllowsOnlyExactLoaderSymbols
+=== RUN   TestMainIngestStartupHasNoSubprocess
+PASS
+ok   zsh-pro/core/cmd/zsh-pro 5.549s
+```
 
 ### Probe Execution
 
