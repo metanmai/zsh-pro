@@ -41,6 +41,8 @@ func TestMainWorktreeCompositionContract(t *testing.T) {
 		"worktree.NewRegistry(provider)",
 		"worktree.NewService(",
 		"cli.NewRuntimeWorktreeFactory(provider, provider, provider)",
+		"BindRuntimeWorktree(root *cli.RuntimeRoot)",
+		"authority.runtimeFactory.Bind(root)",
 		"cli.NewWithStoreInitializerAndWorktree(",
 	} {
 		if !strings.Contains(source, required) {
@@ -72,6 +74,17 @@ func TestMainWorktreeCompositionContract(t *testing.T) {
 				t.Fatalf("composition root declares package-global worktree authority: %v", value.Names)
 			}
 		}
+	}
+}
+
+func TestMainWorktreeRuntimeFactoryIsCanonicalLateBoundAuthority(t *testing.T) {
+	source, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	if !strings.Contains(text, "BindRuntimeWorktree(root *cli.RuntimeRoot)") || !strings.Contains(text, "authority.runtimeFactory.Bind(root)") {
+		t.Fatal("runtime factory is not exposed solely through authenticated late binding")
 	}
 }
 

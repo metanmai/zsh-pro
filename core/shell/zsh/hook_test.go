@@ -1,11 +1,121 @@
 package zsh
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 )
+
+func TestWorktreeLoaderSourceZeroProcessAndLazySurface(t *testing.T) {
+	script := (Provider{}).HookScript()
+	for _, want := range []string{
+		"_zp_worktree_ensure_attached()", "_zp_worktree_publish()", "_zp_worktree_pull()",
+		"_zp_worktree_sync()", "_zp_worktree_resolve_shared()", "zsh-pro()",
+		"_zp_worktree_precmd()", "_zp_worktree_line_finish()",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("worktree loader missing %q", want)
+		}
+	}
+	top := loaderTopLevel(script)
+	for _, forbidden := range []string{"$(", "`", "command zsh-pro", "git ", "_zp_worktree_ensure_attached", "_zp_worktree_publish"} {
+		if strings.Contains(top, forbidden) {
+			t.Fatalf("worktree loader source path contains %q:\n%s", forbidden, top)
+		}
+	}
+
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("zsh not installed")
+	}
+	dir := t.TempDir()
+	seen := filepath.Join(dir, "process-seen")
+	shim := filepath.Join(dir, "zsh-pro")
+	if err := os.WriteFile(shim, []byte("#!/bin/sh\n: > \"$ZP_SOURCE_PROCESS_SEEN\"\nexit 99\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	loader := filepath.Join(dir, "loader.zsh")
+	if err := os.WriteFile(loader, []byte(script), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("zsh", "-f", "-c", `source "$1"; [[ ! -e "$ZP_SOURCE_PROCESS_SEEN" ]]`, "zsh-pro-zero-process", loader)
+	cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "ZP_SOURCE_PROCESS_SEEN="+seen)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("sourcing loader was not zero-process: %v\n%s", err, out)
+	}
+}
+
+func TestWorktreePublicDispatcherAndLegacyDelegates(t *testing.T) {
+	script := (Provider{}).HookScript()
+	for _, want := range []string{
+		`zsh-pro() {`, `sync --resolve shared`, `ZSHPRO_SHELL_ID="$ZP_WORKTREE_SHELL_ID" command zsh-pro`,
+		`checkout() {`, `zsh-pro checkout "$@"`, `activate() {`, `status() {`, `zsh-pro status "$@"`,
+		`list() {`, `zsh-pro list "$@"`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("installed dispatcher missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{"export ZP_WORKTREE_CAPABILITY", "ZSHPRO_SHELL_CAPABILITY", "runtime worktree pull", "runtime worktree query"} {
+		if strings.Contains(script, forbidden) {
+			t.Errorf("installed dispatcher contains forbidden transport %q", forbidden)
+		}
+	}
+}
+
+func TestWorktreeCapabilityStdinAndReplyCleanupContract(t *testing.T) {
+	script := (Provider{}).HookScript()
+	for _, operation := range []string{"attach", "publish", "prepare", "acknowledge", "resolve"} {
+		if !strings.Contains(script, `runtime worktree `+operation+` 1`) {
+			t.Errorf("loader missing private %s route", operation)
+		}
+	}
+	for _, want := range []string{
+		"ZPWT 1", "255 0", "ZP_WORKTREE_REPLY_PROTOCOL", "ZP_WORKTREE_REPLY_REVISION",
+		"ZP_WORKTREE_REPLY_TOKEN", "ZP_WORKTREE_REPLY_FINGERPRINT", "ZP_WORKTREE_REPLY_COMPLETE",
+		"unset ZP_WORKTREE_REPLY_PROTOCOL ZP_WORKTREE_REPLY_REVISION ZP_WORKTREE_REPLY_TOKEN",
+		"setopt NOXTRACE", "fc -p", "always {",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("private transport/cleanup missing %q", want)
+		}
+	}
+}
+
+func TestWorktreeHookBoundariesAndAutoApplyContract(t *testing.T) {
+	script := (Provider{}).HookScript()
+	precmd := functionBody(script, "_zp_worktree_precmd")
+	lineFinish := functionBody(script, "_zp_worktree_line_finish")
+	if !strings.Contains(precmd, "_zp_worktree_publish") || strings.Contains(precmd, "_zp_worktree_pull") {
+		t.Fatalf("precmd is not publish-only:\n%s", precmd)
+	}
+	if !strings.Contains(lineFinish, "_zp_worktree_pull") || strings.Contains(lineFinish, "_zp_worktree_publish") {
+		t.Fatalf("line-finish is not pull-only:\n%s", lineFinish)
+	}
+	for _, want := range []string{"ZSHPRO_AUTO_APPLY", "true|false", "ZP_WORKTREE_AUTO_APPLY_EFFECTIVE", "ZP_WORKTREE_LAST_ERROR"} {
+		if !strings.Contains(script, want) {
+			t.Errorf("auto-apply contract missing %q", want)
+		}
+	}
+}
+
+func functionBody(script, name string) string {
+	start := strings.Index(script, name+"() {")
+	if start < 0 {
+		return ""
+	}
+	depth := 0
+	for offset, line := range strings.Split(script[start:], "\n") {
+		depth += strings.Count(line, "{") - strings.Count(line, "}")
+		if offset > 0 && depth == 0 {
+			lines := strings.Split(script[start:], "\n")
+			return strings.Join(lines[:offset+1], "\n")
+		}
+	}
+	return script[start:]
+}
 
 func TestHookScriptIsParseableAndDefinesRuntimeSurface(t *testing.T) {
 	script := (Provider{}).HookScript()
