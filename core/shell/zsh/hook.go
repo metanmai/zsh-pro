@@ -768,6 +768,7 @@ _zp_worktree_ensure_attached_impl() {
   local response='' operation_id='' rc=1
   local -a lines fields
   typeset -g ZP_WORKTREE_ATTACHED_NOW=0
+  (( ZP_WORKTREE_UNSUPPORTED == 0 )) || return 64
   if (( ZP_WORKTREE_ATTACHED )) && _zp_worktree_valid_hex64 "$ZP_WORKTREE_SHELL_ID" && _zp_worktree_valid_hex64 "$ZP_WORKTREE_CAPABILITY"; then
     return 0
   fi
@@ -1005,7 +1006,7 @@ _zp_worktree_line_finish() {
 
 zsh-pro() {
 	# Exact explicit resolution form: zsh-pro sync --resolve shared
-	local verb="${1-}" rc=0 status_output='' ZP_WORKTREE_TRANSITION_DEADLINE=''
+	local verb="${1-}" rc=0 status_output='' ZP_WORKTREE_TRANSITION_DEADLINE='' _zp_worktree_dispatcher_marker=1
   case "$verb:$#" in
     sync:1) _zp_worktree_sync ; return $? ;;
     sync:3)
@@ -1055,6 +1056,15 @@ zsh-pro() {
   esac
 }
 
+_zp_worktree_dispatcher_installed() {
+	[[ "${functions[zsh-pro]-}" == *'_zp_worktree_dispatcher_marker=1'* ]]
+}
+
+_zp_worktree_needs_legacy_switch() {
+	! _zp_worktree_dispatcher_installed || (( ZP_WORKTREE_UNSUPPORTED )) ||
+		[[ "${ZP_ACTIVE_PROFILE+x}" == x || "${ZP_LAST_GOOD_PROFILE+x}" == x ]]
+}
+
 activate() {
 	if (( $# != 1 )) || [[ -z "$1" ]]; then
 		_zp_runtime_error 2 "usage: activate <profile>"
@@ -1062,6 +1072,10 @@ activate() {
 	fi
 	local name="$1" rc=1
 	{
+		if _zp_worktree_needs_legacy_switch; then
+			if _zp_switch "$name"; then _zp_runtime_ok; fi
+			return 0
+		fi
 		if zsh-pro checkout "$@"; then _zp_runtime_ok; return 0; fi
 		rc=$?
 		# Compatibility is limited to pre-worktree binaries (the Phase 5 test
@@ -1085,6 +1099,10 @@ checkout() {
 	fi
 	local name="$1" rc=1
 	{
+		if _zp_worktree_needs_legacy_switch; then
+			if _zp_switch "$name"; then _zp_runtime_ok; fi
+			return 0
+		fi
 		if zsh-pro checkout "$@"; then _zp_runtime_ok; return 0; fi
 		rc=$?
 		if (( ZP_WORKTREE_UNSUPPORTED )); then
@@ -1126,7 +1144,23 @@ list() {
 		_zp_runtime_error 2 "usage: list"
 		return 0
 	fi
-	if zsh-pro list "$@"; then _zp_runtime_ok; else _zp_runtime_error $? "list failed"; fi
+	local rc timeout="${ZP_RUNTIME_TIMEOUT_SECONDS:-5}" listing=''
+  {
+    if _zp_run_bounded "$timeout" listing zsh-pro list "$@"; then
+      print -rn -- "$listing"
+      _zp_runtime_ok
+    else
+      rc=$?
+      if (( ZP_RUNTIME_TIMED_OUT )); then
+        _zp_runtime_error "$rc" "list timed out after ${timeout}s"
+      else
+        _zp_runtime_error "$rc" "list failed"
+      fi
+    fi
+  } always {
+    listing=''
+    unset REPLY
+  }
 	return 0
 }
 
@@ -1151,7 +1185,16 @@ status() {
 		_zp_runtime_error 2 "usage: status"
 		return 0
 	fi
-	if zsh-pro status "$@"; then :; else _zp_runtime_error $? "status failed"; fi
+	if (( ! ZP_WORKTREE_ATTACHED )) || ! _zp_worktree_dispatcher_installed; then
+		if [[ "${ZP_ACTIVE_PROFILE+x}" == x ]]; then print -r -- "$ZP_ACTIVE_PROFILE"; else print -r -- main; fi
+		return 0
+	fi
+	if zsh-pro status "$@"; then return 0; fi
+	if (( ZP_WORKTREE_UNSUPPORTED )); then
+		if [[ "${ZP_ACTIVE_PROFILE+x}" == x ]]; then print -r -- "$ZP_ACTIVE_PROFILE"; else print -r -- main; fi
+	else
+		_zp_runtime_error $? "status failed"
+	fi
 	return 0
 }
 
