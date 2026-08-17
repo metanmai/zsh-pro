@@ -1,6 +1,7 @@
 package model
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"math"
@@ -13,7 +14,12 @@ const (
 	MaxSnapshotBytes        = 2 * 1024 * 1024
 	MaxSnapshotRecords      = 10_000
 	MaxResolutionTokenBytes = 128
+	ShellCapabilityBytes    = 32
 )
+
+const shellCapabilityDomain = "zsh-pro/worktree-shell-capability/v1"
+
+var errShellCredentialNotImplemented = errors.New("shell credential verifier is not implemented")
 
 var (
 	liveEnvNameRE    = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -127,9 +133,83 @@ type Exclusion struct {
 	Reason   string
 }
 
+// ShellCapability is an opaque presented bearer. Its bytes are deliberately
+// held behind an unexported indirection so ordinary JSON/text encoding and Go
+// formatting cannot disclose them accidentally.
+type ShellCapability struct {
+	material *shellCapabilityMaterial
+}
+
+type shellCapabilityMaterial struct {
+	bytes [ShellCapabilityBytes]byte
+}
+
+// ShellCapabilityVerifier is the only credential material permitted at rest.
+type ShellCapabilityVerifier [sha256.Size]byte
+
+// ShellCredential authorizes one shell-private transition. It is intentionally
+// not serializable; the runtime transport owns its separate framed encoding.
+type ShellCredential struct {
+	ShellID    string
+	Capability ShellCapability
+}
+
+func NewShellCapability(raw []byte) (ShellCapability, error) {
+	if len(raw) != ShellCapabilityBytes {
+		return ShellCapability{}, fmt.Errorf("shell capability must be exactly %d bytes", ShellCapabilityBytes)
+	}
+	material := &shellCapabilityMaterial{}
+	copy(material.bytes[:], raw)
+	return ShellCapability{material: material}, nil
+}
+
+func (capability ShellCapability) Bytes() ([ShellCapabilityBytes]byte, bool) {
+	if capability.material == nil {
+		return [ShellCapabilityBytes]byte{}, false
+	}
+	return capability.material.bytes, true
+}
+
+func (capability ShellCapability) String() string { return "<redacted-shell-capability>" }
+
+func (credential ShellCredential) String() string {
+	return fmt.Sprintf("ShellCredential{ShellID:%q, Capability:<redacted>}", credential.ShellID)
+}
+
+func (ShellCredential) MarshalJSON() ([]byte, error) {
+	return nil, errors.New("shell credential is not serializable")
+}
+
+func (ShellCredential) MarshalText() ([]byte, error) {
+	return nil, errors.New("shell credential is not serializable")
+}
+
+func DeriveShellCapabilityVerifier(capability ShellCapability) (ShellCapabilityVerifier, error) {
+	_, ok := capability.Bytes()
+	if !ok {
+		return ShellCapabilityVerifier{}, errors.New("shell capability is missing")
+	}
+	return ShellCapabilityVerifier{}, fmt.Errorf("%w for %s", errShellCredentialNotImplemented, shellCapabilityDomain)
+}
+
+func VerifyShellCapability(verifier ShellCapabilityVerifier, capability ShellCapability) bool {
+	_, _ = verifier, capability
+	return false
+}
+
+func (credential ShellCredential) Validate() error {
+	if len(credential.ShellID) == 0 || len(credential.ShellID) > MaxResolutionTokenBytes || !liveTokenRE.MatchString(credential.ShellID) {
+		return errors.New("shell credential ID is invalid")
+	}
+	if _, ok := credential.Capability.Bytes(); !ok {
+		return errors.New("shell credential capability is missing")
+	}
+	return nil
+}
+
 type AttachRequest struct {
 	OperationID string
-	ShellID     string
+	Credential  ShellCredential
 	Initial     LiveSnapshot
 }
 
@@ -141,7 +221,7 @@ type AttachResult struct {
 
 type PublishRequest struct {
 	OperationID          string
-	ShellID              string
+	Credential           ShellCredential
 	AcknowledgedRevision uint64
 	Delta                []LiveChange
 }
@@ -154,7 +234,7 @@ type PublishResult struct {
 
 type PreparePullRequest struct {
 	OperationID     string
-	ShellID         string
+	Credential      ShellCredential
 	AppliedRevision uint64
 }
 
@@ -169,7 +249,7 @@ type PullResult = PreparePullResult
 
 type AcknowledgeRequest struct {
 	OperationID string
-	ShellID     string
+	Credential  ShellCredential
 	Revision    uint64
 	Token       ResolutionToken
 	Snapshot    LiveSnapshot
@@ -182,7 +262,7 @@ type AcknowledgeResult struct {
 
 type ResolveSharedRequest struct {
 	OperationID string
-	ShellID     string
+	Credential  ShellCredential
 	Conflict    Identity
 	Token       ResolutionToken
 	Snapshot    LiveSnapshot

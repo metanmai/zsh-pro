@@ -1,6 +1,8 @@
 package model
 
 import (
+	"bytes"
+	"encoding/json"
 	"math"
 	"reflect"
 	"strings"
@@ -56,6 +58,44 @@ func TestLiveValuePresenceCompatibilityAndEquality(t *testing.T) {
 	}
 	if EqualLiveValue(LiveFunction, ScalarLiveValue("print x\n"), ScalarLiveValue("print x")) {
 		t.Fatal("function equality was not exact")
+	}
+}
+
+func TestShellCapabilityVerifierAndCredentialSerializationContract(t *testing.T) {
+	raw := bytes.Repeat([]byte{0x5a}, ShellCapabilityBytes)
+	capability, err := NewShellCapability(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier, err := DeriveShellCapabilityVerifier(capability)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !VerifyShellCapability(verifier, capability) {
+		t.Fatal("derived verifier rejected its capability")
+	}
+	otherRaw := append([]byte(nil), raw...)
+	otherRaw[len(otherRaw)-1] ^= 1
+	other, err := NewShellCapability(otherRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if VerifyShellCapability(verifier, other) {
+		t.Fatal("verifier accepted a mismatched capability")
+	}
+	if _, err := NewShellCapability(raw[:len(raw)-1]); err == nil {
+		t.Fatal("short capability accepted")
+	}
+
+	credential := ShellCredential{ShellID: "shell-1", Capability: capability}
+	if err := credential.Validate(); err != nil {
+		t.Fatalf("credential rejected: %v", err)
+	}
+	if encoded, err := json.Marshal(credential); err == nil || bytes.Contains(encoded, raw) {
+		t.Fatalf("credential serialized raw bearer: %q, %v", encoded, err)
+	}
+	if rendered := credential.String(); strings.Contains(rendered, "ZZZZ") {
+		t.Fatalf("credential formatter exposed bearer bytes: %s", rendered)
 	}
 }
 
@@ -196,6 +236,12 @@ func TestCommittedWorktreeKeepsCompleteSourceSeparateFromProjection(t *testing.T
 
 func TestAttachResolveAndValueFreeMetadataContracts(t *testing.T) {
 	attachType := reflect.TypeOf(AttachRequest{})
+	if _, ok := attachType.FieldByName("Credential"); !ok {
+		t.Fatal("AttachRequest has no ShellCredential")
+	}
+	if _, ok := attachType.FieldByName("ShellID"); ok {
+		t.Fatal("AttachRequest has an unauthenticated ShellID field")
+	}
 	if _, ok := attachType.FieldByName("Initial"); !ok {
 		t.Fatal("AttachRequest has no initial snapshot")
 	}
@@ -213,6 +259,13 @@ func TestAttachResolveAndValueFreeMetadataContracts(t *testing.T) {
 	for _, field := range []string{"PendingRevision", "Token", "Changes"} {
 		if _, ok := resultType.FieldByName(field); !ok {
 			t.Errorf("ResolveSharedResult missing %s", field)
+		}
+	}
+	for _, request := range []any{AttachRequest{}, PublishRequest{}, PreparePullRequest{}, AcknowledgeRequest{}, ResolveSharedRequest{}} {
+		typ := reflect.TypeOf(request)
+		field, ok := typ.FieldByName("Credential")
+		if !ok || field.Type != reflect.TypeOf(ShellCredential{}) {
+			t.Errorf("%T does not require ShellCredential", request)
 		}
 	}
 
