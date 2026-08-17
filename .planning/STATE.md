@@ -5,8 +5,8 @@ milestone_name: Branchable Shell Environments
 current_phase: 07
 current_phase_name: Git-Like Shared Working Environment
 status: executing
-stopped_at: Completed 07-03-PLAN.md
-last_updated: "2026-08-17T12:09:26.878Z"
+stopped_at: Completed 07-04-PLAN.md
+last_updated: "2026-08-17T12:33:19.092Z"
 last_activity: 2026-08-17
 last_activity_desc: Phase 07 execution started
 progress:
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-06-25)
 ## Current Position
 
 Phase: 07 (Git-Like Shared Working Environment) — EXECUTING
-Plan: 4 of 10
+Plan: 5 of 10
 Status: Ready to execute
 Last activity: 2026-08-17 — Phase 07 execution started
 
@@ -99,6 +99,7 @@ Progress: [██████████] 100%
 | Phase 07-git-like-shared-working-environment P01 | 13min | 2 tasks | 4 files |
 | Phase 07-git-like-shared-working-environment P02 | 13min | 2 tasks | 5 files |
 | Phase 07 P03 | 46min | 3 tasks | 8 files |
+| Phase 07-git-like-shared-working-environment P04 | 20min | 2 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -188,6 +189,9 @@ Recent decisions affecting current work:
 - [Phase 07]: Use one descriptor-relative atomic worktree.json generation under one fixed lock — Shared, shell, pending, receipt, conflict, and event authority must not split across crash-consistency domains.
 - [Phase 07]: Retain overlapping loser deltas and conflicts until exact acknowledgement — First-lock-wins arbitration must not silently discard local intent or clear evidence before apply verification.
 - [Phase 07]: Duplicate and re-authenticate StateStore directory descriptors — The store owns its lifecycle while remaining bound to the authenticated directory despite path replacement.
+- [Phase 07]: Keep core/model normalization and equality authoritative; pin activate traversal to worktree diff by external golden test because a direct import would create a cycle.
+- [Phase 07]: Carry exact before/after PATH and FPATH endpoints so replacement reverse restores tied scalar and array state byte-identically.
+- [Phase 07]: Keep committed-worktree validation and traversal in regen.go while emit.go solely owns all added executable zsh syntax.
 
 ### Pending Todos
 
@@ -216,6 +220,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-08-17T12:09:26.871Z
-Stopped at: Completed 07-03-PLAN.md
+Last session: 2026-08-17T12:33:19.084Z
+Stopped at: Completed 07-04-PLAN.md
 Resume file: None
