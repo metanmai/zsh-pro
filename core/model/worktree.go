@@ -2,6 +2,7 @@ package model
 
 import (
 	"crypto/sha256"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"math"
@@ -18,8 +19,6 @@ const (
 )
 
 const shellCapabilityDomain = "zsh-pro/worktree-shell-capability/v1"
-
-var errShellCredentialNotImplemented = errors.New("shell credential verifier is not implemented")
 
 var (
 	liveEnvNameRE    = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -185,16 +184,24 @@ func (ShellCredential) MarshalText() ([]byte, error) {
 }
 
 func DeriveShellCapabilityVerifier(capability ShellCapability) (ShellCapabilityVerifier, error) {
-	_, ok := capability.Bytes()
+	raw, ok := capability.Bytes()
 	if !ok {
 		return ShellCapabilityVerifier{}, errors.New("shell capability is missing")
 	}
-	return ShellCapabilityVerifier{}, fmt.Errorf("%w for %s", errShellCredentialNotImplemented, shellCapabilityDomain)
+	digest := sha256.New()
+	_, _ = digest.Write([]byte(shellCapabilityDomain))
+	_, _ = digest.Write(raw[:])
+	var verifier ShellCapabilityVerifier
+	copy(verifier[:], digest.Sum(nil))
+	return verifier, nil
 }
 
 func VerifyShellCapability(verifier ShellCapabilityVerifier, capability ShellCapability) bool {
-	_, _ = verifier, capability
-	return false
+	derived, err := DeriveShellCapabilityVerifier(capability)
+	if err != nil {
+		return false
+	}
+	return subtle.ConstantTimeCompare(verifier[:], derived[:]) == 1
 }
 
 func (credential ShellCredential) Validate() error {
