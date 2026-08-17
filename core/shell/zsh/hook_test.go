@@ -1,13 +1,324 @@
 package zsh
 
 import (
+	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestWorktreeLazyAttachPublishResolveAndCapabilityVisibility(t *testing.T) {
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("zsh not installed")
+	}
+	dir := t.TempDir()
+	loader := filepath.Join(dir, "loader.zsh")
+	if err := os.WriteFile(loader, []byte((Provider{}).HookScript()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	shim := filepath.Join(dir, "zsh-pro")
+	const capability = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	const shellID = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	shimSource := `#!/bin/sh
+op="$3"
+count_file="$ZP_WORKTREE_TEST_DIR/count-$op"
+count=0
+if test -f "$count_file"; then read count < "$count_file"; fi
+count=$((count + 1))
+printf '%s\n' "$count" > "$count_file"
+cat > "$ZP_WORKTREE_TEST_DIR/frame-$op-$count"
+printf '%s|%s|%s\n' "$*" "${ZP_WORKTREE_CAPABILITY-}" "${ZSHPRO_SHELL_CAPABILITY-}" >> "$ZP_WORKTREE_TEST_DIR/visibility"
+case "$op:$count" in
+  attach:1) printf '%s\n%s\n%s\n' 'ZPWC 1' '` + shellID + `' '` + capability + `' ;;
+  attach:2) printf '%s\n' 'ZPWA 1 1 1' ;;
+  publish:1) printf '%s\n%s\n' 'ZPWP 1 2 1' 'overlap env ZP_CONFLICT durable-token' ;;
+  publish:2) printf '%s\n' 'ZPWP 1 3 0' ;;
+  resolve:1)
+    printf '%s\n' \
+      "typeset -g ZP_WORKTREE_REPLY_PROTOCOL='1'" \
+      "typeset -g ZP_WORKTREE_REPLY_REVISION='3'" \
+      "typeset -g ZP_WORKTREE_REPLY_TOKEN='9'" \
+      "typeset -g ZP_WORKTREE_REPLY_FINGERPRINT='0000000000000000000000000000000000000000000000000000000000000000'" \
+      "typeset -g ZP_WORKTREE_REPLY_COMPLETE='1'"
+    ;;
+  acknowledge:1) printf '%s\n' 'ZPWK 1 3 1' ;;
+  prepare:*) : ;;
+  *) exit 64 ;;
+esac
+`
+	if err := os.WriteFile(shim, []byte(shimSource), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	body := `
+source "$1" || exit 10
+[[ ! -e "$ZP_WORKTREE_TEST_DIR/count-attach" ]] || exit 11
+_zp_worktree_precmd
+[[ "$ZP_WORKTREE_ATTACHED" == 1 && "$ZP_WORKTREE_ATTACHED_NOW" == 1 ]] || { print -r -- "attach:$ZP_WORKTREE_ATTACHED:$ZP_WORKTREE_ATTACHED_NOW:$ZP_WORKTREE_LAST_ERROR:$ZP_WORKTREE_UNSUPPORTED"; exit 12; }
+[[ ! -e "$ZP_WORKTREE_TEST_DIR/count-publish" ]] || exit 13
+exec 9>&2 2>"$ZP_WORKTREE_TEST_DIR/xtrace"
+setopt xtrace
+_zp_worktree_precmd
+unsetopt xtrace
+[[ "$ZP_WORKTREE_CONFLICT_COUNT" == 1 && "$ZP_WORKTREE_CONFLICT_TOKEN" == durable-token ]] || { print -r -- "publish:$ZP_WORKTREE_CONFLICT_COUNT:${ZP_WORKTREE_CONFLICT_TOKEN-}:$ZP_WORKTREE_LAST_ERROR"; exit 14; }
+setopt xtrace
+zsh-pro sync --resolve shared || exit 15
+unsetopt xtrace
+exec 2>&9 9>&-
+[[ "$ZP_WORKTREE_CONFLICT_COUNT" == 0 && "$ZP_WORKTREE_APPLIED_REVISION" == 3 ]] || exit 16
+_zp_worktree_publish || exit 17
+print -r -- survived
+`
+	cmd := exec.Command("zsh", "-f", "-c", body, "zsh-pro-worktree-live", loader)
+	cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "ZP_WORKTREE_TEST_DIR="+dir)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("real-zsh worktree lifecycle: %v\n%s", err, out)
+	}
+	if string(out) != "survived\n" {
+		t.Fatalf("worktree lifecycle output = %q", out)
+	}
+	visibility, err := os.ReadFile(filepath.Join(dir, "visibility"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(visibility, []byte(capability)) || bytes.Contains(visibility, []byte(shellID+" "+capability)) {
+		t.Fatalf("credential appeared in helper argv/environment: %q", visibility)
+	}
+	trace, err := os.ReadFile(filepath.Join(dir, "xtrace"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(trace, []byte(capability)) || bytes.Contains(trace, []byte("durable-token")) || bytes.Contains(trace, []byte("ZP_WORKTREE_REPLY_FINGERPRINT='")) {
+		t.Fatalf("xtrace disclosed private worktree transport: %q", trace)
+	}
+	for _, target := range []string{"frame-attach-2", "frame-publish-1", "frame-resolve-1", "frame-acknowledge-1"} {
+		frame, err := os.ReadFile(filepath.Join(dir, target))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := validateWorktreeHookFrame(frame); err != nil {
+			t.Fatalf("%s: %v", target, err)
+		}
+		if !bytes.Contains(frame, []byte(capability)) {
+			t.Fatalf("%s omitted stdin capability", target)
+		}
+	}
+	resolveFrame, err := os.ReadFile(filepath.Join(dir, "frame-resolve-1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(resolveFrame, []byte("durable-token")) || !bytes.Contains(resolveFrame, []byte("ZP_CONFLICT")) {
+		t.Fatal("explicit resolve did not use durable value-free conflict metadata")
+	}
+}
+
+func TestWorktreeCapabilityProcessVisibilityWhileHelperBlocked(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("requires /proc process inspection")
+	}
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("zsh not installed")
+	}
+	dir := t.TempDir()
+	loader := filepath.Join(dir, "loader.zsh")
+	if err := os.WriteFile(loader, []byte((Provider{}).HookScript()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	shim := filepath.Join(dir, "zsh-pro")
+	const capability = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+	const shellID = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+	shimSource := `#!/bin/sh
+count_file="$ZP_WORKTREE_TEST_DIR/attach-count"
+count=0
+if test -f "$count_file"; then read count < "$count_file"; fi
+count=$((count + 1))
+printf '%s\n' "$count" > "$count_file"
+cat > "$ZP_WORKTREE_TEST_DIR/blocked-frame-$count"
+if test "$count" -eq 1; then
+  printf '%s\n%s\n%s\n' 'ZPWC 1' '` + shellID + `' '` + capability + `'
+  exit 0
+fi
+printf '%s\n' "$$" > "$ZP_WORKTREE_TEST_DIR/helper-pid"
+: > "$ZP_WORKTREE_TEST_DIR/ready"
+while test ! -e "$ZP_WORKTREE_TEST_DIR/release"; do sleep 0.01; done
+printf '%s\n' 'ZPWA 1 1 1'
+`
+	if err := os.WriteFile(shim, []byte(shimSource), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("zsh", "-f", "-c", `source "$1"; _zp_worktree_ensure_attached`, "zsh-pro-proc", loader)
+	cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "ZP_WORKTREE_TEST_DIR="+dir)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	finished := false
+	t.Cleanup(func() {
+		if finished {
+			return
+		}
+		_ = os.WriteFile(filepath.Join(dir, "release"), nil, 0o600)
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "ready")); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("blocked helper did not accept stdin")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	pidBytes, err := os.ReadFile(filepath.Join(dir, "helper-pid"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid := strings.TrimSpace(string(pidBytes))
+	cmdline, err := os.ReadFile(filepath.Join("/proc", pid, "cmdline"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	environ, err := os.ReadFile(filepath.Join("/proc", pid, "environ"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(cmdline, []byte(capability)) || bytes.Contains(environ, []byte(capability)) {
+		t.Fatalf("blocked helper disclosed capability in process metadata: cmdline=%q", cmdline)
+	}
+	frame, err := os.ReadFile(filepath.Join(dir, "blocked-frame-2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(frame, []byte(capability)) {
+		t.Fatal("blocked helper did not receive the capability solely over stdin")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "release"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	finished = true
+}
+
+func TestWorktreeTransitionFakeClockCumulative249And251(t *testing.T) {
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("zsh not installed")
+	}
+	dir := t.TempDir()
+	loader := filepath.Join(dir, "loader.zsh")
+	if err := os.WriteFile(loader, []byte((Provider{}).HookScript()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const body = `
+source "$1" || exit 10
+deadline=0.250
+for now in 0.025 0.065 0.119 0.189 0.249; do
+  _zp_worktree_budget_check "$deadline" "$now" || exit 11
+done
+_zp_worktree_budget_check "$deadline" 0.251 && exit 12
+print -r -- survived
+`
+	cmd := exec.Command("zsh", "-f", "-c", body, "zsh-pro-fake-clock", loader)
+	out, err := cmd.CombinedOutput()
+	if err != nil || string(out) != "survived\n" {
+		t.Fatalf("fake cumulative deadline = (%v, %q)", err, out)
+	}
+}
+
+func TestWorktreeTransitionRealTime25And500MillisecondMargins(t *testing.T) {
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("zsh not installed")
+	}
+	for _, test := range []struct {
+		name     string
+		stall    string
+		attached string
+		max      time.Duration
+	}{
+		{name: "well-below", stall: "0.025", attached: "1", max: 400 * time.Millisecond},
+		{name: "clearly-over", stall: "0.500", attached: "0", max: 450 * time.Millisecond},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			loader := filepath.Join(dir, "loader.zsh")
+			if err := os.WriteFile(loader, []byte((Provider{}).HookScript()), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			shim := filepath.Join(dir, "zsh-pro")
+			shimSource := `#!/bin/sh
+count_file="$ZP_WORKTREE_TEST_DIR/count"
+count=0
+if test -f "$count_file"; then read count < "$count_file"; fi
+count=$((count + 1))
+printf '%s\n' "$count" > "$count_file"
+cat >/dev/null
+sleep "$ZP_WORKTREE_TEST_STALL"
+if test "$count" -eq 1; then
+  printf '%s\n%s\n%s\n' 'ZPWC 1' 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee' 'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff'
+else
+  printf '%s\n' 'ZPWA 1 1 1'
+fi
+`
+			if err := os.WriteFile(shim, []byte(shimSource), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			body := `source "$1"; _zp_worktree_ensure_attached || :; print -r -- "survived:$ZP_WORKTREE_ATTACHED"`
+			cmd := exec.Command("zsh", "-f", "-c", body, "zsh-pro-real-clock", loader)
+			cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "ZP_WORKTREE_TEST_DIR="+dir, "ZP_WORKTREE_TEST_STALL="+test.stall)
+			started := time.Now()
+			out, err := cmd.CombinedOutput()
+			elapsed := time.Since(started)
+			if err != nil || string(out) != "survived:"+test.attached+"\n" {
+				t.Fatalf("real deadline = (%v, %q) after %s", err, out, elapsed)
+			}
+			if elapsed >= test.max {
+				t.Fatalf("real deadline margin exceeded: %s >= %s", elapsed, test.max)
+			}
+		})
+	}
+}
+
+func validateWorktreeHookFrame(frame []byte) error {
+	lineEnd := bytes.IndexByte(frame, '\n')
+	if lineEnd < 0 {
+		return fmt.Errorf("missing header")
+	}
+	var version, count int
+	if _, err := fmt.Sscanf(string(frame[:lineEnd]), "ZPWT %d %d", &version, &count); err != nil || version != 1 || count <= 0 || count > 10016 {
+		return fmt.Errorf("invalid header")
+	}
+	offset := lineEnd + 1
+	for index := 0; index < count; index++ {
+		lineEnd = bytes.IndexByte(frame[offset:], '\n')
+		if lineEnd < 0 {
+			return fmt.Errorf("record %d missing header", index)
+		}
+		var tag, length int
+		if _, err := fmt.Sscanf(string(frame[offset:offset+lineEnd]), "%d %d", &tag, &length); err != nil || length < 0 {
+			return fmt.Errorf("record %d invalid header", index)
+		}
+		offset += lineEnd + 1
+		if offset+length >= len(frame) || frame[offset+length] != '\n' {
+			return fmt.Errorf("record %d truncated", index)
+		}
+		offset += length + 1
+		if index+1 == count && (tag != 255 || length != 0) {
+			return fmt.Errorf("missing final record")
+		}
+	}
+	if offset != len(frame) {
+		return fmt.Errorf("trailing bytes")
+	}
+	return nil
+}
 
 func TestWorktreeLoaderSourceZeroProcessAndLazySurface(t *testing.T) {
 	script := (Provider{}).HookScript()

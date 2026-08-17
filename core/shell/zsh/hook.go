@@ -8,6 +8,25 @@ typeset -g ZP_LAST_RUNTIME_STATUS=0
 typeset -g ZP_LAST_RUNTIME_ERROR=''
 typeset -g ZP_RUNTIME_TIMED_OUT=0
 
+# Worktree state is parent-shell-local and deliberately non-exported. Preserve
+# an authenticated pair and semantic baseline across a loader refresh; clear
+# only transient capture arrays at source time.
+(( ${+ZP_WORKTREE_SHELL_ID} )) || typeset -g ZP_WORKTREE_SHELL_ID=''
+(( ${+ZP_WORKTREE_CAPABILITY} )) || typeset -g ZP_WORKTREE_CAPABILITY=''
+typeset -g +x ZP_WORKTREE_SHELL_ID ZP_WORKTREE_CAPABILITY
+(( ${+ZP_WORKTREE_ATTACHED} )) || typeset -g ZP_WORKTREE_ATTACHED=0
+(( ${+ZP_WORKTREE_APPLIED_REVISION} )) || typeset -g ZP_WORKTREE_APPLIED_REVISION=0
+(( ${+ZP_WORKTREE_OPERATION_SEQUENCE} )) || typeset -g ZP_WORKTREE_OPERATION_SEQUENCE=0
+(( ${+ZP_WORKTREE_LAST_ERROR} )) || typeset -g ZP_WORKTREE_LAST_ERROR=''
+(( ${+ZP_WORKTREE_CONFLICT_COUNT} )) || typeset -g ZP_WORKTREE_CONFLICT_COUNT=0
+(( ${+ZP_WORKTREE_AUTO_APPLY_DEFAULT} )) || typeset -g ZP_WORKTREE_AUTO_APPLY_DEFAULT=true
+(( ${+ZP_WORKTREE_AUTO_APPLY_EFFECTIVE} )) || typeset -g ZP_WORKTREE_AUTO_APPLY_EFFECTIVE=true
+(( ${+ZP_WORKTREE_BASELINE_FIELDS} )) || typeset -ga ZP_WORKTREE_BASELINE_FIELDS=()
+(( ${+ZP_WORKTREE_BASELINE_COUNTS} )) || typeset -ga ZP_WORKTREE_BASELINE_COUNTS=()
+typeset -ga _ZP_WORKTREE_CAPTURE_FIELDS=()
+typeset -ga _ZP_WORKTREE_CAPTURE_COUNTS=()
+typeset -g ZP_WORKTREE_GUARD=0 ZP_WORKTREE_UNSUPPORTED=0
+
 zp_capture_env() {
   local name="$1" safe slot present_slot
   safe="${name//[^A-Za-z0-9_]/_}"
@@ -478,14 +497,581 @@ _zp_switch() {
   }
 }
 
+_zp_worktree_error() {
+  local message="$1"
+  typeset -g ZP_WORKTREE_LAST_ERROR="$message" ZP_LAST_RUNTIME_STATUS=1 ZP_LAST_RUNTIME_ERROR="$message"
+  return 1
+}
+
+_zp_worktree_protected_call() {
+	local target="$1" rc=1 xtrace_was_on=0 history_pushed=0
+	shift
+	{
+		[[ -o xtrace ]] && xtrace_was_on=1
+		setopt NOXTRACE 2>/dev/null || return 1
+		if fc -p 2>/dev/null; then history_pushed=1; else return 1; fi
+		"$target" "$@"
+		rc=$?
+	} always {
+		if (( history_pushed )); then fc -P 2>/dev/null || :; fi
+		if (( xtrace_was_on )); then setopt XTRACE 2>/dev/null || :; else setopt NOXTRACE 2>/dev/null || :; fi
+		unset REPLY
+	}
+	return "$rc"
+}
+
+_zp_worktree_next_operation() {
+  local result_name="$1" value
+  (( ++ZP_WORKTREE_OPERATION_SEQUENCE ))
+  value="zp:${$}:${ZP_WORKTREE_OPERATION_SEQUENCE}:${EPOCHREALTIME//./}"
+  : ${(P)result_name::=$value}
+}
+
+_zp_worktree_budget_begin() {
+  local result_name="$1"
+  zmodload zsh/datetime 2>/dev/null || return 1
+  : ${(P)result_name::=$(( EPOCHREALTIME + 0.250 ))}
+}
+
+_zp_worktree_budget_check() {
+  local deadline="$1" now="${2-${EPOCHREALTIME-0}}"
+  (( now <= deadline ))
+}
+
+_zp_worktree_capture() {
+  zmodload zsh/parameter 2>/dev/null || return 1
+  local name descriptor value option_state
+  local -a elements
+  _ZP_WORKTREE_CAPTURE_FIELDS=(ZP_LIVE_SNAPSHOT 1)
+  _ZP_WORKTREE_CAPTURE_COUNTS=(2)
+
+	for name in "${(@ok)parameters}"; do
+		[[ "$name" == PATH || "$name" == FPATH || "$name" == PWD || "$name" == OLDPWD || "$name" == SHLVL || "$name" == _ ]] && continue
+    descriptor="${parameters[$name]}"
+    [[ "$descriptor" == *scalar* && "$descriptor" == *export* ]] || continue
+    value="${(P)name}"
+    _ZP_WORKTREE_CAPTURE_FIELDS+=(R env "$name" exported 1 "$value")
+    _ZP_WORKTREE_CAPTURE_COUNTS+=(6)
+  done
+  for name in "${(@ok)aliases}"; do
+    _ZP_WORKTREE_CAPTURE_FIELDS+=(R alias "$name" body 1 "${aliases[$name]}")
+    _ZP_WORKTREE_CAPTURE_COUNTS+=(6)
+  done
+  for name in "${(@ok)functions}"; do
+    _ZP_WORKTREE_CAPTURE_FIELDS+=(R function "$name" body 1 "${functions[$name]}")
+    _ZP_WORKTREE_CAPTURE_COUNTS+=(6)
+  done
+
+  elements=("${path[@]}")
+  _ZP_WORKTREE_CAPTURE_FIELDS+=(R path PATH ordered "${#elements}" "${elements[@]}")
+  _ZP_WORKTREE_CAPTURE_COUNTS+=( $(( 5 + ${#elements} )) )
+  elements=("${fpath[@]}")
+  _ZP_WORKTREE_CAPTURE_FIELDS+=(R fpath FPATH ordered "${#elements}" "${elements[@]}")
+  _ZP_WORKTREE_CAPTURE_COUNTS+=( $(( 5 + ${#elements} )) )
+
+  for name in "${(@ok)options}"; do
+    option_state="${options[$name]}"
+    _ZP_WORKTREE_CAPTURE_FIELDS+=(R option "$name" boolean 1 "$option_state")
+    _ZP_WORKTREE_CAPTURE_COUNTS+=(6)
+  done
+  _ZP_WORKTREE_CAPTURE_FIELDS+=(E)
+  _ZP_WORKTREE_CAPTURE_COUNTS+=(1)
+}
+
+_zp_worktree_write_scalar_record() {
+  local tag="$1" value="$2" LC_ALL=C
+  builtin printf '%s %s\n' "$tag" "${#value}"
+  builtin printf '%s\n' "$value"
+}
+
+_zp_worktree_write_snapshot_records() {
+  local tag="$1" fields_name="$2" counts_name="$3" offset=0 count length index value LC_ALL=C
+  local -a fields counts record
+  fields=("${(@P)fields_name}")
+  counts=("${(@P)counts_name}")
+  for count in "${counts[@]}"; do
+    [[ "$count" == <-> && "$count" != 0 ]] || return 1
+    record=("${fields[@]:$offset:$count}")
+    (( ${#record} == count )) || return 1
+    length=0
+    for value in "${record[@]}"; do (( length += ${#value} + 1 )); done
+    builtin printf '%s %s\n' "$tag" "$length"
+    for value in "${record[@]}"; do builtin printf '%s\0' "$value"; done
+    builtin printf '\n'
+    (( offset += count ))
+  done
+  (( offset == ${#fields} ))
+}
+
+_zp_worktree_write_frame() {
+  local operation="$1" mode="$2" operation_id="$3" revision="$4" token="$5"
+  local identity_kind="$6" identity_name="$7" apply_name="$8" reverse_name="$9"
+  local baseline_fields="${10}" baseline_counts="${11}" current_fields="${12}" current_counts="${13}"
+  local record_count baseline_records=0 current_records=0
+  [[ -z "$baseline_counts" ]] || baseline_records=${#${(P)baseline_counts}}
+  [[ -z "$current_counts" ]] || current_records=${#${(P)current_counts}}
+  case "$operation:$mode" in
+    attach:allocate) record_count=3 ;;
+    attach:commit) record_count=$(( 6 + current_records )) ;;
+    publish:*) record_count=$(( 6 + baseline_records + current_records )) ;;
+    prepare:*) record_count=$(( 8 + current_records )) ;;
+    acknowledge:*) record_count=$(( 7 + current_records )) ;;
+    resolve:*) record_count=$(( 10 + current_records )) ;;
+    *) return 1 ;;
+  esac
+  builtin printf 'ZPWT 1 %s\n' "$record_count"
+  _zp_worktree_write_scalar_record 1 "$operation" || return 1
+  if [[ "$operation" == attach ]]; then _zp_worktree_write_scalar_record 2 "$mode" || return 1; fi
+  if [[ "$mode" != allocate ]]; then
+    _zp_worktree_write_scalar_record 3 "$ZP_WORKTREE_SHELL_ID" || return 1
+    _zp_worktree_write_scalar_record 4 "$ZP_WORKTREE_CALL_CAPABILITY" || return 1
+    _zp_worktree_write_scalar_record 5 "$operation_id" || return 1
+  fi
+  case "$operation" in
+    publish|prepare|acknowledge) _zp_worktree_write_scalar_record 6 "$revision" || return 1 ;;
+  esac
+  case "$operation" in
+    acknowledge|resolve) _zp_worktree_write_scalar_record 7 "$token" || return 1 ;;
+  esac
+  if [[ "$operation" == resolve ]]; then
+    _zp_worktree_write_scalar_record 8 "$identity_kind" || return 1
+    _zp_worktree_write_scalar_record 9 "$identity_name" || return 1
+  fi
+  if [[ "$operation" == prepare || "$operation" == resolve ]]; then
+    _zp_worktree_write_scalar_record 10 "$apply_name" || return 1
+    _zp_worktree_write_scalar_record 11 "$reverse_name" || return 1
+  fi
+  if [[ "$operation" == publish ]]; then
+    _zp_worktree_write_snapshot_records 31 "$baseline_fields" "$baseline_counts" || return 1
+  fi
+  if [[ "$mode" != allocate ]]; then
+    _zp_worktree_write_snapshot_records 32 "$current_fields" "$current_counts" || return 1
+  fi
+  builtin printf '255 0\n\n'
+}
+
+_zp_worktree_invoke() {
+  local operation="$1" result_name="$2" mode="$3" operation_id="$4" revision="$5" token="$6"
+  local identity_kind="$7" identity_name="$8" apply_name="$9" reverse_name="${10}"
+  local baseline_fields="${11}" baseline_counts="${12}" current_fields="${13}" current_counts="${14}"
+	local captured='' line='' rc=1 xtrace_was_on=0 history_pushed=0 helper_pid=0 closer_pid=0
+	local read_fd=-1 write_fd=-1 remaining deadline='' wait_rc=0 frame_rc=0
+	local ZP_WORKTREE_CALL_CAPABILITY=''
+	: ${(P)result_name::=}
+	{
+		if (( ${+ZP_WORKTREE_TRANSITION_DEADLINE} )); then
+			deadline="$ZP_WORKTREE_TRANSITION_DEADLINE"
+		else
+			_zp_worktree_budget_begin deadline || return 1
+		fi
+		_zp_worktree_budget_check "$deadline" || return 124
+		[[ -o xtrace ]] && xtrace_was_on=1
+		setopt NOXTRACE 2>/dev/null || return 1
+		ZP_WORKTREE_CALL_CAPABILITY="$ZP_WORKTREE_CAPABILITY"
+		if fc -p 2>/dev/null; then history_pushed=1; else return 1; fi
+		case "$operation" in
+			attach)
+				coproc command zsh-pro runtime worktree attach 1 2>/dev/null
+				;;
+			publish)
+				coproc command zsh-pro runtime worktree publish 1 2>/dev/null
+				;;
+			prepare)
+				coproc command zsh-pro runtime worktree prepare 1 2>/dev/null
+				;;
+			acknowledge)
+				coproc command zsh-pro runtime worktree acknowledge 1 2>/dev/null
+				;;
+			resolve)
+				coproc command zsh-pro runtime worktree resolve 1 2>/dev/null
+				;;
+			*) return 2 ;;
+		esac
+		helper_pid=$!
+		exec {write_fd}>&p || return 1
+		exec {read_fd}<&p || return 1
+		# Starting an inert replacement closes zsh's special coprocess endpoints;
+		# the two private duplicates remain owned by this call.
+		coproc :
+		closer_pid=$!
+		( _zp_worktree_write_frame "$operation" "$mode" "$operation_id" "$revision" "$token" "$identity_kind" "$identity_name" "$apply_name" "$reverse_name" "$baseline_fields" "$baseline_counts" "$current_fields" "$current_counts" ) >&$write_fd || frame_rc=$?
+		exec {write_fd}>&-
+		write_fd=-1
+		if (( frame_rc != 0 )); then
+			exec {read_fd}<&-
+			read_fd=-1
+			if wait "$helper_pid" 2>/dev/null; then wait_rc=0; else wait_rc=$?; fi
+			wait "$closer_pid" 2>/dev/null || :
+			helper_pid=0 closer_pid=0
+			(( wait_rc != 0 )) && return "$wait_rc"
+			return "$frame_rc"
+		fi
+		while true; do
+			remaining=$(( deadline - EPOCHREALTIME ))
+			if (( remaining <= 0 )); then rc=124; break; fi
+			if IFS= read -r -t "$remaining" line <&$read_fd; then
+				captured+="$line"$'\n'
+				(( ${#captured} <= 2101248 )) || { rc=1; break; }
+				continue
+			fi
+			if _zp_worktree_budget_check "$deadline"; then rc=0; else rc=124; fi
+			break
+		done
+		exec {read_fd}<&-
+		read_fd=-1
+		if (( rc == 124 )); then kill -TERM "$helper_pid" 2>/dev/null || :; fi
+		if wait "$helper_pid" 2>/dev/null; then wait_rc=0; else wait_rc=$?; fi
+		if (( rc != 124 && wait_rc != 0 )); then rc=$wait_rc; fi
+		wait "$closer_pid" 2>/dev/null || :
+		helper_pid=0 closer_pid=0
+		if (( rc == 0 )); then
+			captured="${captured%$'\n'}"
+			: ${(P)result_name::=$captured}
+		fi
+	} always {
+		if (( write_fd >= 0 )); then exec {write_fd}>&- 2>/dev/null || :; fi
+		if (( read_fd >= 0 )); then exec {read_fd}<&- 2>/dev/null || :; fi
+		if (( helper_pid > 0 )); then kill -TERM "$helper_pid" 2>/dev/null || :; wait "$helper_pid" 2>/dev/null || :; fi
+		if (( closer_pid > 0 )); then wait "$closer_pid" 2>/dev/null || :; fi
+		captured='' line='' ZP_WORKTREE_CALL_CAPABILITY='' operation_id='' token='' deadline='' remaining=''
+		if (( history_pushed )); then fc -P 2>/dev/null || :; fi
+    if (( xtrace_was_on )); then setopt XTRACE 2>/dev/null || :; else setopt NOXTRACE 2>/dev/null || :; fi
+    unset REPLY
+  }
+  return "$rc"
+}
+
+_zp_worktree_valid_hex64() {
+  local value="$1"
+  [[ ${#value} == 64 && "$value" != *[^0-9a-f]* ]]
+}
+
+_zp_worktree_valid_uint() {
+  local value="$1"
+  [[ "$value" == <-> && "$value" != 0 && ( ${#value} == 1 || "$value" != 0* ) ]]
+}
+
+_zp_worktree_refresh_auto_apply() {
+	local status_output="$1" line='' persisted=''
+	for line in "${(@f)status_output}"; do
+		case "$line" in
+			'auto-apply default: true') persisted=true ;;
+			'auto-apply default: false') persisted=false ;;
+		esac
+	done
+	[[ -z "$persisted" ]] || typeset -g ZP_WORKTREE_AUTO_APPLY_DEFAULT="$persisted"
+  status_output='' line='' persisted=''
+  return 0
+}
+
+_zp_worktree_ensure_attached_impl() {
+  local response='' operation_id='' rc=1
+  local -a lines fields
+  typeset -g ZP_WORKTREE_ATTACHED_NOW=0
+  if (( ZP_WORKTREE_ATTACHED )) && _zp_worktree_valid_hex64 "$ZP_WORKTREE_SHELL_ID" && _zp_worktree_valid_hex64 "$ZP_WORKTREE_CAPABILITY"; then
+    return 0
+  fi
+  if [[ -n "$ZP_WORKTREE_SHELL_ID" || -n "$ZP_WORKTREE_CAPABILITY" ]]; then
+    if ! _zp_worktree_valid_hex64 "$ZP_WORKTREE_SHELL_ID" || ! _zp_worktree_valid_hex64 "$ZP_WORKTREE_CAPABILITY"; then
+      typeset -g ZP_WORKTREE_SHELL_ID='' ZP_WORKTREE_CAPABILITY='' ZP_WORKTREE_ATTACHED=0
+      return 1
+    fi
+  fi
+  if (( ${#ZP_WORKTREE_BASELINE_COUNTS} == 0 )); then
+    _zp_worktree_capture || return 1
+    ZP_WORKTREE_BASELINE_FIELDS=("${_ZP_WORKTREE_CAPTURE_FIELDS[@]}")
+    ZP_WORKTREE_BASELINE_COUNTS=("${_ZP_WORKTREE_CAPTURE_COUNTS[@]}")
+    _ZP_WORKTREE_CAPTURE_FIELDS=() _ZP_WORKTREE_CAPTURE_COUNTS=()
+  fi
+  if [[ -z "$ZP_WORKTREE_SHELL_ID" ]]; then
+    if _zp_worktree_invoke attach response allocate '' '' '' '' '' '' '' '' '' '' ''; then :; else
+      rc=$?
+      (( rc == 64 )) && typeset -g ZP_WORKTREE_UNSUPPORTED=1
+      _zp_worktree_error "worktree attachment allocation failed"
+      return 1
+    fi
+    lines=("${(@f)response}")
+    if (( ${#lines} != 3 )) || [[ "${lines[1]}" != 'ZPWC 1' ]] || ! _zp_worktree_valid_hex64 "${lines[2]}" || ! _zp_worktree_valid_hex64 "${lines[3]}" || [[ "${lines[2]}" == "${lines[3]}" ]]; then
+      response='' lines=()
+      _zp_worktree_error "worktree attachment response was invalid"
+      return 1
+    fi
+    typeset -g +x ZP_WORKTREE_SHELL_ID="${lines[2]}" ZP_WORKTREE_CAPABILITY="${lines[3]}"
+    response='' lines=()
+  fi
+  [[ -n "$ZP_WORKTREE_ATTACH_OPERATION_ID" ]] || _zp_worktree_next_operation operation_id
+  [[ -n "$ZP_WORKTREE_ATTACH_OPERATION_ID" ]] || typeset -g ZP_WORKTREE_ATTACH_OPERATION_ID="$operation_id"
+  operation_id="$ZP_WORKTREE_ATTACH_OPERATION_ID"
+  if ! _zp_worktree_invoke attach response commit "$operation_id" '' '' '' '' '' '' '' '' ZP_WORKTREE_BASELINE_FIELDS ZP_WORKTREE_BASELINE_COUNTS; then
+    _zp_worktree_error "worktree attachment failed"
+    return 1
+  fi
+  fields=(${(z)response})
+  if (( ${#fields} != 4 )) || [[ "${fields[1]}" != ZPWA || "${fields[2]}" != 1 || "${fields[4]}" != 1 ]] || ! _zp_worktree_valid_uint "${fields[3]}"; then
+    _zp_worktree_error "worktree attachment acknowledgement was invalid"
+    return 1
+  fi
+	typeset -g ZP_WORKTREE_ATTACHED=1 ZP_WORKTREE_ATTACHED_NOW=1 ZP_WORKTREE_APPLIED_REVISION="${fields[3]}" ZP_WORKTREE_LAST_ERROR=''
+	unset ZP_WORKTREE_ATTACH_OPERATION_ID
+  response='' fields=() operation_id=''
+  return 0
+}
+
+_zp_worktree_parse_publish_response() {
+  local response="$1" header line count index
+  local -a lines fields
+  lines=("${(@f)response}")
+  (( ${#lines} >= 1 )) || return 1
+  fields=(${(z)lines[1]})
+  (( ${#fields} == 4 )) || return 1
+  [[ "${fields[1]}" == ZPWP && "${fields[2]}" == 1 ]] || return 1
+  _zp_worktree_valid_uint "${fields[3]}" || return 1
+  count="${fields[4]}"
+  [[ "$count" == <-> && ( ${#count} == 1 || "$count" != 0* ) && "$count" -le 10000 ]] || return 1
+  (( ${#lines} == count + 1 )) || return 1
+  typeset -g ZP_WORKTREE_CONFLICT_COUNT="$count"
+  unset ZP_WORKTREE_CONFLICT_KIND ZP_WORKTREE_CONFLICT_IDENTITY_KIND ZP_WORKTREE_CONFLICT_IDENTITY_NAME ZP_WORKTREE_CONFLICT_TOKEN
+  for (( index=2; index <= ${#lines}; ++index )); do
+    fields=(${(z)lines[$index]})
+    (( ${#fields} == 4 )) || return 1
+    [[ "${fields[1]}" == overlap || "${fields[1]}" == history-gap ]] || return 1
+    [[ "${fields[2]}" == env || "${fields[2]}" == alias || "${fields[2]}" == function || "${fields[2]}" == path || "${fields[2]}" == fpath || "${fields[2]}" == option ]] || return 1
+    [[ -n "${fields[3]}" && -n "${fields[4]}" ]] || return 1
+    if (( index == 2 )); then
+      typeset -g ZP_WORKTREE_CONFLICT_KIND="${fields[1]}" ZP_WORKTREE_CONFLICT_IDENTITY_KIND="${fields[2]}"
+      typeset -g ZP_WORKTREE_CONFLICT_IDENTITY_NAME="${fields[3]}" ZP_WORKTREE_CONFLICT_TOKEN="${fields[4]}"
+    fi
+  done
+  return 0
+}
+
+_zp_worktree_publish_impl() {
+  local response='' operation_id=''
+  _zp_worktree_ensure_attached || return 1
+  (( ZP_WORKTREE_ATTACHED_NOW )) && return 0
+  _zp_worktree_capture || return 1
+  _zp_worktree_next_operation operation_id
+  if ! _zp_worktree_invoke publish response '' "$operation_id" "$ZP_WORKTREE_APPLIED_REVISION" '' '' '' '' '' ZP_WORKTREE_BASELINE_FIELDS ZP_WORKTREE_BASELINE_COUNTS _ZP_WORKTREE_CAPTURE_FIELDS _ZP_WORKTREE_CAPTURE_COUNTS; then
+    _ZP_WORKTREE_CAPTURE_FIELDS=() _ZP_WORKTREE_CAPTURE_COUNTS=()
+    _zp_worktree_error "worktree publication failed"
+    return 1
+  fi
+  if ! _zp_worktree_parse_publish_response "$response"; then
+    _ZP_WORKTREE_CAPTURE_FIELDS=() _ZP_WORKTREE_CAPTURE_COUNTS=()
+    _zp_worktree_error "worktree publication response was invalid"
+    return 1
+  fi
+  ZP_WORKTREE_BASELINE_FIELDS=("${_ZP_WORKTREE_CAPTURE_FIELDS[@]}")
+  ZP_WORKTREE_BASELINE_COUNTS=("${_ZP_WORKTREE_CAPTURE_COUNTS[@]}")
+  _ZP_WORKTREE_CAPTURE_FIELDS=() _ZP_WORKTREE_CAPTURE_COUNTS=()
+  typeset -g ZP_WORKTREE_LAST_ERROR=''
+  (( ZP_WORKTREE_CONFLICT_COUNT == 0 ))
+}
+
+_zp_worktree_publish() {
+	_zp_worktree_protected_call _zp_worktree_publish_impl
+}
+
+_zp_worktree_apply_transition() {
+  local operation="$1" source='' operation_id='' apply_name reverse_name ack_id='' ack_response=''
+  local revision token fingerprint old_reverse="${ZP_ACTIVE_REVERSE_FN-}" rc=1
+	unset ZP_WORKTREE_REPLY_PROTOCOL ZP_WORKTREE_REPLY_REVISION ZP_WORKTREE_REPLY_TOKEN ZP_WORKTREE_REPLY_FINGERPRINT ZP_WORKTREE_REPLY_COMPLETE
+	_zp_worktree_budget_check "$ZP_WORKTREE_TRANSITION_DEADLINE" || return 124
+  apply_name="__zp_worktree_apply_${$}_${ZP_WORKTREE_OPERATION_SEQUENCE}"
+  reverse_name="__zp_worktree_reverse_${$}_${ZP_WORKTREE_OPERATION_SEQUENCE}"
+  if [[ "$operation" == resolve ]]; then
+    [[ -n "$ZP_WORKTREE_CONFLICT_TOKEN" && -n "$ZP_WORKTREE_CONFLICT_IDENTITY_KIND" && -n "$ZP_WORKTREE_CONFLICT_IDENTITY_NAME" ]] || return 1
+    [[ -n "$ZP_WORKTREE_RESOLVE_OPERATION_ID" ]] || { _zp_worktree_next_operation operation_id; typeset -g ZP_WORKTREE_RESOLVE_OPERATION_ID="$operation_id"; }
+    operation_id="$ZP_WORKTREE_RESOLVE_OPERATION_ID"
+    _zp_worktree_invoke resolve source '' "$operation_id" '' "$ZP_WORKTREE_CONFLICT_TOKEN" "$ZP_WORKTREE_CONFLICT_IDENTITY_KIND" "$ZP_WORKTREE_CONFLICT_IDENTITY_NAME" "$apply_name" "$reverse_name" '' '' _ZP_WORKTREE_CAPTURE_FIELDS _ZP_WORKTREE_CAPTURE_COUNTS || return 1
+  else
+    [[ -n "$ZP_WORKTREE_PREPARE_OPERATION_ID" ]] || { _zp_worktree_next_operation operation_id; typeset -g ZP_WORKTREE_PREPARE_OPERATION_ID="$operation_id"; }
+    operation_id="$ZP_WORKTREE_PREPARE_OPERATION_ID"
+    _zp_worktree_invoke prepare source '' "$operation_id" "$ZP_WORKTREE_APPLIED_REVISION" '' '' '' "$apply_name" "$reverse_name" '' '' _ZP_WORKTREE_CAPTURE_FIELDS _ZP_WORKTREE_CAPTURE_COUNTS || return 1
+  fi
+	if [[ -z "$source" ]]; then
+    unset ZP_WORKTREE_PREPARE_OPERATION_ID ZP_WORKTREE_RESOLVE_OPERATION_ID
+    return 0
+  fi
+	source+=$'\n'
+	{
+		_zp_worktree_budget_check "$ZP_WORKTREE_TRANSITION_DEADLINE" || return 124
+		_zp_eval_block "$source" || return 1
+		_zp_worktree_budget_check "$ZP_WORKTREE_TRANSITION_DEADLINE" || return 124
+    [[ "${ZP_WORKTREE_REPLY_PROTOCOL-}" == 1 && "${ZP_WORKTREE_REPLY_COMPLETE-}" == 1 ]] || return 1
+    revision="${ZP_WORKTREE_REPLY_REVISION-}" token="${ZP_WORKTREE_REPLY_TOKEN-}" fingerprint="${ZP_WORKTREE_REPLY_FINGERPRINT-}"
+    _zp_worktree_valid_uint "$revision" && _zp_worktree_valid_uint "$token" && _zp_worktree_valid_hex64 "$fingerprint" || return 1
+		if (( ${+functions[$apply_name]} || ${+functions[$reverse_name]} )); then
+      (( ${+functions[$apply_name]} && ${+functions[$reverse_name]} )) || return 1
+      "$apply_name" || return 1
+      unset -f "$apply_name" 2>/dev/null || return 1
+      [[ -z "$old_reverse" || "$old_reverse" == "$reverse_name" ]] || unset -f "$old_reverse" 2>/dev/null || return 1
+			typeset -g ZP_ACTIVE_REVERSE_FN="$reverse_name" || return 1
+		fi
+		_zp_worktree_budget_check "$ZP_WORKTREE_TRANSITION_DEADLINE" || return 124
+		_zp_worktree_capture || return 1
+		_zp_worktree_budget_check "$ZP_WORKTREE_TRANSITION_DEADLINE" || return 124
+    [[ -n "$ZP_WORKTREE_ACK_OPERATION_ID" ]] || { _zp_worktree_next_operation ack_id; typeset -g ZP_WORKTREE_ACK_OPERATION_ID="$ack_id"; }
+    ack_id="$ZP_WORKTREE_ACK_OPERATION_ID"
+		_zp_worktree_invoke acknowledge ack_response '' "$ack_id" "$revision" "$token" '' '' '' '' '' '' _ZP_WORKTREE_CAPTURE_FIELDS _ZP_WORKTREE_CAPTURE_COUNTS || return 1
+		_zp_worktree_budget_check "$ZP_WORKTREE_TRANSITION_DEADLINE" || return 124
+    local -a ack_fields
+    ack_fields=(${(z)ack_response})
+    (( ${#ack_fields} == 4 )) && [[ "${ack_fields[1]}" == ZPWK && "${ack_fields[2]}" == 1 && "${ack_fields[3]}" == "$revision" && "${ack_fields[4]}" == 1 ]] || return 1
+    typeset -g ZP_WORKTREE_APPLIED_REVISION="$revision" ZP_WORKTREE_CONFLICT_COUNT=0 ZP_WORKTREE_LAST_ERROR=''
+    ZP_WORKTREE_BASELINE_FIELDS=("${_ZP_WORKTREE_CAPTURE_FIELDS[@]}")
+    ZP_WORKTREE_BASELINE_COUNTS=("${_ZP_WORKTREE_CAPTURE_COUNTS[@]}")
+    unset ZP_WORKTREE_ACK_OPERATION_ID ZP_WORKTREE_PREPARE_OPERATION_ID ZP_WORKTREE_RESOLVE_OPERATION_ID
+    unset ZP_WORKTREE_CONFLICT_KIND ZP_WORKTREE_CONFLICT_IDENTITY_KIND ZP_WORKTREE_CONFLICT_IDENTITY_NAME ZP_WORKTREE_CONFLICT_TOKEN
+    rc=0
+  } always {
+    source='' operation_id='' ack_id='' ack_response='' token='' fingerprint=''
+    _ZP_WORKTREE_CAPTURE_FIELDS=() _ZP_WORKTREE_CAPTURE_COUNTS=()
+    unset ZP_WORKTREE_REPLY_PROTOCOL ZP_WORKTREE_REPLY_REVISION ZP_WORKTREE_REPLY_TOKEN ZP_WORKTREE_REPLY_FINGERPRINT ZP_WORKTREE_REPLY_COMPLETE
+  }
+  return "$rc"
+}
+
+_zp_worktree_pull_impl() {
+	_zp_worktree_ensure_attached || return 1
+	(( ZP_WORKTREE_ATTACHED_NOW )) && return 0
+  _zp_worktree_capture || return 1
+  _zp_worktree_apply_transition prepare || { _zp_worktree_error "worktree pull failed"; return 1; }
+}
+
+_zp_worktree_pull() {
+	_zp_worktree_protected_call _zp_worktree_pull_impl
+}
+
+_zp_worktree_resolve_shared_impl() {
+	_zp_worktree_ensure_attached || return 1
+	(( ZP_WORKTREE_ATTACHED_NOW )) && return 1
+  _zp_worktree_capture || return 1
+  _zp_worktree_apply_transition resolve || { _zp_worktree_error "worktree shared resolution failed"; return 1; }
+}
+
+_zp_worktree_resolve_shared() {
+	_zp_worktree_protected_call _zp_worktree_resolve_shared_impl
+}
+
+_zp_worktree_effective_auto_apply() {
+  case "${ZSHPRO_AUTO_APPLY-}" in
+    '') typeset -g ZP_WORKTREE_AUTO_APPLY_EFFECTIVE="$ZP_WORKTREE_AUTO_APPLY_DEFAULT" ;;
+    true|false) typeset -g ZP_WORKTREE_AUTO_APPLY_EFFECTIVE="$ZSHPRO_AUTO_APPLY" ;;
+    *)
+      typeset -g ZP_WORKTREE_AUTO_APPLY_EFFECTIVE="$ZP_WORKTREE_AUTO_APPLY_DEFAULT"
+      _zp_worktree_error "invalid ZSHPRO_AUTO_APPLY override; using persisted default" || :
+      ;;
+  esac
+  [[ "$ZP_WORKTREE_AUTO_APPLY_EFFECTIVE" == true ]]
+}
+
+_zp_worktree_sync() {
+	local mode="${1-}" ZP_WORKTREE_TRANSITION_DEADLINE=''
+	(( ZP_WORKTREE_GUARD == 0 )) || return 0
+	_zp_worktree_budget_begin ZP_WORKTREE_TRANSITION_DEADLINE || return 1
+  typeset -g ZP_WORKTREE_GUARD=1
+	{
+		_zp_worktree_ensure_attached || return 1
+		(( ZP_WORKTREE_ATTACHED_NOW )) && return 0
+		if [[ "$mode" == resolve ]]; then
+      _zp_worktree_resolve_shared || return 1
+    elif [[ -z "$mode" ]]; then
+      _zp_worktree_publish || return 1
+      _zp_worktree_pull || return 1
+    else
+      return 2
+    fi
+  } always {
+    typeset -g ZP_WORKTREE_GUARD=0
+  }
+}
+
+_zp_worktree_precmd() {
+	local ZP_WORKTREE_TRANSITION_DEADLINE=''
+	(( ZP_WORKTREE_GUARD == 0 )) || return 0
+	_zp_worktree_budget_begin ZP_WORKTREE_TRANSITION_DEADLINE || return 0
+  _zp_worktree_publish || :
+  return 0
+}
+
+_zp_worktree_line_finish() {
+	local ZP_WORKTREE_TRANSITION_DEADLINE=''
+	(( ZP_WORKTREE_GUARD == 0 )) || return 0
+	_zp_worktree_budget_begin ZP_WORKTREE_TRANSITION_DEADLINE || return 0
+  if _zp_worktree_effective_auto_apply; then _zp_worktree_pull || :; fi
+  return 0
+}
+
+zsh-pro() {
+	# Exact explicit resolution form: zsh-pro sync --resolve shared
+	local verb="${1-}" rc=0 status_output='' ZP_WORKTREE_TRANSITION_DEADLINE=''
+  case "$verb:$#" in
+    sync:1) _zp_worktree_sync ; return $? ;;
+    sync:3)
+      if [[ "$2" == --resolve && "$3" == shared ]]; then _zp_worktree_sync resolve; return $?; fi
+      _zp_worktree_error "usage: zsh-pro sync [--resolve shared]"
+      return 2
+      ;;
+		sync:*) _zp_worktree_error "usage: zsh-pro sync [--resolve shared]"; return 2 ;;
+		status:1)
+			_zp_worktree_ensure_attached || :
+			if _zp_worktree_valid_hex64 "$ZP_WORKTREE_SHELL_ID"; then
+				status_output="$(ZSHPRO_SHELL_ID="$ZP_WORKTREE_SHELL_ID" command zsh-pro status)"
+			else
+				status_output="$(command zsh-pro status)"
+			fi
+			rc=$?
+			if (( rc == 0 )); then _zp_worktree_refresh_auto_apply "$status_output"; print -r -- "$status_output"; fi
+			status_output=''
+			return "$rc"
+			;;
+		checkout:*|reset:*)
+			case "$verb:$#" in
+				checkout:2) [[ -n "$2" ]] || { _zp_worktree_error "usage: zsh-pro checkout [-b] <branch>"; return 2; } ;;
+				checkout:3) [[ "$2" == -b && -n "$3" ]] || { _zp_worktree_error "usage: zsh-pro checkout [-b] <branch>"; return 2; } ;;
+				reset:2) [[ "$2" == --hard ]] || { _zp_worktree_error "usage: zsh-pro reset --hard"; return 2; } ;;
+				*) _zp_worktree_error "invalid worktree mutation syntax"; return 2 ;;
+			esac
+			_zp_worktree_budget_begin ZP_WORKTREE_TRANSITION_DEADLINE || return 1
+			_zp_worktree_ensure_attached || return $?
+			if (( ! ZP_WORKTREE_ATTACHED_NOW )); then _zp_worktree_publish || return $?; fi
+      (( ZP_WORKTREE_CONFLICT_COUNT == 0 )) || return 1
+      if ZSHPRO_SHELL_ID="$ZP_WORKTREE_SHELL_ID" command zsh-pro "$@"; then
+        _zp_worktree_pull || return $?
+        return 0
+      fi
+      return $?
+      ;;
+    *)
+      _zp_worktree_ensure_attached || :
+      if _zp_worktree_valid_hex64 "$ZP_WORKTREE_SHELL_ID"; then
+        ZSHPRO_SHELL_ID="$ZP_WORKTREE_SHELL_ID" command zsh-pro "$@"
+      else
+        command zsh-pro "$@"
+      fi
+      return $?
+      ;;
+  esac
+}
+
 activate() {
 	if (( $# != 1 )) || [[ -z "$1" ]]; then
 		_zp_runtime_error 2 "usage: activate <profile>"
 		return 0
 	fi
-	local name="$1"
+	local name="$1" rc=1
 	{
-		if _zp_switch "$name"; then _zp_runtime_ok; fi
+		if zsh-pro checkout "$@"; then _zp_runtime_ok; return 0; fi
+		rc=$?
+		# Compatibility is limited to pre-worktree binaries (the Phase 5 test
+		# shims return 64). A production shared-worktree failure never falls
+		# back to the retired per-profile authority.
+		if (( ZP_WORKTREE_UNSUPPORTED )); then
+			if _zp_switch "$name"; then _zp_runtime_ok; fi
+			return 0
+		fi
+		_zp_runtime_error "$rc" "shared checkout failed; shell state unchanged"
 		return 0
 	} always {
 		unset REPLY
@@ -497,9 +1083,15 @@ checkout() {
 		_zp_runtime_error 2 "usage: checkout <profile>"
 		return 0
 	fi
-	local name="$1"
+	local name="$1" rc=1
 	{
-		if _zp_switch "$name"; then _zp_runtime_ok; fi
+		if zsh-pro checkout "$@"; then _zp_runtime_ok; return 0; fi
+		rc=$?
+		if (( ZP_WORKTREE_UNSUPPORTED )); then
+			if _zp_switch "$name"; then _zp_runtime_ok; fi
+			return 0
+		fi
+		_zp_runtime_error "$rc" "shared checkout failed; shell state unchanged"
 		return 0
 	} always {
     unset REPLY
@@ -534,24 +1126,24 @@ list() {
 		_zp_runtime_error 2 "usage: list"
 		return 0
 	fi
-	local rc timeout="${ZP_RUNTIME_TIMEOUT_SECONDS:-5}" listing=''
-  {
-    if _zp_run_bounded "$timeout" listing zsh-pro list; then
-      print -rn -- "$listing"
-      _zp_runtime_ok
-    else
-      rc=$?
-      if (( ZP_RUNTIME_TIMED_OUT )); then
-        _zp_runtime_error "$rc" "list timed out after ${timeout}s"
-      else
-        _zp_runtime_error "$rc" "list failed"
-      fi
-    fi
-  } always {
-    listing=''
-    unset REPLY
-  }
-  return 0
+	if zsh-pro list "$@"; then _zp_runtime_ok; else _zp_runtime_error $? "list failed"; fi
+	return 0
+}
+
+_zp_worktree_ensure_attached() {
+	local rc=1 xtrace_was_on=0 history_pushed=0
+	{
+		[[ -o xtrace ]] && xtrace_was_on=1
+		setopt NOXTRACE 2>/dev/null || return 1
+		if fc -p 2>/dev/null; then history_pushed=1; else return 1; fi
+		_zp_worktree_ensure_attached_impl
+		rc=$?
+	} always {
+		if (( history_pushed )); then fc -P 2>/dev/null || :; fi
+		if (( xtrace_was_on )); then setopt XTRACE 2>/dev/null || :; else setopt NOXTRACE 2>/dev/null || :; fi
+		unset REPLY
+	}
+	return "$rc"
 }
 
 status() {
@@ -559,12 +1151,20 @@ status() {
 		_zp_runtime_error 2 "usage: status"
 		return 0
 	fi
-	if [[ "${ZP_ACTIVE_PROFILE+x}" == x ]]; then
-    print -r -- "$ZP_ACTIVE_PROFILE"
-  else
-    print -r -- main
-  fi
+	if zsh-pro status "$@"; then :; else _zp_runtime_error $? "status failed"; fi
+	return 0
 }
+
+# Cooperative registration performs no helper invocation and starts no
+# process. The handlers themselves run only at safe foreground boundaries.
+autoload -Uz add-zsh-hook
+add-zsh-hook -d precmd _zp_worktree_precmd 2>/dev/null || :
+add-zsh-hook precmd _zp_worktree_precmd
+if (( ${+widgets} )); then
+  autoload -Uz add-zle-hook-widget
+  add-zle-hook-widget -d line-finish _zp_worktree_line_finish 2>/dev/null || :
+  add-zle-hook-widget line-finish _zp_worktree_line_finish
+fi
 `
 
 // HookScript returns the complete sourced runtime loader.

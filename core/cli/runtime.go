@@ -220,7 +220,11 @@ func (c *CLI) runRuntimeWorktree(args []string, stdout, stderr io.Writer) int {
 		}
 		switch operation {
 		case "attach":
-			_, err = runtime.Attach(ctx, credential, frame.operationID, frame.current)
+			var attached runtimeAttachCredential
+			attached, err = runtime.Attach(ctx, credential, frame.operationID, frame.current)
+			if err == nil {
+				reply, err = encodeRuntimeAttachResult(attached.result)
+			}
 		case "publish":
 			var baseline model.LiveSnapshot
 			decoder, decoderOK := c.provider.(shell.LiveSnapshotDecoder)
@@ -233,7 +237,11 @@ func (c *CLI) runRuntimeWorktree(args []string, stdout, stderr io.Writer) int {
 				var revision uint64
 				revision, err = parseCanonicalUint64(frame.revision, false)
 				if err == nil {
-					_, err = runtime.Publish(ctx, credential, frame.operationID, revision, baseline, frame.current)
+					var published model.PublishResult
+					published, err = runtime.Publish(ctx, credential, frame.operationID, revision, baseline, frame.current)
+					if err == nil {
+						reply, err = encodeRuntimePublishResult(published)
+					}
 				}
 			}
 		case "prepare":
@@ -256,7 +264,11 @@ func (c *CLI) runRuntimeWorktree(args []string, stdout, stderr io.Writer) int {
 				token, err = parseCanonicalUint64(frame.token, false)
 			}
 			if err == nil {
-				_, err = runtime.Acknowledge(ctx, credential, frame.operationID, revision, token, frame.current)
+				var acknowledged model.AcknowledgeResult
+				acknowledged, err = runtime.Acknowledge(ctx, credential, frame.operationID, revision, token, frame.current)
+				if err == nil {
+					reply, err = encodeRuntimeAcknowledgeResult(acknowledged)
+				}
 			}
 		case "resolve":
 			identity := model.Identity{Kind: model.LiveKind(frame.identityKind), Name: frame.identityName}
@@ -561,6 +573,38 @@ func allocateRuntimeWorktreeCredential() ([]byte, error) {
 	clear(shellID[:])
 	clear(capability[:])
 	return reply, nil
+}
+
+func encodeRuntimeAttachResult(result model.AttachResult) ([]byte, error) {
+	if result.Revision == 0 || !result.Attached {
+		return nil, errors.New("runtime worktree attach result is invalid")
+	}
+	return []byte(fmt.Sprintf("ZPWA %d %d 1\n", WorktreeRuntimeFrameVersion, result.Revision)), nil
+}
+
+func encodeRuntimePublishResult(result model.PublishResult) ([]byte, error) {
+	if result.SharedRevision == 0 || len(result.Conflicts) > model.MaxSnapshotRecords {
+		return nil, errors.New("runtime worktree publish result is invalid")
+	}
+	var response bytes.Buffer
+	_, _ = fmt.Fprintf(&response, "ZPWP %d %d %d\n", WorktreeRuntimeFrameVersion, result.SharedRevision, len(result.Conflicts))
+	for _, conflict := range result.Conflicts {
+		if conflict.Kind != model.ConflictOverlap && conflict.Kind != model.ConflictHistoryGap || model.ValidateIdentity(conflict.Identity) != nil || conflict.Token.Validate() != nil {
+			return nil, errors.New("runtime worktree publish result is invalid")
+		}
+		_, _ = fmt.Fprintf(&response, "%s %s %s %s\n", conflict.Kind, conflict.Identity.Kind, conflict.Identity.Name, conflict.Token)
+		if response.Len() > MaxRuntimeWorktreeFrameBytes {
+			return nil, errors.New("runtime worktree publish result is too large")
+		}
+	}
+	return response.Bytes(), nil
+}
+
+func encodeRuntimeAcknowledgeResult(result model.AcknowledgeResult) ([]byte, error) {
+	if result.AppliedRevision == 0 || !result.Acknowledged {
+		return nil, errors.New("runtime worktree acknowledgement result is invalid")
+	}
+	return []byte(fmt.Sprintf("ZPWK %d %d 1\n", WorktreeRuntimeFrameVersion, result.AppliedRevision)), nil
 }
 
 func validateRuntimePatchPayload(ctx context.Context, payload runtimePatchPayload) ([]byte, error) {

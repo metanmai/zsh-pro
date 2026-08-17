@@ -85,7 +85,7 @@ func TestRuntimeWorktreeAttachAllocationAndCredentialForwarding(t *testing.T) {
 		runtimeTestRecord{tag: 32, payload: snapshot},
 	)
 	code, stdout, stderr = runRuntimeWorktreeWithStdin(t, program, root, commit, "attach")
-	if code != 0 || stdout != "" || stderr != "" {
+	if code != 0 || stdout != "ZPWA 1 1 1\n" || stderr != "" {
 		t.Fatalf("attach commit = (%d, %q, %q)", code, stdout, stderr)
 	}
 	called := authority.runtime.(*runtimeTestWorktree)
@@ -164,7 +164,7 @@ func TestRuntimeWorktreeFrameExactByteAndRecordBounds(t *testing.T) {
 	}
 	authority := &runtimeTestAuthority{runtime: &runtimeTestWorktree{}}
 	program := NewWithWorktree(nil, nil, NotReadyEmitter(), authority, nil)
-	if code, stdout, stderr := runRuntimeWorktreeWithStdin(t, program, root, exact, "attach"); code != 0 || stdout != "" || stderr != "" {
+	if code, stdout, stderr := runRuntimeWorktreeWithStdin(t, program, root, exact, "attach"); code != 0 || stdout != "ZPWA 1 1 1\n" || stderr != "" {
 		t.Fatalf("exact byte-bound frame = (%d, %q, %q)", code, stdout, stderr)
 	}
 
@@ -178,7 +178,7 @@ func TestRuntimeWorktreeFrameExactByteAndRecordBounds(t *testing.T) {
 	}
 	authority = &runtimeTestAuthority{runtime: &runtimeTestWorktree{}}
 	program = NewWithWorktree(nil, nil, NotReadyEmitter(), authority, nil)
-	if code, stdout, stderr := runRuntimeWorktreeWithStdin(t, program, root, runtimeTestFrame(t, records...), "attach"); code != 0 || stdout != "" || stderr != "" {
+	if code, stdout, stderr := runRuntimeWorktreeWithStdin(t, program, root, runtimeTestFrame(t, records...), "attach"); code != 0 || stdout != "ZPWA 1 1 1\n" || stderr != "" {
 		t.Fatalf("exact record-bound frame = (%d, %q, %q)", code, stdout, stderr)
 	}
 
@@ -228,6 +228,42 @@ func TestRuntimeWorktreeReplyOutputIsWholeAndNoOpIsEmpty(t *testing.T) {
 	code, stdout, stderr = runRuntimeWorktreeWithStdin(t, program, root, runtimeTestFrame(t, credentialRecords...), "prepare")
 	if code != 0 || stdout != "" || stderr != "" {
 		t.Fatalf("prepare at-head no-op = (%d, %q, %q)", code, stdout, stderr)
+	}
+}
+
+func TestRuntimeWorktreePublishResponseIsBoundedValueFreeAndOrdered(t *testing.T) {
+	root := runtimeWorktreeTestRoot(t)
+	const valueCanary = "must-not-cross-publish-response"
+	frame := runtimeTestFrame(t,
+		runtimeTestRecord{tag: 1, payload: []byte("publish")},
+		runtimeTestRecord{tag: 3, payload: []byte(strings.Repeat("b", 64))},
+		runtimeTestRecord{tag: 4, payload: []byte(strings.Repeat("a", 64))},
+		runtimeTestRecord{tag: 5, payload: []byte("publish-response-1")},
+		runtimeTestRecord{tag: 6, payload: []byte("1")},
+		runtimeTestRecord{tag: 31, payload: []byte("ZP_LIVE_SNAPSHOT\x001\x00E\x00")},
+		runtimeTestRecord{tag: 32, payload: []byte("ZP_LIVE_SNAPSHOT\x001\x00E\x00")},
+	)
+	runtime := &runtimeTestWorktree{publishResult: model.PublishResult{
+		SharedRevision: 2,
+		Conflicts: []model.Conflict{{
+			Kind: model.ConflictOverlap, Identity: model.Identity{Kind: model.LiveEnv, Name: "SAFE_NAME"}, Token: "durable-token",
+		}},
+	}}
+	authority := &runtimeTestAuthority{runtime: runtime}
+	program := NewWithWorktree(zsh.Provider{}, nil, NotReadyEmitter(), authority, nil)
+	code, stdout, stderr := runRuntimeWorktreeWithStdin(t, program, root, frame, "publish")
+	want := "ZPWP 1 2 1\noverlap env SAFE_NAME durable-token\n"
+	if code != 0 || stdout != want || stderr != "" || len(stdout) > MaxRuntimeWorktreeFrameBytes {
+		t.Fatalf("publish response = (%d, %q, %q)", code, stdout, stderr)
+	}
+	if strings.Contains(stdout, valueCanary) || strings.Contains(stdout, strings.Repeat("a", 64)) || strings.Contains(stdout, "ZP_LIVE_SNAPSHOT") {
+		t.Fatal("publish response disclosed a value, capability, or snapshot")
+	}
+
+	runtime.publishResult.Conflicts[0].Token = model.ResolutionToken("invalid token with spaces")
+	code, stdout, stderr = runRuntimeWorktreeWithStdin(t, program, root, frame, "publish")
+	if code == 0 || stdout != "" || stderr == "" {
+		t.Fatalf("invalid publish response = (%d, %q, %q)", code, stdout, stderr)
 	}
 }
 
@@ -452,16 +488,20 @@ type runtimeTestWorktree struct {
 	operationID    string
 	frame          []byte
 	preparePayload runtimePatchPayload
+	publishResult  model.PublishResult
 }
 
 func (runtime *runtimeTestWorktree) Attach(_ context.Context, credential model.ShellCredential, operationID string, frame []byte) (runtimeAttachCredential, error) {
 	runtime.attachCalls++
 	runtime.credential, runtime.operationID, runtime.frame = credential, operationID, append([]byte(nil), frame...)
-	return runtimeAttachCredential{}, nil
+	return runtimeAttachCredential{result: model.AttachResult{Revision: 1, Attached: true}, credential: credential}, nil
 }
 func (runtime *runtimeTestWorktree) Publish(context.Context, model.ShellCredential, string, uint64, model.LiveSnapshot, []byte) (model.PublishResult, error) {
 	runtime.publishCalls++
-	return model.PublishResult{}, nil
+	if runtime.publishResult.SharedRevision != 0 {
+		return runtime.publishResult, nil
+	}
+	return model.PublishResult{SharedRevision: 1}, nil
 }
 func (runtime *runtimeTestWorktree) Prepare(context.Context, model.ShellCredential, string, uint64, []byte, string, string) (runtimePatchPayload, error) {
 	runtime.prepareCalls++
@@ -469,7 +509,7 @@ func (runtime *runtimeTestWorktree) Prepare(context.Context, model.ShellCredenti
 }
 func (runtime *runtimeTestWorktree) Acknowledge(context.Context, model.ShellCredential, string, uint64, uint64, []byte) (model.AcknowledgeResult, error) {
 	runtime.ackCalls++
-	return model.AcknowledgeResult{}, nil
+	return model.AcknowledgeResult{AppliedRevision: 1, Acknowledged: true}, nil
 }
 func (runtime *runtimeTestWorktree) Resolve(context.Context, model.ShellCredential, string, model.Identity, model.ResolutionToken, []byte, string, string) (runtimePatchPayload, error) {
 	runtime.resolveCalls++

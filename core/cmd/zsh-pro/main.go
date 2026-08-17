@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"sync"
 
@@ -203,11 +204,24 @@ func (authority *compositionWorktree) SetAutoApplyDefault(ctx context.Context, e
 	return service.SetAutoApplyDefault(ctx, enabled)
 }
 
+// BindRuntimeWorktree is the private post-authentication bridge. RuntimeRoot
+// owns the already-verified descriptors; the configured factory binds only
+// those descriptors and never consults canonicalRoot or the eager service.
+func (authority *compositionWorktree) BindRuntimeWorktree(root *cli.RuntimeRoot) (cli.RuntimeWorktree, io.Closer, error) {
+	if authority == nil {
+		return nil, nil, errCompositionStoreUnavailable
+	}
+	return authority.runtimeFactory.Bind(root)
+}
+
 var (
 	_ worktree.Repository      = (*store.Store)(nil)
 	_ cli.WorktreeMaterializer = (*compositionWorktree)(nil)
 	_ cli.WorktreeReader       = (*compositionWorktree)(nil)
 	_ cli.WorktreeWorkflow     = (*compositionWorktree)(nil)
+	_ interface {
+		BindRuntimeWorktree(*cli.RuntimeRoot) (cli.RuntimeWorktree, io.Closer, error)
+	} = (*compositionWorktree)(nil)
 )
 
 // storeInitializerFor binds the initializer authority and every follow-on

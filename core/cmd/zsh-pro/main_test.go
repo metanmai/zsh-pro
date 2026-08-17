@@ -1635,7 +1635,14 @@ func TestMainIngestAllowsOnlyExactLoaderSymbols(t *testing.T) {
 	}
 	installedParameters, installedFunctions := fixture.symbolSnapshot(t)
 
-	wantParameters := []string{"ZP_LAST_RUNTIME_ERROR", "ZP_LAST_RUNTIME_STATUS", "ZP_RUNTIME_TIMED_OUT"}
+	wantParameters := []string{
+		"ZP_LAST_RUNTIME_ERROR", "ZP_LAST_RUNTIME_STATUS", "ZP_RUNTIME_TIMED_OUT",
+		"ZP_WORKTREE_APPLIED_REVISION", "ZP_WORKTREE_ATTACHED", "ZP_WORKTREE_AUTO_APPLY_DEFAULT",
+		"ZP_WORKTREE_AUTO_APPLY_EFFECTIVE", "ZP_WORKTREE_BASELINE_COUNTS", "ZP_WORKTREE_BASELINE_FIELDS",
+		"ZP_WORKTREE_CAPABILITY", "ZP_WORKTREE_CONFLICT_COUNT", "ZP_WORKTREE_GUARD", "ZP_WORKTREE_LAST_ERROR",
+		"ZP_WORKTREE_OPERATION_SEQUENCE", "ZP_WORKTREE_SHELL_ID", "ZP_WORKTREE_UNSUPPORTED",
+		"_ZP_WORKTREE_CAPTURE_COUNTS", "_ZP_WORKTREE_CAPTURE_FIELDS", "precmd_functions", "zle_bracketed_paste",
+	}
 	wantFunctions := []string{
 		"_zp_capture_scalar", "_zp_commit_restore_scalar", "_zp_commit_undo_slots", "_zp_emit",
 		"_zp_eval_block", "_zp_has_known_active_profile", "_zp_preflight_restore_scalar",
@@ -1643,7 +1650,19 @@ func TestMainIngestAllowsOnlyExactLoaderSymbols(t *testing.T) {
 		"_zp_restore_scalar", "_zp_reverse_active_profile", "_zp_run_bounded", "_zp_run_payload",
 		"_zp_run_retained_reverse", "_zp_run_transient_reverse_payload", "_zp_runtime_error",
 		"_zp_runtime_ok", "_zp_switch", "_zp_validate_block", "activate", "checkout", "deactivate",
-		"list", "status", "zp_capture_env", "zp_restore_env",
+		"_zp_worktree_apply_transition", "_zp_worktree_budget_begin", "_zp_worktree_budget_check",
+		"_zp_worktree_capture", "_zp_worktree_effective_auto_apply",
+		"_zp_worktree_ensure_attached", "_zp_worktree_ensure_attached_impl", "_zp_worktree_error", "_zp_worktree_invoke",
+		"_zp_worktree_line_finish", "_zp_worktree_next_operation", "_zp_worktree_parse_publish_response",
+		"_zp_worktree_precmd", "_zp_worktree_protected_call", "_zp_worktree_publish", "_zp_worktree_publish_impl",
+		"_zp_worktree_pull", "_zp_worktree_pull_impl", "_zp_worktree_refresh_auto_apply",
+		"_zp_worktree_resolve_shared", "_zp_worktree_resolve_shared_impl",
+		"_zp_worktree_sync", "_zp_worktree_valid_hex64", "_zp_worktree_valid_uint",
+		"_zp_worktree_write_frame", "_zp_worktree_write_scalar_record", "_zp_worktree_write_snapshot_records",
+		"add-zle-hook-widget", "add-zsh-hook", "azhw:zle-history-line-set", "azhw:zle-isearch-exit",
+		"azhw:zle-isearch-update", "azhw:zle-keymap-select", "azhw:zle-line-finish", "azhw:zle-line-init",
+		"azhw:zle-line-pre-redraw",
+		"list", "status", "zp_capture_env", "zp_restore_env", "zsh-pro",
 	}
 	sort.Strings(wantParameters)
 	sort.Strings(wantFunctions)
