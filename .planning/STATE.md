@@ -5,8 +5,8 @@ milestone_name: Branchable Shell Environments
 current_phase: 07
 current_phase_name: Git-Like Shared Working Environment
 status: executing
-stopped_at: Completed 07-05-PLAN.md
-last_updated: "2026-08-17T13:06:39.496Z"
+stopped_at: Completed 07-08-PLAN.md
+last_updated: "2026-08-17T13:41:49.138Z"
 last_activity: 2026-08-17
 last_activity_desc: Phase 07 execution started
 progress:
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-06-25)
 ## Current Position
 
 Phase: 07 (Git-Like Shared Working Environment) — EXECUTING
-Plan: 6 of 10
+Plan: 7 of 10
 Status: Ready to execute
 Last activity: 2026-08-17 — Phase 07 execution started
 
@@ -101,6 +101,7 @@ Progress: [██████████] 100%
 | Phase 07 P03 | 46min | 3 tasks | 8 files |
 | Phase 07-git-like-shared-working-environment P04 | 20min | 2 tasks | 8 files |
 | Phase 07 P05 | 26min | 2 tasks | 6 files |
+| Phase 07 P08 | 30m | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -197,6 +198,10 @@ Recent decisions affecting current work:
 - [Phase 07]: Authenticate exact worktree revisions as direct commit IDs with a complete strict two-blob root tree.
 - [Phase 07]: Derive the narrow WorktreeRegenerator from the injected provider while preserving the source-compatible Store constructor.
 - [Phase 07]: Lock the expected ref transaction before secret writes and preserve proven committed recovery evidence.
+- [Phase 07]: Capture current zsh in place with a sourced builtin-only function; retain child zsh only for file introspection.
+- [Phase 07]: Keep executable patch source unexported and public RuntimePatchMetadata limited to uint64 fields and a fixed SHA-256 fingerprint.
+- [Phase 07]: Make concrete zsh the sole owner of the complete ordered acknowledgement assignment footer.
+- [Phase 07]: Resolve decimal reply token handles through descriptor-bound durable pending state before Service transactionally verifies the opaque token and credential.
 
 ### Pending Todos
 
@@ -225,6 +230,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-08-17T13:06:39.489Z
-Stopped at: Completed 07-05-PLAN.md
+Last session: 2026-08-17T13:41:49.131Z
+Stopped at: Completed 07-08-PLAN.md
 Resume file: None
