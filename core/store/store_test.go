@@ -3040,6 +3040,28 @@ func TestCommitIngestCommittedCleanupAxis(t *testing.T) {
 	}
 }
 
+func TestCommitIngestPublishedRevisionIsExactAndReplaySafe(t *testing.T) {
+	store, initialization, _ := newPhase6IngestStore(t)
+	transaction := beginPhase6Ingest(t, store, initialization)
+	profile := phase6Profile("PUBLISHED_REVISION", "one")
+	outcome, err := commitPhase6Ingest(t, store, initialization, transaction, profile)
+	if err != nil || outcome.PublishedRevision == nil {
+		t.Fatalf("published revision = %v, err=%v", outcome.PublishedRevision, err)
+	}
+	want, err := store.git.revParse(context.Background(), "refs/heads/main")
+	if err != nil || *outcome.PublishedRevision != want {
+		t.Fatalf("published revision = %v, want exact ref %q, err=%v", outcome.PublishedRevision, want, err)
+	}
+
+	*outcome.PublishedRevision = strings.Repeat("f", len(want))
+	replayed, replayErr := store.CommitIngest(
+		context.Background(), initialization.ID(), transaction.TransactionID, profile, "zsh-pro: ingest baseline",
+	)
+	if replayErr != nil || replayed.PublishedRevision == nil || *replayed.PublishedRevision != want {
+		t.Fatalf("replayed published revision = %v, err=%v; want %q", replayed.PublishedRevision, replayErr, want)
+	}
+}
+
 func TestCommitIngestLostResponseExpectedPreservesRetainedObjects(t *testing.T) {
 	store, initialization, _ := newPhase6IngestStore(t)
 	transaction := beginPhase6Ingest(t, store, initialization)
@@ -3078,7 +3100,7 @@ func TestCommitIngestNotCommittedCleanupAxis(t *testing.T) {
 	}
 	outcome, err := commitPhase6Ingest(t, store, initialization, second, phase6Profile("SECOND", "two"))
 	if !errors.Is(err, ErrSecretRefConflict) || outcome.Status != model.IngestCommitConflict ||
-		outcome.Cleanup != model.QuarantineCleanupRemoved || outcome.RecoveryRequired {
+		outcome.Cleanup != model.QuarantineCleanupRemoved || outcome.RecoveryRequired || outcome.PublishedRevision != nil {
 		t.Fatalf("conflict cleanup = (%#v, %v)", outcome, err)
 	}
 }
@@ -3089,7 +3111,7 @@ func TestCommitIngestCleanupFailurePreservesPublication(t *testing.T) {
 	store.cleanupBeforeFinalCheck = func(quarantineCleanupSeam) error { return errors.New("injected cleanup failure") }
 	outcome, err := commitPhase6Ingest(t, store, initialization, transaction, phase6Profile("PUBLISHED", "one"))
 	if err == nil || outcome.Status != model.IngestCommitCommitted || outcome.Cleanup != model.QuarantineCleanupRetained ||
-		!outcome.RecoveryRequired {
+		!outcome.RecoveryRequired || outcome.PublishedRevision == nil {
 		t.Fatalf("cleanup failure rewrote publication = (%#v, %v)", outcome, err)
 	}
 }

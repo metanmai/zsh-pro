@@ -248,17 +248,22 @@ func TestCLIUsesOneInjectedStoreInstance(t *testing.T) {
 }
 
 type controllerStore struct {
-	initializationID model.InstallInitializationID
-	commitStatus     model.IngestCommitStatus
-	commitError      error
-	autoWithhold     bool
-	commits          []model.Profile
-	messages         []string
-	beginCalls       int
-	commitCalls      int
-	abortCalls       int
-	events           *[]string
-	onCommit         func(model.Profile)
+	initializationID  model.InstallInitializationID
+	commitStatus      model.IngestCommitStatus
+	commitError       error
+	autoWithhold      bool
+	commits           []model.Profile
+	messages          []string
+	beginCalls        int
+	commitCalls       int
+	abortCalls        int
+	events            *[]string
+	onCommit          func(model.Profile)
+	publishedRevision string
+	materializeCalls  int
+	materializeBranch string
+	materializeOID    string
+	materializeError  error
 }
 
 func newControllerStore(t *testing.T, events *[]string) *controllerStore {
@@ -268,9 +273,10 @@ func newControllerStore(t *testing.T, events *[]string) *controllerStore {
 		t.Fatal(err)
 	}
 	return &controllerStore{
-		initializationID: initializationID,
-		commitStatus:     model.IngestCommitCommitted,
-		events:           events,
+		initializationID:  initializationID,
+		commitStatus:      model.IngestCommitCommitted,
+		publishedRevision: strings.Repeat("a", 40),
+		events:            events,
 	}
 }
 
@@ -330,6 +336,8 @@ func (store *controllerStore) CommitIngest(
 	}
 	switch store.commitStatus {
 	case model.IngestCommitCommitted:
+		revision := store.publishedRevision
+		outcome.PublishedRevision = &revision
 		if store.autoWithhold {
 			for _, entry := range profile.Entries {
 				if entry.Category == model.CatSecrets && entry.Secret == nil && !entry.Dynamic {
@@ -354,6 +362,14 @@ func (store *controllerStore) CommitIngest(
 		outcome.FailureCode = model.IngestFailureCandidate
 	}
 	return outcome, store.commitError
+}
+
+func (store *controllerStore) MaterializeCommittedWorktree(_ context.Context, branch, oid string) error {
+	store.materializeCalls++
+	store.materializeBranch = branch
+	store.materializeOID = oid
+	store.record("worktree:materialize")
+	return store.materializeError
 }
 
 func (store *controllerStore) AbortIngest(
@@ -539,6 +555,83 @@ func TestRunIngestTransactionOutcomeMatrix(t *testing.T) {
 			t.Fatalf("empty re-ingest startup = %q, err=%v", installed, err)
 		}
 	})
+}
+
+func TestPublishedRevisionEvidenceValidation(t *testing.T) {
+	store := newControllerStore(t, nil)
+	transactionID, err := model.NewIngestTransactionID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision := strings.Repeat("a", 40)
+	base := model.IngestCommitOutcome{
+		InitializationID:  store.initializationID,
+		TransactionID:     transactionID,
+		Status:            model.IngestCommitCommitted,
+		PublishedRevision: &revision,
+		RefState:          model.IngestRefCandidate,
+		Objects:           model.IngestObjectsPublished,
+	}
+	if !validIngestCommit(store.initializationID, transactionID, base) {
+		t.Fatal("authoritative published revision was rejected")
+	}
+
+	missing := base
+	missing.PublishedRevision = nil
+	if validIngestCommit(store.initializationID, transactionID, missing) {
+		t.Fatal("committed evidence without an exact published revision was accepted")
+	}
+
+	invalid := base
+	badRevision := "not-an-object-id"
+	invalid.PublishedRevision = &badRevision
+	if validIngestCommit(store.initializationID, transactionID, invalid) {
+		t.Fatal("malformed published revision was accepted")
+	}
+
+	conflict := base
+	conflict.Status = model.IngestCommitConflict
+	conflict.RefState = model.IngestRefOther
+	if validIngestCommit(store.initializationID, transactionID, conflict) {
+		t.Fatal("non-authoritative conflict carried published evidence")
+	}
+}
+
+func TestRunIngestMaterializesExactPublishedRevisionAfterFinalize(t *testing.T) {
+	fixture := newIngestControllerFixture(t, "export EDITOR=nvim\n")
+	fixture.requireCommitted()
+	if fixture.store.materializeCalls != 1 || fixture.store.materializeBranch != "main" ||
+		fixture.store.materializeOID != fixture.store.publishedRevision {
+		t.Fatalf("materialization = calls %d branch %q oid %q", fixture.store.materializeCalls,
+			fixture.store.materializeBranch, fixture.store.materializeOID)
+	}
+	if eventIndex(fixture.events, "worktree:materialize") <= eventIndex(fixture.events, "initializer:finalize-call") {
+		t.Fatalf("materialization preceded finalize: %v", fixture.events)
+	}
+}
+
+func TestRunIngestMaterializationFailurePreservesPublicationTruth(t *testing.T) {
+	const canary = "RAW_MATERIALIZER_CANARY"
+	fixture := newIngestControllerFixture(t, "export EDITOR=nvim\n")
+	fixture.store.materializeError = errors.New(canary)
+	code, result, encoded := fixture.runJSON()
+	if code != int(model.ExitRuntimeErr) || !result.ProfileCommitted || !result.StartupInstalled ||
+		!result.RecoveryRequired || fixture.store.materializeCalls != 1 {
+		t.Fatalf("materialization split = code %d result %#v calls %d", code, result, fixture.store.materializeCalls)
+	}
+	if strings.Contains(encoded, canary) || strings.Contains(encoded, fixture.store.publishedRevision) {
+		t.Fatalf("materialization split disclosed internal evidence: %s", encoded)
+	}
+}
+
+func TestRunIngestNoncommitNeverMaterializes(t *testing.T) {
+	fixture := newIngestControllerFixture(t, "export EDITOR=nvim\n")
+	fixture.store.commitStatus = model.IngestCommitConflict
+	fixture.store.commitError = errors.New("conflict")
+	code, result, _ := fixture.runJSON()
+	if code != int(model.ExitRuntimeErr) || result.ProfileCommitted || fixture.store.materializeCalls != 0 {
+		t.Fatalf("noncommit materialization = code %d result %#v calls %d", code, result, fixture.store.materializeCalls)
+	}
 }
 
 func TestRunIngestCommitsCompleteOrderedProfile(t *testing.T) {

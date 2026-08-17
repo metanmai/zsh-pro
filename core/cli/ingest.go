@@ -79,6 +79,14 @@ type ingestControllerSeams struct {
 	beforeCommit func(*guardedInstallTransaction) error
 }
 
+// WorktreeMaterializer consumes only exact authoritative publication evidence.
+// The production adapter reads the committed DTO at revision before delegating
+// to the durable worktree Service; it never resolves a process-local current
+// profile or accepts caller-supplied source bytes.
+type WorktreeMaterializer interface {
+	MaterializeCommittedWorktree(context.Context, string, string) error
+}
+
 func (reason ingestFailureReason) String() string {
 	switch reason {
 	case ingestFailureProviderUnavailable:

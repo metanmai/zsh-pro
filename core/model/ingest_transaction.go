@@ -231,6 +231,7 @@ type IngestCommitOutcome struct {
 	InitializationID        InstallInitializationID
 	TransactionID           IngestTransactionID
 	Status                  IngestCommitStatus
+	PublishedRevision       *string
 	RefState                IngestRefState
 	Backend                 IngestBackendState
 	Objects                 IngestObjectsState
