@@ -5,8 +5,8 @@ milestone_name: Branchable Shell Environments
 current_phase: 07
 current_phase_name: Git-Like Shared Working Environment
 status: executing
-stopped_at: Completed 07-02-PLAN.md
-last_updated: "2026-08-17T11:17:59.759Z"
+stopped_at: Completed 07-03-PLAN.md
+last_updated: "2026-08-17T12:09:26.878Z"
 last_activity: 2026-08-17
 last_activity_desc: Phase 07 execution started
 progress:
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-06-25)
 ## Current Position
 
 Phase: 07 (Git-Like Shared Working Environment) — EXECUTING
-Plan: 3 of 10
+Plan: 4 of 10
 Status: Ready to execute
 Last activity: 2026-08-17 — Phase 07 execution started
 
@@ -98,6 +98,7 @@ Progress: [██████████] 100%
 | Phase 06 P05 | — | 3 tasks | — |
 | Phase 07-git-like-shared-working-environment P01 | 13min | 2 tasks | 4 files |
 | Phase 07-git-like-shared-working-environment P02 | 13min | 2 tasks | 5 files |
+| Phase 07 P03 | 46min | 3 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -183,6 +184,10 @@ Recent decisions affecting current work:
 - [Phase 07]: Registry ownership uses final EffectiveManaged and Representable source occurrences while SecretRefs remain metadata-owned but live-value-ineligible. — Source shadowing and resolved secret literals must not enter shared state.
 - [Phase 07]: Admission requires exact absence from an attachment issued by the same registry and returns value-free stable exclusions. — Ambient inherited state must never become managed implicitly.
 - [Phase 07]: Missing or typed-nil LiveSecretPolicy injection fails closed with policy-missing. — No captured value may cross the boundary without a production secret verdict.
+- [Phase 07]: Persist only capability verifiers and authenticate requests in constant time inside the state transaction — Raw credentials must never reach canonical state, receipts, errors, or forensic output.
+- [Phase 07]: Use one descriptor-relative atomic worktree.json generation under one fixed lock — Shared, shell, pending, receipt, conflict, and event authority must not split across crash-consistency domains.
+- [Phase 07]: Retain overlapping loser deltas and conflicts until exact acknowledgement — First-lock-wins arbitration must not silently discard local intent or clear evidence before apply verification.
+- [Phase 07]: Duplicate and re-authenticate StateStore directory descriptors — The store owns its lifecycle while remaining bound to the authenticated directory despite path replacement.
 
 ### Pending Todos
 
@@ -211,6 +216,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-08-17T11:17:59.752Z
-Stopped at: Completed 07-02-PLAN.md
+Last session: 2026-08-17T12:09:26.871Z
+Stopped at: Completed 07-03-PLAN.md
 Resume file: None
