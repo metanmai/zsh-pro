@@ -2,19 +2,19 @@
 gsd_state_version: 1.0
 milestone: v2.0
 milestone_name: Branchable Shell Environments
-current_phase: 6
-status: completed
-stopped_at: Completed 06-05-PLAN.md
-last_updated: "2026-08-08T19:32:56.563Z"
-last_activity: 2026-08-08
-last_activity_desc: Phase 6 complete
+current_phase: 07
+current_phase_name: Git-Like Shared Working Environment
+status: executing
+stopped_at: Completed 07-01-PLAN.md
+last_updated: "2026-08-17T10:59:30.681Z"
+last_activity: 2026-08-17
+last_activity_desc: Phase 07 execution started
 progress:
   total_phases: 6
   completed_phases: 6
   total_plans: 40
   completed_plans: 40
   percent: 100
-current_phase_name: Ingest End-to-End
 ---
 
 # Project State
@@ -24,14 +24,14 @@ current_phase_name: Ingest End-to-End
 See: .planning/PROJECT.md (updated 2026-06-25)
 
 **Core value:** `checkout <branch>` gives you a different, trustworthy shell environment — declarative state (aliases/env/PATH/functions/options) applies and reverses cleanly with zero residue, while portability is preserved (dynamic values like `$HOME`/`$(...)` stay late-bound, never frozen to one machine).
-**Current focus:** Phase 06 — Ingest End-to-End
+**Current focus:** Phase 07 — Git-Like Shared Working Environment
 
 ## Current Position
 
-Phase: 06 (Ingest End-to-End) — COMPLETE
-Plan: 5 of 5
-Status: All phases complete
-Last activity: 2026-08-08 — Phase 6 complete
+Phase: 07 (Git-Like Shared Working Environment) — EXECUTING
+Plan: 2 of 10
+Status: Ready to execute
+Last activity: 2026-08-17 — Phase 07 execution started
 
 Progress: [██████████] 100%
 
@@ -96,6 +96,7 @@ Progress: [██████████] 100%
 | Phase 06 P03 | 48m | 3 tasks | 12 files |
 | Phase 06 P04 | 27m | 3 tasks | 6 files |
 | Phase 06 P05 | — | 3 tasks | — |
+| Phase 07-git-like-shared-working-environment P01 | 13min | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -175,6 +176,8 @@ Recent decisions affecting current work:
 - [Phase ?]: [06-04]: Filesystem restore-or-retain precedes Store, loader, cache, and initializer compensation; recovery uncertainty disarms later destructive steps.
 - [Phase ?]: [06-04]: A committed ingest finalizes the existing guarded promotion and never rewrites the startup target after commit.
 - [Phase ?]: [06-04]: One concrete Store pointer owns initialization IDs and every ingest transaction operation.
+- [Phase ?]: Live values use explicit presence plus a kind-selected payload so present-empty remains distinct from removal.
+- [Phase ?]: Model normalization and equality are the sole live-state semantic authority; diff and activation consumers must delegate to them.
 
 ### Pending Todos
 
@@ -203,6 +206,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-08-08
-Stopped at: Completed 06-05-PLAN.md; post-completion review convergence
+Last session: 2026-08-17T10:59:30.674Z
+Stopped at: Completed 07-01-PLAN.md
 Resume file: None
