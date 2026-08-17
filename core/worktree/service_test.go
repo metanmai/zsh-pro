@@ -254,6 +254,37 @@ func TestPreparePullAndAcknowledgeRequireExactFreshTarget(t *testing.T) {
 	}
 }
 
+func TestAcknowledgeCanonicalizesFreshIdentityRecordOrder(t *testing.T) {
+	harness := materializedServiceHarness(t, fakeLiveSecretPolicy{})
+	a := serviceCredential(t, "shell-a", 'A')
+	b := serviceCredential(t, "shell-b", 'B')
+	harness.attach(t, a, "attach-a")
+	harness.attach(t, b, "attach-b")
+	aliasIdentity := model.Identity{Kind: model.LiveAlias, Name: "demo.live"}
+	aliasState := model.LiveIdentityState{Identity: aliasIdentity, Value: model.ScalarLiveValue("print -- live")}
+	harness.publish(t, a, "publish-alias", 1, model.LiveChange{
+		Kind: model.LiveAdd, Identity: aliasIdentity, Value: model.CloneLiveValue(aliasState.Value),
+	})
+
+	pending, err := harness.service.PreparePull(context.Background(), model.PreparePullRequest{
+		OperationID: "prepare-b", Credential: b, AppliedRevision: 1,
+	})
+	if err != nil || pending.PendingRevision != 2 {
+		t.Fatalf("prepare = %#v, %v", pending, err)
+	}
+	result, err := harness.service.Acknowledge(context.Background(), model.AcknowledgeRequest{
+		OperationID: "ack-b", Credential: b, Revision: pending.PendingRevision, Token: pending.Token,
+		Snapshot: serviceSnapshot(aliasState, serviceState("EDITOR", "shared")),
+	})
+	if err != nil || !result.Acknowledged || result.AppliedRevision != 2 {
+		t.Fatalf("reordered acknowledge = %#v, %v", result, err)
+	}
+	shell := harness.state(t).Shells[b.ShellID]
+	if shell.AppliedRevision != 2 || shell.Behind || shell.Pending.Kind != PendingNone {
+		t.Fatalf("acknowledged shell = %#v", shell)
+	}
+}
+
 func TestAcknowledgePreparedRevisionPreservesConcurrentLaterHead(t *testing.T) {
 	harness := materializedServiceHarness(t, fakeLiveSecretPolicy{})
 	a := serviceCredential(t, "shell-a", 'A')

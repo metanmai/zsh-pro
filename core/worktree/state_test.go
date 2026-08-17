@@ -257,3 +257,74 @@ func TestAutoApplyNilAndExplicitFalseRemainDistinct(t *testing.T) {
 		t.Fatal("nil and false auto-apply states collapsed")
 	}
 }
+
+func TestFingerprintSnapshotCanonicalIdentityOrder(t *testing.T) {
+	path := model.LiveIdentityState{
+		Identity: model.Identity{Kind: model.LivePath, Name: "PATH"},
+		Value:    model.ListLiveValue([]string{"", "/one", "/one", "/two"}),
+	}
+	fpath := model.LiveIdentityState{
+		Identity: model.Identity{Kind: model.LiveFPath, Name: "FPATH"},
+		Value:    model.ListLiveValue([]string{"/functions/two", "", "/functions/one"}),
+	}
+	environment := model.LiveIdentityState{
+		Identity: model.Identity{Kind: model.LiveEnv, Name: "EDITOR"},
+		Value:    model.ScalarLiveValue("shared"),
+	}
+	alias := model.LiveIdentityState{
+		Identity: model.Identity{Kind: model.LiveAlias, Name: "demo.live"},
+		Value:    model.ScalarLiveValue("print -- live"),
+	}
+	original := []model.LiveIdentityState{path, alias, fpath, environment}
+	wantOriginal := model.CloneLiveStates(original)
+
+	canonical, err := FingerprintSnapshot(model.LiveSnapshot{States: original})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reordered, err := FingerprintSnapshot(model.LiveSnapshot{States: []model.LiveIdentityState{environment, fpath, alias, path}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if canonical != reordered {
+		t.Fatal("identity-record order changed the snapshot fingerprint")
+	}
+	if !reflect.DeepEqual(original, wantOriginal) {
+		t.Fatal("fingerprinting reordered or aliased the caller's snapshot")
+	}
+
+	assertDifferent := func(name string, states []model.LiveIdentityState) {
+		t.Helper()
+		fingerprint, fingerprintErr := FingerprintSnapshot(model.LiveSnapshot{States: states})
+		if fingerprintErr != nil {
+			t.Fatalf("%s: %v", name, fingerprintErr)
+		}
+		if fingerprint == canonical {
+			t.Errorf("%s did not change the snapshot fingerprint", name)
+		}
+	}
+
+	valueChanged := model.CloneLiveStates(original)
+	valueChanged[1].Value = model.ScalarLiveValue("print -- changed")
+	assertDifferent("scalar value", valueChanged)
+
+	presenceChanged := model.CloneLiveStates(original)
+	presenceChanged[3].Value = model.RemovedLiveValue()
+	assertDifferent("present versus absent", presenceChanged)
+
+	identityKindChanged := model.CloneLiveStates(original)
+	identityKindChanged[1].Identity = model.Identity{Kind: model.LiveFunction, Name: "demo.live"}
+	assertDifferent("identity kind", identityKindChanged)
+
+	identityNameChanged := model.CloneLiveStates(original)
+	identityNameChanged[1].Identity.Name = "demo.other"
+	assertDifferent("identity name", identityNameChanged)
+
+	pathOrderChanged := model.CloneLiveStates(original)
+	pathOrderChanged[0].Value = model.ListLiveValue([]string{"/one", "", "/one", "/two"})
+	assertDifferent("PATH element order", pathOrderChanged)
+
+	fpathOrderChanged := model.CloneLiveStates(original)
+	fpathOrderChanged[2].Value = model.ListLiveValue([]string{"", "/functions/two", "/functions/one"})
+	assertDifferent("FPATH element order", fpathOrderChanged)
+}

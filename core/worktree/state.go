@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"sort"
 	"strings"
 
 	"zsh-pro/core/model"
@@ -602,6 +603,9 @@ func FingerprintSnapshot(snapshot model.LiveSnapshot) (SnapshotFingerprint, erro
 	if err != nil {
 		return SnapshotFingerprint{}, err
 	}
+	sort.SliceStable(states, func(left, right int) bool {
+		return identityLess(states[left].Identity, states[right].Identity)
+	})
 	payload, err := json.Marshal(states)
 	if err != nil {
 		return SnapshotFingerprint{}, err
