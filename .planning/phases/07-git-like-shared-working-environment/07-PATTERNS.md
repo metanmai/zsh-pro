@@ -55,7 +55,7 @@ type Plan struct {
 type Op interface{ activationOp() }
 ```
 
-Define typed `Identity`, live value variants, add/change/remove `LiveChange`, overlay entries/tombstones, revision events, conflicts, publish/pull/ack requests, and status/diff results as shell-agnostic values. Use pointer or explicit presence fields wherever unset and present-empty differ; that is already the model convention in `core/model/profile.go:24-61` and `core/model/manifest.go:17-40`.
+Define typed `Identity`, live value variants, add/change/remove `LiveChange`, overlay entries/tombstones, revision events, conflicts, the exact private Attach/Publish/Prepare/Acknowledge/Resolve requests, and status/diff results as shell-agnostic values. Use pointer or explicit presence fields wherever unset and present-empty differ; that is already the model convention in `core/model/profile.go:24-61` and `core/model/manifest.go:17-40`.
 
 Keep JSON tags, locks, filesystem paths, Git refs, and zsh source out of this file. `core/worktree/state.go` owns durable encoding.
 
@@ -257,7 +257,7 @@ Shared branch/revision/shell acknowledgement coordination does not belong in com
 
 **Analog:** strict dispatcher and exit-code boundary at `core/cli/cli.go:58-109`.
 
-Add public dispatch for categorized `diff`, `commit`, branch list/create, shared `checkout`, `reset --hard`, `sync`, and `config set auto-apply true|false`. Validate arity/flags before dependency or filesystem work, as `noArgumentUsage` does at `core/cli/cli.go:111-117`.
+Add public binary dispatch for categorized `diff`, `commit`, branch list/create, shared `checkout`, `reset --hard`, and `config set auto-apply true|false`. Validate arity/flags before dependency or filesystem work, as `noArgumentUsage` does at `core/cli/cli.go:111-117`. Direct binary `sync` and `sync --resolve shared` must fail before dependency access because both are sourced-loader parent-shell flows.
 
 Replace `runStatus`'s process-local `Store.Current()` output (`core/cli/cli.go:133-142`) with the worktree service's shared branch/base/revision/dirty/conflict plus current-shell applied/behind/auto-apply view.
 
@@ -281,15 +281,15 @@ Materialization must be idempotently reconstructible from the committed DTO/exac
 
 Put user-facing command parsing/output here; delegate dirty checks, categorized diff, concurrency, secrets, and Git policy to services. Use typed requests and typed results. Do not pass raw errors, object IDs, captured values, or helper stderr to renderers unless a command's documented output explicitly requires a non-secret value.
 
-`checkout` must reject dirty worktree; `reset --hard` is the only ordinary discard path; `commit` includes every supported dirty identity; `branch <name>` forks the current committed base without switching; `sync` reuses the runtime apply/verify/ack flow.
+`checkout` must reject dirty worktree; `reset --hard` is the only ordinary discard path; `commit` includes every supported dirty identity; `branch <name>` forks the current committed base without switching. `sync` and `sync --resolve shared` are deliberately absent from direct binary dispatch and reuse the runtime prepare/apply/verify/reverse/fresh-capture/ack flow only through the sourced `zsh-pro()` dispatcher.
 
 ### `core/cli/runtime.go` (controller, event-driven / request-response)
 
 **Analog:** the private allowlist and descriptor-bound timeout boundary at `core/cli/runtime.go:25-128`, plus exact-byte validation at `core/cli/runtime.go:131-176`.
 
-Extend the private command allowlist with bounded publish, pull/prepare, and acknowledge operations. Validate exact argument counts, shell IDs, revision integers, frame size/count limits, and permitted operation names before authenticating the root or reading stdin.
+Extend the private command allowlist with exactly five operations: Attach, Publish, Prepare, Acknowledge, and Resolve. Prepare is not Pull/query. Argv contains only the non-authorizing operation tag and the existing integer outer watchdog; shell capability, shell ID, operation ID, revisions/tokens, and operation payload travel in one `ZPWT` version-1 stdin envelope. Cap the complete envelope at exactly 2,101,248 bytes and 10,016 records, read it once with a plus-one overflow sentinel, require an explicit final record followed by EOF, and reject partial lengths, early EOF, duplicates, unknown/out-of-order fields, operation-tag mismatch, trailing bytes, and cap-plus-one before Service access. Never fall back to argv, environment, pathname, or a second read.
 
-Keep context deadlines, in-memory/pipe output, descriptor-bound roots, raw diagnostic suppression, and typed-nil guards. Runtime publish/pull/ack must never accept arbitrary paths, refs, Git argv, shell commands, or output destinations.
+Keep finite context deadlines, in-memory/pipe output, descriptor-bound roots, raw diagnostic suppression, and typed-nil guards. All five runtime operations forward the decoded credential unchanged to Service, which alone checks the verifier under the canonical transaction. They must never accept arbitrary paths, refs, Git argv, shell commands, or output destinations. Attach allocation is the sole credential-less frame mode and returns its generated pair through a separate bounded private response after descriptor authentication.
 
 ### `core/cli/emitter.go` (service, transform)
 
@@ -351,7 +351,7 @@ add-zsh-hook precmd _zp_worktree_publish
 add-zle-hook-widget line-finish _zp_worktree_pull
 ```
 
-`precmd` captures and publishes only after the foreground command settles. `line-finish` pulls only; do not publish there. `sync` uses the same pull/render/validate/eval/fresh-snapshot/acknowledge path. Update `ZP_ACTIVE_REVERSE_FN` ownership before acknowledging. Acknowledge only after the fresh managed snapshot matches the target. Use a recursion guard and bounded helper deadline; store diagnostics in namespaced globals without blocking the prompt.
+`precmd` captures and publishes only after the foreground command settles. `line-finish` pulls only; do not publish there. `sync` and `sync --resolve shared` are sourced-loader flows and use the same Prepare/Resolve -> render/validate/eval/replacement-reverse/fresh-snapshot/Acknowledge path. Update `ZP_ACTIVE_REVERSE_FN` ownership before acknowledging. Acknowledge only after the fresh managed snapshot matches the target. Build private frames with shell builtins under private locals and restored xtrace/history protections; the persistent non-exported marker is the only long-lived capability copy, while every call-local credential/control/frame/response copy and descriptor is cleared on all exits. Use a recursion guard and bounded helper deadline; store diagnostics in namespaced globals without blocking the prompt.
 
 The shared current branch is durable worktree state. `ZSHPRO_PROFILE`/`ZP_ACTIVE_PROFILE` remain this shell's applied markers, not shared authority.
 
@@ -359,7 +359,7 @@ The shared current branch is durable worktree state. `ZSHPRO_PROFILE`/`ZP_ACTIVE
 
 **Analog:** the file's sole-composition-root contract at `core/cmd/zsh-pro/main.go:1-15` and concrete wiring at `core/cmd/zsh-pro/main.go:50-93`.
 
-Construct one concrete worktree service and inject its narrow public/runtime interfaces into CLI and runtime emitter factories. Reuse the exact authenticated descriptor objects for runtime operations. Do not reconstruct a second path-based service/store after authentication, and do not add a package-global singleton.
+Construct distinct scoped Services over one canonical durable `worktree.json` generation: public/materializer commands receive a path-bound Service from `OpenStateStore(path)`, while each private runtime operation receives a fresh authenticated-descriptor-bound Service from `NewStateStoreFromAuthenticatedRoot` after validation and RuntimeRoot authentication. Authority is canonical-generation identity, never Service pointer identity. Do not reopen a path, reuse the public path-bound store inside runtime, fall back to another authority, or add a package-global singleton; preserve caller-input versus StateStore-duplicate close ownership.
 
 ## Shared Patterns
 
@@ -389,13 +389,19 @@ Sources to copy:
 Validate at every authority boundary:
 
 - CLI: arity/flags before dependencies.
-- Runtime: exact subcommand allowlist, shell ID/revision, 2 MiB and 10,000-record initial snapshot bounds.
+- Runtime: exact five-operation allowlist, duplicated operation tag, version-1 stdin record grammar, shell ID/capability/revision/token shape, 2,101,248-byte and 10,016-record envelope bounds, one-shot read, final-record/EOF enforcement, and no trailing data or alternate credential channel.
 - Model/worktree: category/name/value shape, admitted ownership, event/history bounds.
 - Git: validated branch/ref and exact argv.
 - Filesystem: private owner/mode, no-follow descriptors, authenticated lock and state entry.
 - Shell: safe identity names, exact generated bytes through `zsh -n`.
 
-The spike's starting bounds are 128 revision events and 250 ms helper work. Changing them needs measurement; removing the bounds is not an option.
+The spike's starting bounds are 128 revision events and a 250 ms whole-transition default. Changing them needs retained production measurement; removing, disabling, resetting per stage, or making them user-unbounded is not an option.
+
+### Private Capability Transport and Deadline Ownership
+
+The raw `ShellCapability` is a bearer and must never appear in process argv or environment. The sourced loader writes the exact versioned envelope directly to helper stdin using zsh builtins in byte-counting locale, with xtrace/history locally disabled and restored. Keep the valid stable marker non-exported across re-source, but clear every call-local credential/control/frame/response copy and temporary descriptor in `always` on success, malformed input, timeout, signal, and lost response. A live blocked-helper test must inspect cmdline/environ before Service invocation, then prove shell-ID-only and wrong shell-ID/capability pairing cannot access receipts or mutate state. At rest, only Plan 07-03's domain-separated verifier exists.
+
+`core/cli/runtime.go` owns the unexported monotonic `transitionClock`/`transitionBudget` seam and the finite 250 ms production default. Production construction is sealed to Go monotonic time; only package-private tests inject a fake clock, and no CLI/environment/public config can override the clock or create a zero/negative/unbounded budget. `core/shell/zsh/hook.go` owns the cleanup-bound parent transition guard from Prepare/Resolve through protected eval, reply parsing, replacement reverse, fresh capture, and Acknowledge. Exact cumulative 249 ms admission versus 251 ms timeout is proven with fake time, including final consumption at late stages and no real boundary sleep. Active production-path fail-open tests use 25 ms well-below-budget and 500 ms clearly-over-budget stalls for authentication, bind, helper read/execute, transport, protected eval, reverse replacement, fresh capture, and acknowledgement; every timeout retains the old acknowledged revision and usable prompt.
 
 ### Determinism and Concurrency
 
@@ -410,14 +416,14 @@ Sort user-visible diffs by category then name. Retain ordered PATH/FPATH element
 | Lock retry, cancellation, deadline, modes | `core/store/store_root_private_unix_test.go:15-163` |
 | Deterministic DTO and compatibility | `core/store/dto_test.go:214-246`, `core/store/dto_test.go:360-405` |
 | Git allowlist, CAS conflict, real plumbing | `core/store/git_test.go:128-152`, `core/store/git_test.go:191-230`, `core/store/git_test.go:307-401` |
-| Runtime typed-nil, descriptor binding, deadline, source redaction | `core/cli/runtime_test.go:19-29`, `core/cli/runtime_test.go:42-154`, `core/cli/runtime_test.go:394-409` |
+| Runtime typed-nil, descriptor binding, bounded stdin capability transport, fake monotonic deadline, source redaction | `core/cli/runtime_test.go:19-29`, `core/cli/runtime_test.go:42-154`, `core/cli/runtime_test.go:394-409` |
 | Snapshot multiline/sentinel framing | `core/shell/zsh/introspect_test.go:74-122` |
 | Emitter hostile names, syntax, apply/reverse | `core/shell/zsh/emit_test.go:18-113`, `core/shell/zsh/emit_test.go:115-246` |
 | Loader surface, no source-time subprocess, fail-open boundary | `core/shell/zsh/hook_test.go:10-65` |
 | Current-shell zero-residue E2E harness | `core/shell/zsh/live_terminal_test.go:13` and helpers beginning `core/shell/zsh/live_terminal_test.go:1441` |
 | Exact composition-store identity | `core/cmd/zsh-pro/main_test.go:32` and `core/cmd/zsh-pro/main_test.go:141` |
 
-Add a retained production-binary two-`zsh -f` harness derived from Spike 001 for auto on/off, next-command alias visibility, explicit sync, disjoint/overlap races, history gaps, dirty checkout/reset, foreground non-interference, secret/noise exclusion, abandoned partial writes, fail-open helper loss, and `live edit -> sibling sync -> checkout/deactivate -> zero residue`.
+Add a retained production-binary two-`zsh -f` harness derived from Spike 001 for auto on/off, next-command alias visibility, sourced-only explicit sync/resolve, disjoint/overlap races, history gaps, dirty checkout/reset, foreground non-interference, secret/noise exclusion, malformed/partial/trailing stdin frames, live helper cmdline/environ capability absence, deterministic/active deadline behavior, abandoned partial writes, fail-open helper loss, and `live edit -> sibling sync -> checkout/deactivate -> zero residue`.
 
 ## No Analog Found
 
