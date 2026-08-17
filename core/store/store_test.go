@@ -525,6 +525,49 @@ func TestCommitWorktreeReadWorktreeRevisionExactRoundTrip(t *testing.T) {
 	}
 }
 
+func TestResolveWorktreeRevisionUsesValidatedDirectBranchAuthority(t *testing.T) {
+	ctx := context.Background()
+	store := newWorktreeStore(t, nil)
+	type revisionResolver interface {
+		ResolveWorktreeRevision(context.Context, string) (string, error)
+	}
+	resolver, ok := any(store).(revisionResolver)
+	if !ok {
+		t.Fatal("Store does not implement the exact worktree revision resolver")
+	}
+
+	want, err := store.git.revParse(ctx, "refs/heads/main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := resolver.ResolveWorktreeRevision(ctx, "main")
+	if err != nil || got != want {
+		t.Fatalf("ResolveWorktreeRevision(main) = %q, %v; want %q", got, err, want)
+	}
+	if _, err := resolver.ResolveWorktreeRevision(ctx, "missing"); !errors.Is(err, ErrProfileNotFound) {
+		t.Fatalf("ResolveWorktreeRevision(missing) = %v, want ErrProfileNotFound", err)
+	}
+
+	starts := 0
+	store.git.beforeStart = func([]string) { starts++ }
+	for _, branch := range []string{"", "-authority", "../main", "main^{commit}", "refs/heads/main"} {
+		if _, err := resolver.ResolveWorktreeRevision(ctx, branch); err == nil {
+			t.Fatalf("ResolveWorktreeRevision accepted hostile branch %q", branch)
+		}
+	}
+	if starts != 0 {
+		t.Fatalf("hostile branch inputs started %d Git processes", starts)
+	}
+
+	evilRef := filepath.Join(store.dir, "refs", "heads", "evil")
+	if err := os.WriteFile(evilRef, []byte("ref: refs/heads/main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolver.ResolveWorktreeRevision(ctx, "evil"); !errors.Is(err, ErrGitCommand) {
+		t.Fatalf("symbolic loose ref = %v, want ErrGitCommand", err)
+	}
+}
+
 func TestCreateFromUsesExactCurrentBaseAndNeverOverwrites(t *testing.T) {
 	ctx := context.Background()
 	store := newWorktreeStore(t, nil)

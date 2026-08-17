@@ -27,7 +27,99 @@ import (
 	"zsh-pro/core/model"
 	"zsh-pro/core/shell/zsh"
 	"zsh-pro/core/store"
+	"zsh-pro/core/worktree"
 )
+
+func TestMainWorktreeCompositionContract(t *testing.T) {
+	sourceBytes, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(sourceBytes)
+	for _, required := range []string{
+		"worktree.OpenStateStore(",
+		"worktree.NewRegistry(provider)",
+		"worktree.NewService(",
+		"cli.NewRuntimeWorktreeFactory(provider, provider, provider)",
+		"cli.NewWithStoreInitializerAndWorktree(",
+	} {
+		if !strings.Contains(source, required) {
+			t.Errorf("composition root is missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{".Current(", "exec.Command(", "ZSHPRO_PROFILE", "ZP_ACTIVE_PROFILE"} {
+		if strings.Contains(source, forbidden) {
+			t.Errorf("composition root contains forbidden worktree authority %q", forbidden)
+		}
+	}
+
+	file, err := parser.ParseFile(token.NewFileSet(), "main.go", sourceBytes, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, declaration := range file.Decls {
+		general, ok := declaration.(*ast.GenDecl)
+		if !ok || general.Tok != token.VAR {
+			continue
+		}
+		for _, spec := range general.Specs {
+			value, ok := spec.(*ast.ValueSpec)
+			if !ok || value.Type == nil {
+				continue
+			}
+			typeName := fmt.Sprint(value.Type)
+			if strings.Contains(typeName, "Service") || strings.Contains(typeName, "StateStore") {
+				t.Fatalf("composition root declares package-global worktree authority: %v", value.Names)
+			}
+		}
+	}
+}
+
+func TestCanonicalWorktreeAuthorityRepairsExactRevision(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("authenticated worktree state is unsupported on this platform")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	root := filepath.Join(t.TempDir(), "profiles.git")
+	setCompositionEnvironment(t, map[string]string{
+		"HOME":        t.TempDir(),
+		"ZSHPRO_HOME": root,
+	})
+	provider := zsh.Provider{}
+	repository, err := store.New(root, provider, store.NewOSKeychainDriver(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := repository.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+	base := gitRef(t, root, "refs/heads/main")
+	document := model.NewCommittedWorktree(model.Profile{}, model.LiveProjection{})
+	result, err := repository.CommitWorktree(ctx, "main", base, document, "composition repair fixture")
+	if err != nil || !result.Committed {
+		t.Fatalf("CommitWorktree = %#v, %v", result, err)
+	}
+
+	status := runCompositionCLI(t, newCLI(), "status")
+	if !strings.Contains(status, "branch: main\n") || !strings.Contains(status, "revision: 1\n") {
+		t.Fatalf("repaired status = %q", status)
+	}
+	stateStore, err := worktree.OpenStateStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = stateStore.Close() }()
+	state, err := stateStore.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !state.Materialized || state.Branch != "main" || state.BaseOID != result.OID || state.HeadRevision != 1 {
+		t.Fatalf("canonical generation = %#v, want exact main/%s revision 1", state, result.OID)
+	}
+}
 
 func TestRuntimeCaptureUsesCompositionStoreAndVaultForEveryLocation(t *testing.T) {
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
