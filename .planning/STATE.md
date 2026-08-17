@@ -4,9 +4,9 @@ milestone: v2.0
 milestone_name: Branchable Shell Environments
 current_phase: 07
 current_phase_name: Git-Like Shared Working Environment
-status: executing
-stopped_at: Completed 07-09-PLAN.md
-last_updated: "2026-08-17T16:02:17.138Z"
+status: verifying
+stopped_at: Completed 07-10-PLAN.md
+last_updated: "2026-08-17T17:06:24.299Z"
 last_activity: 2026-08-17
 last_activity_desc: Phase 07 execution started
 progress:
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-06-25)
 
 Phase: 07 (Git-Like Shared Working Environment) — EXECUTING
 Plan: 10 of 10
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-08-17 — Phase 07 execution started
 
 Progress: [██████████] 100%
@@ -105,6 +105,7 @@ Progress: [██████████] 100%
 | Phase 07 P06 | 29m | 2 tasks | 6 files |
 | Phase 07-git-like-shared-working-environment P07 | 25m | 2 tasks | 7 files |
 | Phase 07-git-like-shared-working-environment P09 | 65m | 2 tasks | 6 files |
+| Phase 07 P10 | 59min | 2 tasks | 16 files |
 
 ## Accumulated Context
 
@@ -217,6 +218,9 @@ Recent decisions affecting current work:
 - [Phase ?]: [07-09]: Publish returns only bounded value-free conflict identity and durable token metadata needed for explicit shared resolution.
 - [Phase ?]: [07-09]: One sealed 250 ms absolute budget spans runtime work and parent eval, fresh capture, and acknowledgement.
 - [Phase ?]: [07-09]: Legacy fail-open routing is limited to unsupported helpers, already-active legacy shells, or deliberately replaced dispatchers.
+- [Phase ?]: Canonicalize top-level live identity record order only for comparison fingerprints while preserving exact ordered-list and value semantics.
+- [Phase ?]: Use the current captured parent shell as the patch base while retaining applied state as causal acknowledgement authority.
+- [Phase ?]: Update retained config and mutation state only after exact successful production commands and preserve delegated failure codes.
 
 ### Pending Todos
 
@@ -245,6 +249,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-08-17T16:02:17.130Z
-Stopped at: Completed 07-09-PLAN.md
+Last session: 2026-08-17T17:06:24.291Z
+Stopped at: Completed 07-10-PLAN.md
 Resume file: None
