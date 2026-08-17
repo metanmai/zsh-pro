@@ -176,6 +176,9 @@ func (s *StateStore) WithTransaction(ctx context.Context, mutate func(*State) er
 		return err
 	}
 	defer func() { _ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN) }()
+	if err := s.authenticateLockBinding(lock); err != nil {
+		return err
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -202,11 +205,17 @@ func (s *StateStore) WithTransaction(ctx context.Context, mutate func(*State) er
 	if err := s.authenticateRoot(); err != nil {
 		return err
 	}
+	if err := s.authenticateLockBinding(lock); err != nil {
+		return err
+	}
 	next, err := MarshalState(state)
 	if err != nil {
 		return err
 	}
 	if bytes.Equal(previous, next) {
+		if err := s.authenticateLockBinding(lock); err != nil {
+			return err
+		}
 		return s.authenticateRoot()
 	}
 	if err := s.replaceCanonical(next); err != nil {
@@ -320,6 +329,32 @@ func (s *StateStore) openLock() (*os.File, error) {
 		return nil, errors.New("retain state lock descriptor")
 	}
 	return file, nil
+}
+
+func (s *StateStore) authenticateLockBinding(lock *os.File) error {
+	if lock == nil {
+		return fmt.Errorf("%w: missing state lock", ErrStateStoreAuthentication)
+	}
+	currentFD, err := syscall.Openat(int(s.root.Fd()), stateLockFileName, syscall.O_RDONLY|syscall.O_CLOEXEC|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return fmt.Errorf("%w: reopen state lock binding", ErrStateStoreAuthentication)
+	}
+	defer func() { _ = syscall.Close(currentFD) }()
+	if err := authenticateStateFile(currentFD, 0o600); err != nil {
+		return fmt.Errorf("%w: current state lock", ErrStateStoreAuthentication)
+	}
+	var held syscall.Stat_t
+	var current syscall.Stat_t
+	if err := syscall.Fstat(int(lock.Fd()), &held); err != nil {
+		return fmt.Errorf("%w: stat held state lock", ErrStateStoreAuthentication)
+	}
+	if err := syscall.Fstat(currentFD, &current); err != nil {
+		return fmt.Errorf("%w: stat current state lock", ErrStateStoreAuthentication)
+	}
+	if held.Dev != current.Dev || held.Ino != current.Ino {
+		return fmt.Errorf("%w: state lock binding changed", ErrStateStoreAuthentication)
+	}
+	return nil
 }
 
 func acquireStateLock(ctx context.Context, fd int) error {

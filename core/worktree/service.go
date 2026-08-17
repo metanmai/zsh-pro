@@ -100,7 +100,8 @@ func (s *Service) Attach(ctx context.Context, request model.AttachRequest) (mode
 	if err := model.ValidateLiveSnapshot(request.Initial); err != nil {
 		return model.AttachResult{}, err
 	}
-	requestFingerprint, err := fingerprintParts("attach", request.Initial)
+	initial := model.LiveSnapshot{ByteSize: request.Initial.ByteSize, States: model.CloneLiveStates(request.Initial.States)}
+	requestFingerprint, err := fingerprintParts("attach", initial)
 	if err != nil {
 		return model.AttachResult{}, err
 	}
@@ -133,12 +134,12 @@ func (s *Service) Attach(ctx context.Context, request model.AttachRequest) (mode
 		if err := s.registry.Seed(state.Committed.Source); err != nil {
 			return ErrRecoveryRequired
 		}
-		attachment, attachErr := s.registry.Attach(request.Initial)
+		attachment, attachErr := s.registry.Attach(initial)
 		if attachErr != nil {
 			return attachErr
 		}
 		baseline := presentOnly(attachment.Baseline())
-		present := presentIdentities(request.Initial)
+		present := presentIdentities(initial)
 		shell := ShellState{
 			CapabilityVerifier: verifier,
 			AttachedRevision:   state.HeadRevision,
@@ -178,7 +179,8 @@ func (s *Service) Publish(ctx context.Context, request model.PublishRequest) (mo
 	if err := validateChanges(request.Delta); err != nil {
 		return model.PublishResult{}, err
 	}
-	requestFingerprint, err := fingerprintParts("publish", request.AcknowledgedRevision, request.Delta)
+	delta := model.CloneLiveChanges(request.Delta)
+	requestFingerprint, err := fingerprintParts("publish", request.AcknowledgedRevision, delta)
 	if err != nil {
 		return model.PublishResult{}, err
 	}
@@ -204,7 +206,10 @@ func (s *Service) Publish(ctx context.Context, request model.PublishRequest) (mo
 		if err := s.registry.Seed(state.Committed.Source); err != nil {
 			return ErrRecoveryRequired
 		}
-		admitted := s.admittedChanges(shell, request.Delta)
+		if err := validateChanges(delta); err != nil {
+			return err
+		}
+		admitted := s.admittedChanges(shell, delta)
 		observed, applyErr := applyStateChanges(shell.CaptureBaseline, admitted)
 		if applyErr != nil {
 			return applyErr
@@ -354,6 +359,7 @@ func (s *Service) ResolveShared(ctx context.Context, request model.ResolveShared
 	if err := model.ValidateIdentity(request.Conflict); err != nil || request.Token.Validate() != nil || model.ValidateLiveSnapshot(request.Snapshot) != nil {
 		return model.ResolveSharedResult{}, ErrConflictRequiresResolution
 	}
+	snapshot := model.LiveSnapshot{ByteSize: request.Snapshot.ByteSize, States: model.CloneLiveStates(request.Snapshot.States)}
 	var result model.ResolveSharedResult
 	err := s.store.WithTransaction(ctx, func(state *State) error {
 		shell, authErr := authorizeShell(*state, request.Credential)
@@ -363,7 +369,7 @@ func (s *Service) ResolveShared(ctx context.Context, request model.ResolveShared
 		if err := s.registry.Seed(state.Committed.Source); err != nil {
 			return ErrRecoveryRequired
 		}
-		observed, filterErr := s.admittedSnapshot(shell, request.Snapshot)
+		observed, filterErr := s.admittedSnapshot(shell, snapshot)
 		if filterErr != nil {
 			return filterErr
 		}
@@ -415,6 +421,7 @@ func (s *Service) Acknowledge(ctx context.Context, request model.AcknowledgeRequ
 	if request.Revision == 0 || request.Token.Validate() != nil || model.ValidateLiveSnapshot(request.Snapshot) != nil {
 		return model.AcknowledgeResult{}, ErrAcknowledgeMismatch
 	}
+	snapshot := model.LiveSnapshot{ByteSize: request.Snapshot.ByteSize, States: model.CloneLiveStates(request.Snapshot.States)}
 	var result model.AcknowledgeResult
 	err := s.store.WithTransaction(ctx, func(state *State) error {
 		shell, authErr := authorizeShell(*state, request.Credential)
@@ -424,7 +431,7 @@ func (s *Service) Acknowledge(ctx context.Context, request model.AcknowledgeRequ
 		if err := s.registry.Seed(state.Committed.Source); err != nil {
 			return ErrRecoveryRequired
 		}
-		observed, filterErr := s.admittedSnapshot(shell, request.Snapshot)
+		observed, filterErr := s.admittedSnapshot(shell, snapshot)
 		if filterErr != nil {
 			return filterErr
 		}
@@ -547,7 +554,12 @@ func authorizeShell(state State, credential model.ShellCredential) (ShellState, 
 		return ShellState{}, ErrUnauthorized
 	}
 	shell, ok := state.Shells[credential.ShellID]
-	if !ok || !model.VerifyShellCapability(shell.CapabilityVerifier, credential.Capability) {
+	verifier := model.ShellCapabilityVerifier(sha256.Sum256([]byte("zsh-pro/worktree-missing-shell-verifier/v1")))
+	if ok {
+		verifier = shell.CapabilityVerifier
+	}
+	verified := model.VerifyShellCapability(verifier, credential.Capability)
+	if !ok || !verified {
 		return ShellState{}, ErrUnauthorized
 	}
 	return shell, nil
