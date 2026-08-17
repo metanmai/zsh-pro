@@ -105,7 +105,7 @@ func TestSourcedShellIDRejectsMalformedBeforeWorktreeAccess(t *testing.T) {
 			if code != int(model.ExitUsageErr) || stdout != "" || len(service.calls) != 0 {
 				t.Fatalf("malformed shell ID = code %d stdout %q stderr %q calls %v", code, stdout, stderr, service.calls)
 			}
-			if strings.Contains(stderr, shellID) || !strings.Contains(stderr, "usage: zsh-pro status") {
+			if (shellID != "" && strings.Contains(stderr, shellID)) || !strings.Contains(stderr, "usage: zsh-pro status") {
 				t.Fatalf("unsafe shell-ID diagnostic = %q", stderr)
 			}
 		})
@@ -160,6 +160,37 @@ func TestCommitBranchCheckoutResetAndAutoApplyDelegateExactRequests(t *testing.T
 	}
 }
 
+func TestCommitOutcomesRemainTruthfulAndValueSafe(t *testing.T) {
+	tests := []struct {
+		name   string
+		result model.WorktreeCommitResult
+		err    error
+		code   int
+		stdout string
+		stderr string
+	}{
+		{name: "clean", code: int(model.ExitClean), stdout: "nothing to commit\n"},
+		{name: "conflict", result: model.WorktreeCommitResult{Conflict: true}, err: errors.New("raw-conflict-canary"), code: int(model.ExitActionable), stderr: "zsh-pro: worktree commit conflict\n"},
+		{name: "published recovery", result: model.WorktreeCommitResult{Committed: true, OID: strings.Repeat("c", 40), RecoveryRequired: true}, err: errors.New("raw-recovery-canary"), code: int(model.ExitRuntimeErr), stderr: "zsh-pro: commit published; recovery required\n"},
+		{name: "unpublished recovery", result: model.WorktreeCommitResult{RecoveryRequired: true}, err: errors.New("raw-recovery-canary"), code: int(model.ExitRuntimeErr), stderr: "zsh-pro: worktree recovery required\n"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			service := &recordingWorktree{result: tc.result, err: tc.err}
+			code, stdout, stderr := runWorktreeCLI(t, worktreeCLI(service), "commit", "-m", "message")
+			if code != tc.code || stdout != tc.stdout || stderr != tc.stderr || !equalStrings(service.calls, []string{"commit:message"}) {
+				t.Fatalf("outcome = code %d stdout %q stderr %q calls %v", code, stdout, stderr, service.calls)
+			}
+			if strings.Contains(stdout+stderr, tc.result.OID) && tc.result.OID != "" {
+				t.Fatal("commit outcome exposed raw object ID")
+			}
+			if strings.Contains(stdout+stderr, "raw-") {
+				t.Fatal("commit outcome exposed raw service error")
+			}
+		})
+	}
+}
+
 func TestUnsupportedGitAndMalformedWorktreeCommandsNeverReachDependencies(t *testing.T) {
 	invalid := [][]string{
 		{"status", "extra"}, {"diff", "--raw"}, {"commit"}, {"commit", "message"}, {"commit", "-m"}, {"commit", "-m", ""}, {"commit", "-m", "message", "extra"},
@@ -184,6 +215,38 @@ func TestWorktreeErrorsAreValueSafe(t *testing.T) {
 	code, stdout, stderr := runWorktreeCLI(t, worktreeCLI(service), "diff")
 	if code != int(model.ExitRuntimeErr) || stdout != "" || stderr == "" || strings.Contains(stderr, "captured-secret-canary") || strings.Contains(stderr, strings.Repeat("c", 40)) {
 		t.Fatalf("unsafe error = code %d stdout %q stderr %q", code, stdout, stderr)
+	}
+}
+
+type panicLegacyStore struct{}
+
+func (panicLegacyStore) Branches(context.Context) ([]string, error) {
+	panic("legacy Branches called")
+}
+func (panicLegacyStore) Current() string { panic("legacy Current called") }
+func (panicLegacyStore) Checkout(context.Context, string) error {
+	panic("legacy Checkout called")
+}
+func (panicLegacyStore) Read(context.Context, string) (model.Profile, error) {
+	panic("legacy Read called")
+}
+
+func TestWorktreeCommandsNeverUseLegacyStoreAuthority(t *testing.T) {
+	unsetenvForTest(t, "ZSHPRO_SHELL_ID")
+	service := &recordingWorktree{
+		status: worktree.WorkflowStatus{
+			Worktree: model.WorktreeStatus{Branch: "main", Revision: 1}, PersistedDefault: true, Effective: true, Source: worktree.AutoApplyDefaultSource,
+		},
+		result: model.WorktreeCommitResult{Committed: true, OID: strings.Repeat("d", 40)},
+	}
+	program := NewWithWorktree(nil, panicLegacyStore{}, nil, service, service)
+	for _, args := range [][]string{
+		{"status"}, {"diff"}, {"commit", "-m", "message"}, {"branch", "feature"},
+		{"checkout", "feature"}, {"reset", "--hard"}, {"config", "set", "auto-apply", "true"},
+	} {
+		if code, _, stderr := runWorktreeCLI(t, program, args...); code != int(model.ExitClean) {
+			t.Fatalf("worktree command %q touched legacy authority or failed: code %d stderr %q", args, code, stderr)
+		}
 	}
 }
 
