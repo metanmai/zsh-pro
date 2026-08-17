@@ -7,7 +7,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
+	"sort"
+	"strings"
 
 	"zsh-pro/core/activate"
 	"zsh-pro/core/model"
@@ -76,33 +79,214 @@ func NewService(store *StateStore, registry *Registry, repositories ...Repositor
 }
 
 // Commit publishes every effective dirty identity without a staging or partial
-// selection input. The implementation lands in the GREEN phase.
-func (s *Service) Commit(context.Context, string) (model.WorktreeCommitResult, error) {
-	return model.WorktreeCommitResult{}, ErrWorkflowUnavailable
+// selection input. The worktree lock covers the dirty decision, expected base,
+// repository CAS, and canonical-state update.
+func (s *Service) Commit(ctx context.Context, message string) (model.WorktreeCommitResult, error) {
+	if err := s.availableWorkflow(); err != nil {
+		return model.WorktreeCommitResult{}, err
+	}
+	if message == "" || strings.IndexByte(message, 0) >= 0 {
+		return model.WorktreeCommitResult{}, errors.New("worktree commit message is invalid")
+	}
+	var result model.WorktreeCommitResult
+	var repositoryErr error
+	err := s.store.WithTransaction(ctx, func(state *State) error {
+		if !state.Materialized {
+			return ErrWorktreeUnmaterialized
+		}
+		changes, diffErr := workflowChanges(*state)
+		if diffErr != nil {
+			return diffErr
+		}
+		if len(changes) == 0 {
+			return nil
+		}
+		document, buildErr := activate.BuildEffective(state.Committed.Source, workflowOverlay(changes))
+		if buildErr != nil {
+			return buildErr
+		}
+		if !equalLiveStates(document.Projection.States, state.Shared) {
+			return ErrRecoveryRequired
+		}
+
+		result, repositoryErr = s.repo.CommitWorktree(ctx, state.Branch, state.BaseOID, document, message)
+		if !result.Committed {
+			if repositoryErr != nil {
+				return repositoryErr
+			}
+			return nil
+		}
+		if !stateOIDRE.MatchString(result.OID) {
+			result.RecoveryRequired = true
+			return nil
+		}
+		exact, readErr := s.repo.ReadWorktreeRevision(ctx, result.OID)
+		if readErr != nil || validateCommitted(exact) != nil || !equalLiveStates(exact.Projection.States, state.Shared) {
+			result.RecoveryRequired = true
+			return nil
+		}
+		if seedErr := s.registry.Seed(exact.Source); seedErr != nil {
+			result.RecoveryRequired = true
+			return nil
+		}
+		state.BaseOID = result.OID
+		state.Committed = model.NewCommittedWorktree(exact.Source, exact.Projection)
+		return nil
+	})
+	if err != nil {
+		if result.Committed {
+			result.RecoveryRequired = true
+			return result, ErrRecoveryRequired
+		}
+		return result, err
+	}
+	if result.Committed && result.RecoveryRequired {
+		return result, ErrRecoveryRequired
+	}
+	return result, repositoryErr
 }
 
-func (s *Service) Branches(context.Context) ([]string, error) {
-	return nil, ErrWorkflowUnavailable
+func (s *Service) Branches(ctx context.Context) ([]string, error) {
+	if err := s.availableWorkflow(); err != nil {
+		return nil, err
+	}
+	var branches []string
+	err := s.store.WithTransaction(ctx, func(state *State) error {
+		if !state.Materialized {
+			return ErrWorktreeUnmaterialized
+		}
+		if err := s.repairPublishedState(ctx, state); err != nil {
+			return err
+		}
+		var err error
+		branches, err = s.repo.Branches(ctx)
+		return err
+	})
+	branches = append([]string(nil), branches...)
+	sort.Strings(branches)
+	return branches, err
 }
 
-func (s *Service) Branch(context.Context, string) error {
-	return ErrWorkflowUnavailable
+func (s *Service) Branch(ctx context.Context, branch string) error {
+	if err := s.availableWorkflow(); err != nil {
+		return err
+	}
+	if !validStateBranch(branch) {
+		return errors.New("worktree branch is invalid")
+	}
+	return s.store.WithTransaction(ctx, func(state *State) error {
+		if !state.Materialized {
+			return ErrWorktreeUnmaterialized
+		}
+		if err := s.repairPublishedState(ctx, state); err != nil {
+			return err
+		}
+		return s.repo.CreateFrom(ctx, branch, state.BaseOID)
+	})
 }
 
-func (s *Service) Checkout(context.Context, string, bool) error {
-	return ErrWorkflowUnavailable
+func (s *Service) Checkout(ctx context.Context, branch string, create bool) error {
+	if err := s.availableWorkflow(); err != nil {
+		return err
+	}
+	if !validStateBranch(branch) {
+		return errors.New("worktree branch is invalid")
+	}
+	return s.store.WithTransaction(ctx, func(state *State) error {
+		if !state.Materialized {
+			return ErrWorktreeUnmaterialized
+		}
+		changes, err := workflowChanges(*state)
+		if err != nil {
+			return err
+		}
+		if len(changes) != 0 {
+			return ErrWorktreeDirty
+		}
+		for _, shell := range state.Shells {
+			if shell.Conflict != nil || len(shell.UnpublishedDelta) != 0 || shell.Pending.Kind != PendingNone {
+				return ErrConflictRequiresResolution
+			}
+		}
+		if err := s.repairPublishedState(ctx, state); err != nil {
+			return err
+		}
+		if create {
+			if err := s.repo.CreateFrom(ctx, branch, state.BaseOID); err != nil {
+				return err
+			}
+		}
+		targetOID, err := s.repo.ResolveWorktreeRevision(ctx, branch)
+		if err != nil {
+			return err
+		}
+		if !stateOIDRE.MatchString(targetOID) {
+			return ErrRecoveryRequired
+		}
+		target, err := s.repo.ReadWorktreeRevision(ctx, targetOID)
+		if err != nil || validateCommitted(target) != nil {
+			return ErrRecoveryRequired
+		}
+		return s.replaceWorkflowGeneration(state, branch, targetOID, target, "checkout")
+	})
 }
 
-func (s *Service) ResetHard(context.Context) error {
-	return ErrWorkflowUnavailable
+func (s *Service) ResetHard(ctx context.Context) error {
+	if err := s.availableWorkflow(); err != nil {
+		return err
+	}
+	return s.store.WithTransaction(ctx, func(state *State) error {
+		if !state.Materialized {
+			return ErrWorktreeUnmaterialized
+		}
+		target, err := s.repo.ReadWorktreeRevision(ctx, state.BaseOID)
+		if err != nil || validateCommitted(target) != nil {
+			return ErrRecoveryRequired
+		}
+		return s.replaceWorkflowGeneration(state, state.Branch, state.BaseOID, target, "reset")
+	})
 }
 
-func (s *Service) SetAutoApplyDefault(context.Context, bool) error {
-	return ErrWorkflowUnavailable
+func (s *Service) SetAutoApplyDefault(ctx context.Context, enabled bool) error {
+	if err := s.available(); err != nil {
+		return err
+	}
+	return s.store.WithTransaction(ctx, func(state *State) error {
+		if !state.Materialized {
+			return ErrWorktreeUnmaterialized
+		}
+		state.AutoApplyDefault = enabled
+		return nil
+	})
 }
 
-func (s *Service) WorkflowStatus(context.Context, string) (WorkflowStatus, error) {
-	return WorkflowStatus{}, ErrWorkflowUnavailable
+func (s *Service) WorkflowStatus(ctx context.Context, shellID string) (WorkflowStatus, error) {
+	if err := s.available(); err != nil {
+		return WorkflowStatus{}, err
+	}
+	if shellID != "" && !validStateToken(shellID) {
+		return WorkflowStatus{}, errors.New("shell status ID is invalid")
+	}
+	if s.repo != nil {
+		if err := s.repairPublishedRef(ctx); err != nil {
+			return WorkflowStatus{}, err
+		}
+	}
+	state, err := s.store.Read(ctx)
+	if err != nil {
+		return WorkflowStatus{}, err
+	}
+	status, err := workflowStatusFromState(state, shellID)
+	if err != nil {
+		return WorkflowStatus{}, err
+	}
+	effective := state.AutoApplyDefault
+	source := AutoApplyDefaultSource
+	if shell, ok := state.Shells[shellID]; ok && shell.AutoApplyOverride != nil {
+		effective = *shell.AutoApplyOverride
+		source = AutoApplyShellSource
+	}
+	return WorkflowStatus{Worktree: status, PersistedDefault: state.AutoApplyDefault, Effective: effective, Source: source}, nil
 }
 
 func isNilWorkflowRepository(repository Repository) bool {
@@ -117,8 +301,6 @@ func isNilWorkflowRepository(repository Repository) bool {
 		return false
 	}
 }
-
-var _ = activate.BuildEffective
 
 // Materialize creates the first exact branch/OID generation. A repeat is a
 // no-op only when all immutable materialization inputs match.
@@ -560,20 +742,76 @@ func (s *Service) Acknowledge(ctx context.Context, request model.AcknowledgeRequ
 }
 
 func (s *Service) Status(ctx context.Context, shellID string) (model.WorktreeStatus, error) {
+	status, err := s.WorkflowStatus(ctx, shellID)
+	return status.Worktree, err
+}
+
+func (s *Service) Diff(ctx context.Context) (model.CategorizedDiff, error) {
 	if err := s.available(); err != nil {
-		return model.WorktreeStatus{}, err
+		return model.CategorizedDiff{}, err
 	}
-	if shellID != "" && !validStateToken(shellID) {
-		return model.WorktreeStatus{}, errors.New("shell status ID is invalid")
+	if s.repo != nil {
+		if err := s.repairPublishedRef(ctx); err != nil {
+			return model.CategorizedDiff{}, err
+		}
 	}
 	state, err := s.store.Read(ctx)
 	if err != nil {
-		return model.WorktreeStatus{}, err
+		return model.CategorizedDiff{}, err
 	}
+	if !state.Materialized {
+		return model.CategorizedDiff{}, ErrWorktreeUnmaterialized
+	}
+	changes, err := DiffSnapshot(model.LiveSnapshot{States: state.Committed.Projection.States}, model.LiveSnapshot{States: state.Shared})
+	if err != nil {
+		return model.CategorizedDiff{}, err
+	}
+	return CategorizeDiff(changes)
+}
+
+func (s *Service) available() error {
+	if s == nil || s.store == nil || s.registry == nil {
+		return errors.New("worktree service is unavailable")
+	}
+	return nil
+}
+
+func (s *Service) availableWorkflow() error {
+	if err := s.available(); err != nil {
+		return err
+	}
+	if isNilWorkflowRepository(s.repo) {
+		return ErrWorkflowUnavailable
+	}
+	return nil
+}
+
+func workflowChanges(state State) ([]model.LiveChange, error) {
+	return DiffSnapshot(
+		model.LiveSnapshot{States: state.Committed.Projection.States},
+		model.LiveSnapshot{States: state.Shared},
+	)
+}
+
+func workflowOverlay(changes []model.LiveChange) []model.OverlayEntry {
+	overlay := make([]model.OverlayEntry, 0, len(changes))
+	for _, change := range changes {
+		entry := model.OverlayEntry{Identity: change.Identity}
+		if change.Kind == model.LiveRemove {
+			entry.Tombstone = true
+		} else {
+			entry.Value = model.CloneLiveValue(change.Value)
+		}
+		overlay = append(overlay, entry)
+	}
+	return overlay
+}
+
+func workflowStatusFromState(state State, shellID string) (model.WorktreeStatus, error) {
 	if !state.Materialized {
 		return model.WorktreeStatus{}, ErrWorktreeUnmaterialized
 	}
-	changes, err := DiffSnapshot(model.LiveSnapshot{States: state.Committed.Projection.States}, model.LiveSnapshot{States: state.Shared})
+	changes, err := workflowChanges(state)
 	if err != nil {
 		return model.WorktreeStatus{}, err
 	}
@@ -596,27 +834,74 @@ func (s *Service) Status(ctx context.Context, shellID string) (model.WorktreeSta
 	return status, nil
 }
 
-func (s *Service) Diff(ctx context.Context) (model.CategorizedDiff, error) {
-	if err := s.available(); err != nil {
-		return model.CategorizedDiff{}, err
+// repairPublishedRef reconciles the only safe split outcome: the current
+// branch ref advanced to an exact object whose projection already equals the
+// locked shared generation. A different object is never imported implicitly.
+func (s *Service) repairPublishedRef(ctx context.Context) error {
+	if err := s.availableWorkflow(); err != nil {
+		return err
 	}
-	state, err := s.store.Read(ctx)
-	if err != nil {
-		return model.CategorizedDiff{}, err
-	}
-	if !state.Materialized {
-		return model.CategorizedDiff{}, ErrWorktreeUnmaterialized
-	}
-	changes, err := DiffSnapshot(model.LiveSnapshot{States: state.Committed.Projection.States}, model.LiveSnapshot{States: state.Shared})
-	if err != nil {
-		return model.CategorizedDiff{}, err
-	}
-	return CategorizeDiff(changes)
+	return s.store.WithTransaction(ctx, func(state *State) error {
+		if !state.Materialized {
+			return ErrWorktreeUnmaterialized
+		}
+		return s.repairPublishedState(ctx, state)
+	})
 }
 
-func (s *Service) available() error {
-	if s == nil || s.store == nil || s.registry == nil {
-		return errors.New("worktree service is unavailable")
+func (s *Service) repairPublishedState(ctx context.Context, state *State) error {
+	observed, err := s.repo.ResolveWorktreeRevision(ctx, state.Branch)
+	if err != nil {
+		return err
+	}
+	if observed == state.BaseOID {
+		return nil
+	}
+	if !stateOIDRE.MatchString(observed) {
+		return ErrRecoveryRequired
+	}
+	exact, err := s.repo.ReadWorktreeRevision(ctx, observed)
+	if err != nil || validateCommitted(exact) != nil || !equalLiveStates(exact.Projection.States, state.Shared) {
+		return ErrRecoveryRequired
+	}
+	state.BaseOID = observed
+	state.Committed = model.NewCommittedWorktree(exact.Source, exact.Projection)
+	if err := s.registry.Seed(state.Committed.Source); err != nil {
+		return ErrRecoveryRequired
+	}
+	return nil
+}
+
+func (s *Service) replaceWorkflowGeneration(state *State, branch, oid string, document model.CommittedWorktree, operation string) error {
+	target := model.CloneLiveStates(document.Projection.States)
+	changes, err := DiffSnapshot(model.LiveSnapshot{States: state.Shared}, model.LiveSnapshot{States: target})
+	if err != nil {
+		return err
+	}
+	state.Branch = branch
+	state.BaseOID = oid
+	state.Committed = model.NewCommittedWorktree(document.Source, document.Projection)
+	state.Shared = target
+	if err := s.registry.Seed(state.Committed.Source); err != nil {
+		return ErrRecoveryRequired
+	}
+	if len(changes) != 0 {
+		next, err := model.NextRevision(state.HeadRevision)
+		if err != nil {
+			return err
+		}
+		state.HeadRevision = next
+		state.Events = append(state.Events, StateEvent{
+			Revision: next, OperationID: fmt.Sprintf("workflow-%s:%d", operation, next), Changes: model.CloneLiveChanges(changes),
+		})
+		if err := CompactStateHistory(state); err != nil {
+			return err
+		}
+	}
+	for shellID, shell := range state.Shells {
+		shell.Behind = shell.AppliedRevision < state.HeadRevision || !equalLiveStates(shell.AppliedBaseline, state.Shared) || shell.Conflict != nil
+		shell.LastActiveRevision = state.HeadRevision
+		state.Shells[shellID] = shell
 	}
 	return nil
 }

@@ -476,6 +476,23 @@ func TestWorktreeCommitIncludesEveryDirtyIdentityAndClearsOnlyCommittedOverlay(t
 	}
 }
 
+func TestWorktreeCommitConflictPreservesExactDirtyGeneration(t *testing.T) {
+	harness, repository := workflowServiceHarness(t)
+	harness.makeDirty(t, serviceUpdate(serviceIdentity("EDITOR"), "local"))
+	before := harness.state(t)
+	repository.commitResult = model.WorktreeCommitResult{Conflict: true}
+	repository.commitErr = errors.New("expected base no longer matches")
+
+	result, err := harness.service.Commit(context.Background(), "conflicting commit")
+	if err == nil || !result.Conflict || result.Committed || result.RecoveryRequired {
+		t.Fatalf("conflict result = %#v, %v", result, err)
+	}
+	after := harness.state(t)
+	if after.BaseOID != before.BaseOID || !reflect.DeepEqual(after.Committed, before.Committed) || !equalLiveStates(after.Shared, before.Shared) {
+		t.Fatalf("conflict changed durable generation: before=%#v after=%#v", before, after)
+	}
+}
+
 func TestBranchUsesCurrentBaseAndCheckoutRejectsDirtyBeforeRepositoryAccess(t *testing.T) {
 	harness, repository := workflowServiceHarness(t)
 	t.Setenv("ZSHPRO_PROFILE", "stale-profile-marker")
