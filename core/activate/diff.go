@@ -1,15 +1,155 @@
 package activate
 
 import (
-	"errors"
 	"fmt"
 	"sort"
 	"zsh-pro/core/model"
 )
 
 // BuildLivePatch derives one forward plan and its replacement reverse.
-func BuildLivePatch(_, _ []model.LiveIdentityState) (LivePatch, error) {
-	return LivePatch{}, errors.New("live patch construction is not implemented")
+func BuildLivePatch(before, after []model.LiveIdentityState) (LivePatch, error) {
+	beforeNormalized, err := model.NormalizeLiveStates(before)
+	if err != nil {
+		return LivePatch{}, err
+	}
+	afterNormalized, err := model.NormalizeLiveStates(after)
+	if err != nil {
+		return LivePatch{}, err
+	}
+	forwardChanges, err := diffLiveStates(beforeNormalized, afterNormalized)
+	if err != nil {
+		return LivePatch{}, err
+	}
+	reverseChanges, err := diffLiveStates(afterNormalized, beforeNormalized)
+	if err != nil {
+		return LivePatch{}, err
+	}
+	forward, err := liveChangesToOps(forwardChanges, beforeNormalized, afterNormalized)
+	if err != nil {
+		return LivePatch{}, err
+	}
+	replacementReverse, err := liveChangesToOps(reverseChanges, afterNormalized, beforeNormalized)
+	if err != nil {
+		return LivePatch{}, err
+	}
+	return LivePatch{Forward: forward, ReplacementReverse: replacementReverse}, nil
+}
+
+// diffLiveStates is intentionally a thin consumer of core/model's sole
+// normalization/equality authority. core/activate cannot import core/worktree
+// because shell.Provider already closes the worktree -> shell -> activate
+// dependency path; external golden tests pin this traversal to DiffSnapshot.
+func diffLiveStates(before, after []model.LiveIdentityState) ([]model.LiveChange, error) {
+	beforeValues := liveStateValues(before)
+	afterValues := liveStateValues(after)
+	identities := make([]model.Identity, 0, len(beforeValues)+len(afterValues))
+	seen := make(map[model.Identity]bool, len(beforeValues)+len(afterValues))
+	for identity := range beforeValues {
+		seen[identity] = true
+		identities = append(identities, identity)
+	}
+	for identity := range afterValues {
+		if !seen[identity] {
+			identities = append(identities, identity)
+		}
+	}
+	sort.Slice(identities, func(left, right int) bool {
+		leftRank := liveIdentityRank(identities[left].Kind)
+		rightRank := liveIdentityRank(identities[right].Kind)
+		if leftRank != rightRank {
+			return leftRank < rightRank
+		}
+		return identities[left].Name < identities[right].Name
+	})
+	changes := make([]model.LiveChange, 0, len(identities))
+	for _, identity := range identities {
+		beforeValue, beforePresent := beforeValues[identity]
+		afterValue, afterPresent := afterValues[identity]
+		switch {
+		case !beforePresent && afterPresent:
+			changes = append(changes, model.LiveChange{Kind: model.LiveAdd, Identity: identity, Value: model.CloneLiveValue(afterValue)})
+		case beforePresent && !afterPresent:
+			changes = append(changes, model.LiveChange{Kind: model.LiveRemove, Identity: identity, Value: model.RemovedLiveValue()})
+		case beforePresent && afterPresent && !model.EqualLiveValue(identity.Kind, beforeValue, afterValue):
+			changes = append(changes, model.LiveChange{Kind: model.LiveUpdate, Identity: identity, Value: model.CloneLiveValue(afterValue)})
+		}
+	}
+	return changes, nil
+}
+
+func liveIdentityRank(kind model.LiveKind) int {
+	switch kind {
+	case model.LiveEnv:
+		return 0
+	case model.LiveAlias:
+		return 1
+	case model.LiveFunction:
+		return 2
+	case model.LivePath:
+		return 3
+	case model.LiveFPath:
+		return 4
+	case model.LiveOption:
+		return 5
+	default:
+		return 6
+	}
+}
+
+func liveChangesToOps(changes []model.LiveChange, before, after []model.LiveIdentityState) ([]Op, error) {
+	beforeValues := liveStateValues(before)
+	afterValues := liveStateValues(after)
+	operations := make([]Op, 0, len(changes))
+	for _, change := range changes {
+		switch change.Identity.Kind {
+		case model.LiveEnv, model.LiveAlias, model.LiveFunction:
+			if change.Kind == model.LiveRemove {
+				operations = append(operations, RemoveLiveScalar{Identity: change.Identity})
+				continue
+			}
+			if change.Value.Scalar == nil {
+				return nil, fmt.Errorf("live scalar %s/%s has no value", change.Identity.Kind, change.Identity.Name)
+			}
+			operations = append(operations, SetLiveScalar{Identity: change.Identity, Value: *change.Value.Scalar})
+		case model.LivePath, model.LiveFPath:
+			beforeValue, beforePresent := beforeValues[change.Identity]
+			afterValue, afterPresent := afterValues[change.Identity]
+			transition := TransitionLiveList{
+				Identity:      change.Identity,
+				BeforePresent: beforePresent,
+				AfterPresent:  afterPresent,
+			}
+			if beforePresent {
+				transition.Before = append([]string(nil), beforeValue.List...)
+			}
+			if afterPresent {
+				transition.After = append([]string(nil), afterValue.List...)
+			}
+			operations = append(operations, transition)
+		case model.LiveOption:
+			if change.Kind == model.LiveRemove {
+				operations = append(operations, RemoveLiveOptionState{Identity: change.Identity})
+				continue
+			}
+			if change.Value.Option == nil {
+				return nil, fmt.Errorf("live option %s has no value", change.Identity.Name)
+			}
+			operations = append(operations, SetLiveOptionState{Identity: change.Identity, Enabled: *change.Value.Option})
+		default:
+			return nil, fmt.Errorf("live identity kind %q is unsupported", change.Identity.Kind)
+		}
+	}
+	return operations, nil
+}
+
+func liveStateValues(states []model.LiveIdentityState) map[model.Identity]model.LiveValue {
+	values := make(map[model.Identity]model.LiveValue, len(states))
+	for _, state := range states {
+		if state.Value.Present {
+			values[state.Identity] = model.CloneLiveValue(state.Value)
+		}
+	}
+	return values
 }
 
 // Diff derives full deactivate operations from active, then full activate

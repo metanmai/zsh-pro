@@ -1,7 +1,6 @@
 package activate
 
 import (
-	"errors"
 	"regexp"
 	"strings"
 	"zsh-pro/core/model"
@@ -13,9 +12,188 @@ var legacyDynamicPathRE = regexp.MustCompile(`^\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-
 
 const unsetOptCommand = "unset" + "opt"
 
-// BuildEffective is the Phase 7 committed-worktree construction boundary.
-func BuildEffective(_ model.Profile, _ []model.OverlayEntry) (model.CommittedWorktree, error) {
-	return model.CommittedWorktree{}, errors.New("effective worktree construction is not implemented")
+// BuildEffective retains the complete source profile and constructs a separate
+// versioned final-state projection. Source entries are never rewritten or
+// filtered: tombstones are authoritative only inside Projection.
+func BuildEffective(base model.Profile, overlay []model.OverlayEntry) (model.CommittedWorktree, error) {
+	states, err := model.NormalizeLiveStates(liveStatesFromManifest(base, Build(base)))
+	if err != nil {
+		return model.CommittedWorktree{}, err
+	}
+	normalizedOverlay, err := model.NormalizeOverlay(overlay)
+	if err != nil {
+		return model.CommittedWorktree{}, err
+	}
+	projection := effectiveProjection(states, normalizedOverlay)
+	return model.NewCommittedWorktree(base, projection), nil
+}
+
+func effectiveProjection(base []model.LiveIdentityState, overlay []model.OverlayEntry) model.LiveProjection {
+	positions := make(map[model.Identity]int, len(base)+len(overlay))
+	states := make([]model.LiveIdentityState, 0, len(base)+len(overlay))
+	active := make([]bool, 0, len(base)+len(overlay))
+	for _, state := range base {
+		if !state.Value.Present {
+			continue
+		}
+		positions[state.Identity] = len(states)
+		states = append(states, model.LiveIdentityState{Identity: state.Identity, Value: model.CloneLiveValue(state.Value)})
+		active = append(active, true)
+	}
+	tombstones := make([]model.Identity, 0, len(overlay))
+	for _, entry := range overlay {
+		position, exists := positions[entry.Identity]
+		if entry.Tombstone {
+			tombstones = append(tombstones, entry.Identity)
+			if exists {
+				active[position] = false
+			}
+			continue
+		}
+		state := model.LiveIdentityState{Identity: entry.Identity, Value: model.CloneLiveValue(entry.Value)}
+		if exists {
+			states[position] = state
+			active[position] = true
+			continue
+		}
+		positions[entry.Identity] = len(states)
+		states = append(states, state)
+		active = append(active, true)
+	}
+	projected := make([]model.LiveIdentityState, 0, len(states))
+	for index, state := range states {
+		if active[index] {
+			projected = append(projected, state)
+		}
+	}
+	return model.LiveProjection{
+		Schema:     model.WorktreeSchemaV1,
+		States:     projected,
+		Tombstones: tombstones,
+	}
+}
+
+func liveStatesFromManifest(source model.Profile, manifest model.Manifest) []model.LiveIdentityState {
+	values := make(map[model.Identity]model.LiveValue)
+	for _, scalar := range manifest.Env {
+		values[model.Identity{Kind: model.LiveEnv, Name: scalar.Name}] = model.ScalarLiveValue(scalar.Applied)
+	}
+	for name, body := range manifest.Aliases.Added {
+		values[model.Identity{Kind: model.LiveAlias, Name: name}] = model.ScalarLiveValue(body)
+	}
+	for _, name := range manifest.Functions.Added {
+		body, ok := manifest.Functions.Bodies[name]
+		if ok {
+			values[model.Identity{Kind: model.LiveFunction, Name: name}] = model.ScalarLiveValue(body)
+		}
+	}
+	for _, list := range manifest.Lists {
+		kind := model.LivePath
+		if list.Name == "FPATH" {
+			kind = model.LiveFPath
+		}
+		values[model.Identity{Kind: kind, Name: list.Name}] = model.ListLiveValue(list.Additions)
+	}
+	for _, option := range manifest.Options {
+		values[model.Identity{Kind: model.LiveOption, Name: option.Name}] = model.OptionLiveValue(option.Enabled)
+	}
+
+	order := make([]model.Identity, 0, len(values))
+	indexes := make(map[model.Identity]int, len(values))
+	for _, entry := range source.Entries {
+		for _, identity := range liveEntryIdentities(entry) {
+			if _, ok := values[identity]; !ok {
+				continue
+			}
+			if previous, ok := indexes[identity]; ok {
+				order = append(order[:previous], order[previous+1:]...)
+				for existing, index := range indexes {
+					if index > previous {
+						indexes[existing] = index - 1
+					}
+				}
+			}
+			indexes[identity] = len(order)
+			order = append(order, identity)
+		}
+	}
+
+	states := make([]model.LiveIdentityState, 0, len(values))
+	seen := make(map[model.Identity]bool, len(values))
+	appendState := func(identity model.Identity) {
+		value, ok := values[identity]
+		if !ok || seen[identity] {
+			return
+		}
+		states = append(states, model.LiveIdentityState{Identity: identity, Value: model.CloneLiveValue(value)})
+		seen[identity] = true
+	}
+	for _, identity := range order {
+		appendState(identity)
+	}
+	// Build currently admits only source-derived identities. Keep this fallback
+	// deterministic for legacy hand-built profiles whose provenance is absent.
+	for _, scalar := range manifest.Env {
+		appendState(model.Identity{Kind: model.LiveEnv, Name: scalar.Name})
+	}
+	for _, list := range manifest.Lists {
+		kind := model.LivePath
+		if list.Name == "FPATH" {
+			kind = model.LiveFPath
+		}
+		appendState(model.Identity{Kind: kind, Name: list.Name})
+	}
+	for _, name := range manifest.Functions.Added {
+		appendState(model.Identity{Kind: model.LiveFunction, Name: name})
+	}
+	for _, option := range manifest.Options {
+		appendState(model.Identity{Kind: model.LiveOption, Name: option.Name})
+	}
+	return states
+}
+
+func liveEntryIdentities(entry model.Entry) []model.Identity {
+	if !entry.EffectiveManaged() || !entry.Representable() || entry.Secret != nil {
+		return nil
+	}
+	switch entry.Kind {
+	case model.KindAssignment:
+		if len(entry.Names) != 1 {
+			return nil
+		}
+		if entry.Category == model.CatPath {
+			name := canonicalList(entry.Names[0])
+			if name == "PATH" {
+				return []model.Identity{{Kind: model.LivePath, Name: name}}
+			}
+			if name == "FPATH" {
+				return []model.Identity{{Kind: model.LiveFPath, Name: name}}
+			}
+			return nil
+		}
+		if entry.Category == model.CatEnvironment || entry.Category == model.CatSecrets {
+			return []model.Identity{{Kind: model.LiveEnv, Name: entry.Names[0]}}
+		}
+	case model.KindAlias:
+		if len(entry.Names) == 1 {
+			return []model.Identity{{Kind: model.LiveAlias, Name: entry.Names[0]}}
+		}
+	case model.KindFuncDecl:
+		identities := make([]model.Identity, len(entry.Names))
+		for index, name := range entry.Names {
+			identities[index] = model.Identity{Kind: model.LiveFunction, Name: name}
+		}
+		return identities
+	case model.KindCommand:
+		if entry.Category == model.CatOptions && (entry.CmdName == "setopt" || entry.CmdName == unsetOptCommand) {
+			identities := make([]model.Identity, len(entry.Names))
+			for index, name := range entry.Names {
+				identities[index] = model.Identity{Kind: model.LiveOption, Name: name}
+			}
+			return identities
+		}
+	}
+	return nil
 }
 
 // Build converts only effectively managed profile entries into declarative intent.
