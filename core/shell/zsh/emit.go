@@ -10,16 +10,153 @@ import (
 	"zsh-pro/core/model"
 )
 
-func emitLiveIdentityState(_ model.LiveIdentityState, _ bool) ([]byte, error) {
-	return nil, fmt.Errorf("live identity emission is not implemented")
+func emitLiveIdentityState(state model.LiveIdentityState, exported bool) ([]byte, error) {
+	if err := model.ValidateLiveIdentityState(state); err != nil {
+		return nil, err
+	}
+	if !state.Value.Present {
+		return nil, fmt.Errorf("live identity %s/%s has no value", state.Identity.Kind, state.Identity.Name)
+	}
+	var source string
+	switch state.Identity.Kind {
+	case model.LiveEnv:
+		if !safeEnvName(state.Identity.Name) || state.Value.Scalar == nil {
+			return nil, fmt.Errorf("live environment identity is invalid")
+		}
+		if exported {
+			source = fmt.Sprintf("export %s=%s\n", state.Identity.Name, zquote(*state.Value.Scalar))
+		} else {
+			source = fmt.Sprintf("typeset -g %s=%s\n", state.Identity.Name, zquote(*state.Value.Scalar))
+		}
+	case model.LiveAlias:
+		if !safeAliasFuncName(state.Identity.Name) || state.Value.Scalar == nil {
+			return nil, fmt.Errorf("live alias identity is invalid")
+		}
+		source = fmt.Sprintf("alias %s=%s\n", state.Identity.Name, zquote(*state.Value.Scalar))
+	case model.LiveFunction:
+		if !safeAliasFuncName(state.Identity.Name) || state.Value.Scalar == nil {
+			return nil, fmt.Errorf("live function identity is invalid")
+		}
+		source = fmt.Sprintf("functions[%s]=%s\n", state.Identity.Name, quoteFunctionBody(*state.Value.Scalar))
+	case model.LivePath, model.LiveFPath:
+		array := "path"
+		if state.Identity.Kind == model.LiveFPath {
+			array = "fpath"
+		}
+		parts := make([]string, len(state.Value.List))
+		for index, element := range state.Value.List {
+			parts[index] = zquote(element)
+		}
+		source = fmt.Sprintf("%s=(%s)\n", array, strings.Join(parts, " "))
+	case model.LiveOption:
+		if !safeOptionName(state.Identity.Name) || state.Value.Option == nil {
+			return nil, fmt.Errorf("live option identity is invalid")
+		}
+		if *state.Value.Option {
+			source = fmt.Sprintf("setopt %s\n", state.Identity.Name)
+		} else {
+			source = fmt.Sprintf("unsetopt %s\n", state.Identity.Name)
+		}
+	default:
+		return nil, fmt.Errorf("live identity kind %q is unsupported", state.Identity.Kind)
+	}
+	return []byte(source), nil
 }
 
-func emitLiveIdentityTombstone(_ model.Identity) ([]byte, error) {
-	return nil, fmt.Errorf("live identity removal is not implemented")
+func emitLiveIdentityTombstone(identity model.Identity) ([]byte, error) {
+	if err := model.ValidateIdentity(identity); err != nil {
+		return nil, err
+	}
+	var source string
+	switch identity.Kind {
+	case model.LiveEnv:
+		if !safeEnvName(identity.Name) {
+			return nil, fmt.Errorf("live environment identity is invalid")
+		}
+		source = fmt.Sprintf("unset %s\n", identity.Name)
+	case model.LiveAlias:
+		if !safeAliasFuncName(identity.Name) {
+			return nil, fmt.Errorf("live alias identity is invalid")
+		}
+		source = fmt.Sprintf("unalias %s 2>/dev/null || :\n", identity.Name)
+	case model.LiveFunction:
+		if !safeAliasFuncName(identity.Name) {
+			return nil, fmt.Errorf("live function identity is invalid")
+		}
+		source = fmt.Sprintf("unset -f %s 2>/dev/null || :\n", identity.Name)
+	case model.LivePath:
+		source = "unset PATH path\n"
+	case model.LiveFPath:
+		source = "unset FPATH fpath\n"
+	case model.LiveOption:
+		if !safeOptionName(identity.Name) {
+			return nil, fmt.Errorf("live option identity is invalid")
+		}
+		source = fmt.Sprintf("unsetopt %s\n", identity.Name)
+	default:
+		return nil, fmt.Errorf("live identity kind %q is unsupported", identity.Kind)
+	}
+	return []byte(source), nil
 }
 
-func emitLiveOperation(_ activate.Op) ([]byte, error) {
-	return nil, fmt.Errorf("live operation emission is not implemented")
+func emitLiveOperation(operation activate.Op) ([]byte, error) {
+	switch operation := operation.(type) {
+	case activate.SetLiveScalar:
+		if operation.Identity.Kind != model.LiveEnv && operation.Identity.Kind != model.LiveAlias && operation.Identity.Kind != model.LiveFunction {
+			return nil, fmt.Errorf("set-live-scalar kind %q is unsupported", operation.Identity.Kind)
+		}
+		return emitLiveIdentityState(model.LiveIdentityState{
+			Identity: operation.Identity,
+			Value:    model.ScalarLiveValue(operation.Value),
+		}, true)
+	case activate.RemoveLiveScalar:
+		if operation.Identity.Kind != model.LiveEnv && operation.Identity.Kind != model.LiveAlias && operation.Identity.Kind != model.LiveFunction {
+			return nil, fmt.Errorf("remove-live-scalar kind %q is unsupported", operation.Identity.Kind)
+		}
+		return emitLiveIdentityTombstone(operation.Identity)
+	case activate.TransitionLiveList:
+		if operation.Identity.Kind != model.LivePath && operation.Identity.Kind != model.LiveFPath {
+			return nil, fmt.Errorf("live-list-transition kind %q is unsupported", operation.Identity.Kind)
+		}
+		if err := validateLiveListSide(operation.Identity.Kind, operation.BeforePresent, operation.Before); err != nil {
+			return nil, err
+		}
+		if err := validateLiveListSide(operation.Identity.Kind, operation.AfterPresent, operation.After); err != nil {
+			return nil, err
+		}
+		if !operation.AfterPresent {
+			return emitLiveIdentityTombstone(operation.Identity)
+		}
+		return emitLiveIdentityState(model.LiveIdentityState{
+			Identity: operation.Identity,
+			Value:    model.ListLiveValue(operation.After),
+		}, true)
+	case activate.SetLiveOptionState:
+		if operation.Identity.Kind != model.LiveOption {
+			return nil, fmt.Errorf("set-live-option kind %q is unsupported", operation.Identity.Kind)
+		}
+		return emitLiveIdentityState(model.LiveIdentityState{
+			Identity: operation.Identity,
+			Value:    model.OptionLiveValue(operation.Enabled),
+		}, true)
+	case activate.RemoveLiveOptionState:
+		if operation.Identity.Kind != model.LiveOption {
+			return nil, fmt.Errorf("remove-live-option kind %q is unsupported", operation.Identity.Kind)
+		}
+		return emitLiveIdentityTombstone(operation.Identity)
+	default:
+		return nil, fmt.Errorf("live patch: unsupported operation %T", operation)
+	}
+}
+
+func validateLiveListSide(kind model.LiveKind, present bool, elements []string) error {
+	value := model.RemovedLiveValue()
+	if present {
+		value = model.ListLiveValue(elements)
+	} else if elements != nil {
+		return fmt.Errorf("removed live list carries elements")
+	}
+	return model.ValidateLiveValue(kind, value)
 }
 
 // renderValue and renderList are package-level seams deliberately kept

@@ -8,8 +8,101 @@ import (
 )
 
 // RegenerateWorktree validates and lowers one committed final-state document.
-func (Provider) RegenerateWorktree(_ model.CommittedWorktree) ([]byte, error) {
-	return nil, fmt.Errorf("committed worktree regeneration is not implemented")
+// It deliberately performs no quoting or executable command construction: all
+// such source originates in emit.go through the two typed helpers below.
+func (Provider) RegenerateWorktree(document model.CommittedWorktree) ([]byte, error) {
+	if err := validateCommittedWorktree(document); err != nil {
+		return nil, err
+	}
+	exported, knownExport := committedExportState(document.Source)
+	var generated []byte
+	for _, state := range document.Projection.States {
+		isExported := true
+		if state.Identity.Kind == model.LiveEnv && knownExport[state.Identity.Name] {
+			isExported = exported[state.Identity.Name]
+		}
+		line, err := emitLiveIdentityState(state, isExported)
+		if err != nil {
+			return nil, err
+		}
+		generated = append(generated, line...)
+	}
+	for _, identity := range document.Projection.Tombstones {
+		line, err := emitLiveIdentityTombstone(identity)
+		if err != nil {
+			return nil, err
+		}
+		generated = append(generated, line...)
+	}
+	return generated, nil
+}
+
+func validateCommittedWorktree(document model.CommittedWorktree) error {
+	if document.Schema != model.WorktreeSchemaV1 {
+		return fmt.Errorf("committed worktree schema %q unsupported", document.Schema)
+	}
+	if document.Projection.Schema != model.WorktreeSchemaV1 {
+		return fmt.Errorf("live projection schema %q unsupported", document.Projection.Schema)
+	}
+	normalized, err := model.NormalizeLiveStates(document.Projection.States)
+	if err != nil {
+		return err
+	}
+	if len(normalized) != len(document.Projection.States) {
+		return fmt.Errorf("live projection contains duplicate identities")
+	}
+	seen := make(map[model.Identity]bool, len(normalized)+len(document.Projection.Tombstones))
+	pinned := committedPinnedIdentities(document.Source)
+	for _, state := range normalized {
+		if !state.Value.Present {
+			return fmt.Errorf("live projection state %s/%s is not present", state.Identity.Kind, state.Identity.Name)
+		}
+		if pinned[state.Identity] {
+			return fmt.Errorf("live projection contains pinned identity %s/%s", state.Identity.Kind, state.Identity.Name)
+		}
+		seen[state.Identity] = true
+	}
+	for _, identity := range document.Projection.Tombstones {
+		if err := model.ValidateIdentity(identity); err != nil {
+			return err
+		}
+		if seen[identity] {
+			return fmt.Errorf("live projection identity %s/%s is both present and removed", identity.Kind, identity.Name)
+		}
+		if pinned[identity] {
+			return fmt.Errorf("live projection contains pinned identity %s/%s", identity.Kind, identity.Name)
+		}
+		seen[identity] = true
+	}
+	return nil
+}
+
+func committedPinnedIdentities(profile model.Profile) map[model.Identity]bool {
+	pinned := make(map[model.Identity]bool)
+	for _, entry := range profile.Entries {
+		if entry.Secret == nil || len(entry.Names) != 1 || entry.Kind != model.KindAssignment {
+			continue
+		}
+		pinned[model.Identity{Kind: model.LiveEnv, Name: entry.Names[0]}] = true
+	}
+	return pinned
+}
+
+func committedExportState(profile model.Profile) (map[string]bool, map[string]bool) {
+	exported := make(map[string]bool)
+	known := make(map[string]bool)
+	for _, entry := range profile.Entries {
+		if entry.Secret != nil || !entry.EffectiveManaged() || !entry.Representable() || entry.Kind != model.KindAssignment || len(entry.Names) != 1 {
+			continue
+		}
+		if entry.Category != model.CatEnvironment && entry.Category != model.CatSecrets {
+			continue
+		}
+		name := entry.Names[0]
+		known[name] = true
+		exported[name] = exported[name] || entry.Exported
+	}
+	return exported, known
 }
 
 // Regenerate rebuilds a declarative entry into behavior-equivalent zsh source

@@ -1,6 +1,7 @@
 package zsh
 
 import (
+	"fmt"
 	"os/exec"
 	"reflect"
 	"strings"
@@ -17,7 +18,7 @@ func TestCommittedProjectionEmitCoversEveryLiveCategory(t *testing.T) {
 		{Identity: model.Identity{Kind: model.LiveFunction, Name: "multi_fn"}, Value: model.ScalarLiveValue("print -r -- one\nprint -r -- two")},
 		{Identity: model.Identity{Kind: model.LivePath, Name: "PATH"}, Value: model.ListLiveValue([]string{"/base", "", "/dup", "/dup"})},
 		{Identity: model.Identity{Kind: model.LiveFPath, Name: "FPATH"}, Value: model.ListLiveValue([]string{})},
-		{Identity: model.Identity{Kind: model.LiveOption, Name: "NO_BEEP"}, Value: model.OptionLiveValue(false)},
+		{Identity: model.Identity{Kind: model.LiveOption, Name: "AUTO_CD"}, Value: model.OptionLiveValue(false)},
 	}
 	var source []byte
 	for _, item := range states {
@@ -52,43 +53,57 @@ func TestCommittedProjectionEmitCoversEveryLiveCategory(t *testing.T) {
 func TestLivePatchListOccurrenceRemovalAndReplacementReverse(t *testing.T) {
 	before := []string{"/unmanaged", "", "/dup", "/owned", "/dup"}
 	after := []string{"/unmanaged", "", "/dup", "/dup"}
-	forward := activate.TransitionLiveList{
-		Identity:      model.Identity{Kind: model.LivePath, Name: "PATH"},
-		BeforePresent: true,
-		AfterPresent:  true,
-		Before:        before,
-		After:         after,
-	}
-	reverse := activate.TransitionLiveList{
-		Identity:      forward.Identity,
-		BeforePresent: true,
-		AfterPresent:  true,
-		Before:        after,
-		After:         before,
-	}
-	forwardSource, err := emitLiveOperation(forward)
-	if err != nil {
-		t.Fatal(err)
-	}
-	reverseSource, err := emitLiveOperation(reverse)
-	if err != nil {
-		t.Fatal(err)
-	}
 	wantBefore := model.ListLiveValue(before)
 	wantAfter := model.ListLiveValue(after)
 	if reflect.DeepEqual(wantBefore, wantAfter) {
 		t.Fatal("invalid list fixture")
 	}
-	script := strings.Join([]string{
-		"path=('/unmanaged' '' '/dup' '/owned' '/dup')",
-		"typeset snapshot=${(qqqq)path}",
-		string(forwardSource),
-		"[[ ${#path} == 4 && $path[1] == /unmanaged && $path[2] == '' && $path[3] == /dup && $path[4] == /dup ]] || exit 21",
-		string(reverseSource),
-		"[[ ${(qqqq)path} == $snapshot ]] || exit 22",
-	}, "\n")
-	if output, err := exec.Command("zsh", "-f", "-c", script).CombinedOutput(); err != nil {
-		t.Fatalf("list transition did not preserve exact occurrence/reverse: %v\n%s\n%s", err, output, script)
+	for _, test := range []struct {
+		name     string
+		identity model.Identity
+		array    string
+		scalar   string
+	}{
+		{name: "PATH", identity: model.Identity{Kind: model.LivePath, Name: "PATH"}, array: "path", scalar: "PATH"},
+		{name: "FPATH", identity: model.Identity{Kind: model.LiveFPath, Name: "FPATH"}, array: "fpath", scalar: "FPATH"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			forward := activate.TransitionLiveList{
+				Identity:      test.identity,
+				BeforePresent: true,
+				AfterPresent:  true,
+				Before:        before,
+				After:         after,
+			}
+			reverse := activate.TransitionLiveList{
+				Identity:      forward.Identity,
+				BeforePresent: true,
+				AfterPresent:  true,
+				Before:        after,
+				After:         before,
+			}
+			forwardSource, err := emitLiveOperation(forward)
+			if err != nil {
+				t.Fatal(err)
+			}
+			reverseSource, err := emitLiveOperation(reverse)
+			if err != nil {
+				t.Fatal(err)
+			}
+			script := strings.Join([]string{
+				fmt.Sprintf("%s=('/unmanaged' '' '/dup' '/owned' '/dup')", test.array),
+				fmt.Sprintf("typeset snapshot_array=${(qqqq)%s}", test.array),
+				fmt.Sprintf("typeset snapshot_scalar=${(qqqq)%s}", test.scalar),
+				string(forwardSource),
+				fmt.Sprintf("[[ ${#%s} == 4 && $%s[1] == /unmanaged && $%s[2] == '' && $%s[3] == /dup && $%s[4] == /dup ]] || exit 21", test.array, test.array, test.array, test.array, test.array),
+				fmt.Sprintf("[[ $%s == '/unmanaged::/dup:/dup' ]] || exit 22", test.scalar),
+				string(reverseSource),
+				fmt.Sprintf("[[ ${(qqqq)%s} == $snapshot_array && ${(qqqq)%s} == $snapshot_scalar ]] || exit 23", test.array, test.scalar),
+			}, "\n")
+			if output, err := exec.Command("zsh", "-f", "-c", script).CombinedOutput(); err != nil {
+				t.Fatalf("list transition did not preserve exact occurrence/tied reverse: %v\n%s\n%s", err, output, script)
+			}
+		})
 	}
 }
 

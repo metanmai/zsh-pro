@@ -28,7 +28,7 @@ func TestRegenerateWorktreeBehaviorExactProjectionAndTombstones(t *testing.T) {
 			{Identity: model.Identity{Kind: model.LiveFunction, Name: "multi_fn"}, Value: model.ScalarLiveValue("print -r -- one\nprint -r -- two")},
 			{Identity: model.Identity{Kind: model.LivePath, Name: "PATH"}, Value: model.ListLiveValue([]string{"/base", "", "/dup", "/dup"})},
 			{Identity: model.Identity{Kind: model.LiveFPath, Name: "FPATH"}, Value: model.ListLiveValue([]string{})},
-			{Identity: model.Identity{Kind: model.LiveOption, Name: "NO_BEEP"}, Value: model.OptionLiveValue(false)},
+			{Identity: model.Identity{Kind: model.LiveOption, Name: "AUTO_CD"}, Value: model.OptionLiveValue(false)},
 		},
 		Tombstones: []model.Identity{
 			{Kind: model.LiveEnv, Name: "REMOVED"},
@@ -59,16 +59,18 @@ func TestRegenerateWorktreeBehaviorExactProjectionAndTombstones(t *testing.T) {
 		"old_fn() { print old; }",
 		"setopt BEEP",
 		string(generated),
-		"[[ $EXPORTED == $\"it's\\nexact\" && ${parameters[EXPORTED]} == *export* ]] || exit 11",
+		"typeset EXPECTED=$'it\\'s\\nexact'",
+		"[[ $EXPORTED == $EXPECTED && ${parameters[EXPORTED]} == *export* ]] || exit 11",
 		"[[ ${+PLAIN} == 1 && $PLAIN == '' && ${parameters[PLAIN]} != *export* ]] || exit 12",
 		"[[ $ADDED == new && ${parameters[ADDED]} == *export* ]] || exit 13",
 		"[[ ${aliases[empty_alias]} == '' ]] || exit 14",
 		"[[ \"$(multi_fn)\" == $'one\\ntwo' ]] || exit 15",
 		"[[ ${#path} == 4 && $path[1] == /base && $path[2] == '' && $path[3] == /dup && $path[4] == /dup ]] || exit 16",
 		"[[ ${#fpath} == 0 ]] || exit 17",
-		"[[ -o NO_BEEP ]] && exit 18",
+		"[[ -o AUTO_CD ]] && exit 18",
 		"(( ${+REMOVED} == 0 && ${+aliases[old_alias]} == 0 && ${+functions[old_fn]} == 0 )) || exit 19",
 		"[[ -o BEEP ]] && exit 20",
+		":",
 	}, "\n")
 	if output, err := exec.Command("zsh", "-f", "-c", script).CombinedOutput(); err != nil {
 		t.Fatalf("generated worktree behavior mismatch: %v\n%s\n%s", err, output, script)
