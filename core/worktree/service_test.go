@@ -6,12 +6,15 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
 	"zsh-pro/core/model"
+	"zsh-pro/core/shell/zsh"
+	storepkg "zsh-pro/core/store"
 )
 
 func TestMaterializeIsExactIdempotentAndMismatchRequiresRecovery(t *testing.T) {
@@ -633,6 +636,86 @@ func TestRecoveryAfterCommittedStateSaveFailureUsesExactPublishedRevision(t *tes
 	}
 }
 
+func TestWorktreeWorkflowRealGitBoundary(t *testing.T) {
+	t.Run("commit branch checkout and reset", func(t *testing.T) {
+		harness, repository := realGitWorkflowHarness(t)
+		harness.makeDirty(t,
+			serviceUpdate(serviceIdentity("EDITOR"), "real-git"),
+			serviceUpdate(serviceIdentity("REAL_GIT_NEW"), "present"),
+		)
+		result, err := harness.service.Commit(context.Background(), "real git complete worktree")
+		if err != nil || !result.Committed || result.Conflict || result.RecoveryRequired {
+			t.Fatalf("real Git commit = %#v, %v", result, err)
+		}
+		exact, err := repository.ReadWorktreeRevision(context.Background(), result.OID)
+		if err != nil || !equalLiveStates(exact.Projection.States, harness.state(t).Shared) {
+			t.Fatalf("real Git exact read = %#v, %v", exact, err)
+		}
+		if err := harness.service.Branch(context.Background(), "feature"); err != nil {
+			t.Fatal(err)
+		}
+		featureOID, err := repository.ResolveWorktreeRevision(context.Background(), "feature")
+		if err != nil || featureOID != result.OID {
+			t.Fatalf("real Git branch base = %q, %v; want %q", featureOID, err, result.OID)
+		}
+		harness.makeDirty(t, serviceUpdate(serviceIdentity("EDITOR"), "discard"))
+		if err := harness.service.Checkout(context.Background(), "feature", false); !errors.Is(err, ErrWorktreeDirty) {
+			t.Fatalf("real Git dirty checkout = %v", err)
+		}
+		if err := harness.service.ResetHard(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if err := harness.service.Checkout(context.Background(), "feature", false); err != nil {
+			t.Fatal(err)
+		}
+		if state := harness.state(t); state.Branch != "feature" || state.BaseOID != result.OID || !equalLiveStates(state.Shared, exact.Projection.States) {
+			t.Fatalf("real Git checkout/reset state = %#v", state)
+		}
+	})
+
+	t.Run("ref race remains conflict", func(t *testing.T) {
+		harness, repository := realGitWorkflowHarness(t)
+		state := harness.state(t)
+		external := serviceCommitted("external")
+		moved, err := repository.CommitWorktree(context.Background(), state.Branch, state.BaseOID, external, "external ref movement")
+		if err != nil || !moved.Committed {
+			t.Fatalf("external move = %#v, %v", moved, err)
+		}
+		harness.makeDirty(t, serviceUpdate(serviceIdentity("EDITOR"), "local"))
+		before := harness.state(t)
+		result, err := harness.service.Commit(context.Background(), "must lose expected-base race")
+		if err == nil || !result.Conflict || result.Committed || result.RecoveryRequired {
+			t.Fatalf("real Git race = %#v, %v", result, err)
+		}
+		after := harness.state(t)
+		if after.BaseOID != before.BaseOID || !equalLiveStates(after.Shared, before.Shared) {
+			t.Fatalf("real Git race changed state: before=%#v after=%#v", before, after)
+		}
+	})
+
+	t.Run("published ref repairs exact state split", func(t *testing.T) {
+		harness, _ := realGitWorkflowHarness(t)
+		harness.makeDirty(t, serviceUpdate(serviceIdentity("EDITOR"), "published"))
+		fired := false
+		harness.store.faults.beforeRename = func() error {
+			if !fired {
+				fired = true
+				return errors.New("injected state replace failure")
+			}
+			return nil
+		}
+		result, err := harness.service.Commit(context.Background(), "publish before state split")
+		if !errors.Is(err, ErrRecoveryRequired) || !result.Committed || !result.RecoveryRequired {
+			t.Fatalf("real Git split = %#v, %v", result, err)
+		}
+		harness.store.faults.beforeRename = nil
+		status, err := harness.service.WorkflowStatus(context.Background(), "")
+		if err != nil || status.Worktree.BaseOID != result.OID || status.Worktree.DirtyCount != 0 {
+			t.Fatalf("real Git split repair = %#v, %v", status, err)
+		}
+	})
+}
+
 type serviceHarness struct {
 	root    string
 	store   *StateStore
@@ -662,6 +745,74 @@ type workflowRepository struct {
 	lastReadRevision   string
 	commitResult       model.WorktreeCommitResult
 	commitErr          error
+}
+
+type realGitWorkflowRepository struct {
+	root  string
+	store *storepkg.Store
+}
+
+func (repository realGitWorkflowRepository) Branches(ctx context.Context) ([]string, error) {
+	return repository.store.Branches(ctx)
+}
+
+func (repository realGitWorkflowRepository) ResolveWorktreeRevision(ctx context.Context, branch string) (string, error) {
+	command := exec.CommandContext(ctx, "git", "--git-dir", repository.root, "rev-parse", "--verify", "refs/heads/"+branch)
+	output, err := command.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
+func (repository realGitWorkflowRepository) ReadWorktreeRevision(ctx context.Context, revision string) (model.CommittedWorktree, error) {
+	return repository.store.ReadWorktreeRevision(ctx, revision)
+}
+
+func (repository realGitWorkflowRepository) CreateFrom(ctx context.Context, branch, baseOID string) error {
+	return repository.store.CreateFrom(ctx, branch, baseOID)
+}
+
+func (repository realGitWorkflowRepository) CommitWorktree(ctx context.Context, branch, baseOID string, document model.CommittedWorktree, message string) (model.WorktreeCommitResult, error) {
+	return repository.store.CommitWorktree(ctx, branch, baseOID, document, message)
+}
+
+func realGitWorkflowHarness(t *testing.T) (serviceHarness, realGitWorkflowRepository) {
+	t.Helper()
+	root := privateStateRoot(t)
+	repositoryStore, err := storepkg.New(root, zsh.Provider{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repositoryStore.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	repository := realGitWorkflowRepository{root: root, store: repositoryStore}
+	baseOID, err := repository.ResolveWorktreeRevision(context.Background(), "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	committed := serviceCommitted("shared")
+	seed, err := repository.CommitWorktree(context.Background(), "main", baseOID, committed, "seed shared worktree")
+	if err != nil || !seed.Committed {
+		t.Fatalf("seed real Git worktree = %#v, %v", seed, err)
+	}
+	stateStore, err := OpenStateStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewService(stateStore, NewRegistry(fakeLiveSecretPolicy{}), repository)
+	if err != nil {
+		_ = stateStore.Close()
+		t.Fatal(err)
+	}
+	if err := service.Materialize(context.Background(), "main", seed.OID, committed); err != nil {
+		_ = stateStore.Close()
+		t.Fatal(err)
+	}
+	harness := serviceHarness{root: root, store: stateStore, service: service}
+	t.Cleanup(func() { closeStateStore(t, stateStore) })
+	return harness, repository
 }
 
 func (repository *workflowRepository) Branches(context.Context) ([]string, error) {
