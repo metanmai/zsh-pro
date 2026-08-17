@@ -7,7 +7,20 @@ import (
 	"strings"
 
 	"zsh-pro/core/activate"
+	"zsh-pro/core/model"
 )
+
+func emitLiveIdentityState(_ model.LiveIdentityState, _ bool) ([]byte, error) {
+	return nil, fmt.Errorf("live identity emission is not implemented")
+}
+
+func emitLiveIdentityTombstone(_ model.Identity) ([]byte, error) {
+	return nil, fmt.Errorf("live identity removal is not implemented")
+}
+
+func emitLiveOperation(_ activate.Op) ([]byte, error) {
+	return nil, fmt.Errorf("live operation emission is not implemented")
+}
 
 // renderValue and renderList are package-level seams deliberately kept
 // injectable. Besides making the escaping boundary easy to audit, this lets

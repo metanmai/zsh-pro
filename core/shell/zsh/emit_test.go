@@ -2,11 +2,95 @@ package zsh
 
 import (
 	"os/exec"
+	"reflect"
 	"strings"
 	"testing"
 
 	"zsh-pro/core/activate"
+	"zsh-pro/core/model"
 )
+
+func TestCommittedProjectionEmitCoversEveryLiveCategory(t *testing.T) {
+	states := []model.LiveIdentityState{
+		{Identity: model.Identity{Kind: model.LiveEnv, Name: "EXPORTED"}, Value: model.ScalarLiveValue("it's\nexact")},
+		{Identity: model.Identity{Kind: model.LiveAlias, Name: "empty_alias"}, Value: model.ScalarLiveValue("")},
+		{Identity: model.Identity{Kind: model.LiveFunction, Name: "multi_fn"}, Value: model.ScalarLiveValue("print -r -- one\nprint -r -- two")},
+		{Identity: model.Identity{Kind: model.LivePath, Name: "PATH"}, Value: model.ListLiveValue([]string{"/base", "", "/dup", "/dup"})},
+		{Identity: model.Identity{Kind: model.LiveFPath, Name: "FPATH"}, Value: model.ListLiveValue([]string{})},
+		{Identity: model.Identity{Kind: model.LiveOption, Name: "NO_BEEP"}, Value: model.OptionLiveValue(false)},
+	}
+	var source []byte
+	for _, item := range states {
+		line, err := emitLiveIdentityState(item, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		source = append(source, line...)
+	}
+	for _, id := range []model.Identity{
+		{Kind: model.LiveEnv, Name: "REMOVED"},
+		{Kind: model.LiveAlias, Name: "old_alias"},
+		{Kind: model.LiveFunction, Name: "old_fn"},
+		{Kind: model.LiveOption, Name: "BEEP"},
+	} {
+		line, err := emitLiveIdentityTombstone(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		source = append(source, line...)
+	}
+	check := exec.Command("zsh", "-n")
+	check.Stdin = strings.NewReader(string(source))
+	if output, err := check.CombinedOutput(); err != nil {
+		t.Fatalf("generated source is invalid: %v\n%s\n%s", err, output, source)
+	}
+	if strings.Contains(string(source), "not implemented") {
+		t.Fatalf("placeholder source escaped: %s", source)
+	}
+}
+
+func TestLivePatchListOccurrenceRemovalAndReplacementReverse(t *testing.T) {
+	before := []string{"/unmanaged", "", "/dup", "/owned", "/dup"}
+	after := []string{"/unmanaged", "", "/dup", "/dup"}
+	forward := activate.TransitionLiveList{
+		Identity:      model.Identity{Kind: model.LivePath, Name: "PATH"},
+		BeforePresent: true,
+		AfterPresent:  true,
+		Before:        before,
+		After:         after,
+	}
+	reverse := activate.TransitionLiveList{
+		Identity:      forward.Identity,
+		BeforePresent: true,
+		AfterPresent:  true,
+		Before:        after,
+		After:         before,
+	}
+	forwardSource, err := emitLiveOperation(forward)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reverseSource, err := emitLiveOperation(reverse)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantBefore := model.ListLiveValue(before)
+	wantAfter := model.ListLiveValue(after)
+	if reflect.DeepEqual(wantBefore, wantAfter) {
+		t.Fatal("invalid list fixture")
+	}
+	script := strings.Join([]string{
+		"path=('/unmanaged' '' '/dup' '/owned' '/dup')",
+		"typeset snapshot=${(qqqq)path}",
+		string(forwardSource),
+		"[[ ${#path} == 4 && $path[1] == /unmanaged && $path[2] == '' && $path[3] == /dup && $path[4] == /dup ]] || exit 21",
+		string(reverseSource),
+		"[[ ${(qqqq)path} == $snapshot ]] || exit 22",
+	}, "\n")
+	if output, err := exec.Command("zsh", "-f", "-c", script).CombinedOutput(); err != nil {
+		t.Fatalf("list transition did not preserve exact occurrence/reverse: %v\n%s\n%s", err, output, script)
+	}
+}
 
 func TestEmitStaticDynamicAndSyntax(t *testing.T) {
 	p := activate.Plan{Activate: []activate.Op{

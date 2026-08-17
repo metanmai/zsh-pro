@@ -7,6 +7,11 @@ import (
 	"zsh-pro/core/model"
 )
 
+// RegenerateWorktree validates and lowers one committed final-state document.
+func (Provider) RegenerateWorktree(_ model.CommittedWorktree) ([]byte, error) {
+	return nil, fmt.Errorf("committed worktree regeneration is not implemented")
+}
+
 // Regenerate rebuilds a declarative entry into behavior-equivalent zsh source
 // from its structured fields. It is the only place this phase that generates
 // forward zsh syntax (the shell.Regenerator seam).
