@@ -3,6 +3,7 @@ package zsh
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os/exec"
 	"strings"
 	"time"
@@ -13,6 +14,16 @@ import (
 )
 
 var _ shell.Provider = Provider{}
+
+var errLiveSnapshotFrame = errors.New("live snapshot frame is invalid")
+
+// LiveCaptureSource is implemented in the GREEN phase of Plan 07-08.
+func (Provider) LiveCaptureSource() string { return "" }
+
+// DecodeLiveSnapshot is implemented in the GREEN phase of Plan 07-08.
+func (Provider) DecodeLiveSnapshot([]byte) (model.LiveSnapshot, error) {
+	return model.LiveSnapshot{}, errLiveSnapshotFrame
+}
 
 // Categories returns the taxonomy in load order.
 func (Provider) Categories() []model.Category { return model.Categories() }

@@ -1,11 +1,186 @@
 package zsh
 
 import (
+	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"strconv"
+	"strings"
 	"testing"
+
+	"zsh-pro/core/model"
 )
+
+type liveFrameTestRecord struct {
+	kind      model.LiveKind
+	name      string
+	attribute string
+	values    []string
+}
+
+func encodeLiveTestFrame(records ...liveFrameTestRecord) []byte {
+	var frame bytes.Buffer
+	writeLiveTestFields(&frame, "ZP_LIVE_SNAPSHOT", "1")
+	for _, record := range records {
+		writeLiveTestFields(&frame, "R", string(record.kind), record.name, record.attribute, strconv.Itoa(len(record.values)))
+		writeLiveTestFields(&frame, record.values...)
+	}
+	writeLiveTestFields(&frame, "E")
+	return frame.Bytes()
+}
+
+func writeLiveTestFields(frame *bytes.Buffer, fields ...string) {
+	for _, field := range fields {
+		frame.WriteString(field)
+		frame.WriteByte(0)
+	}
+}
+
+func findLiveTestState(t *testing.T, snapshot model.LiveSnapshot, identity model.Identity) model.LiveValue {
+	t.Helper()
+	for _, state := range snapshot.States {
+		if state.Identity == identity {
+			return state.Value
+		}
+	}
+	t.Fatalf("missing live identity %#v", identity)
+	return model.LiveValue{}
+}
+
+func TestLiveCaptureSourceRoundTripsCurrentShellState(t *testing.T) {
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("zsh not installed")
+	}
+	functionBody := "print -r -- 'one'\nprint -r -- '##END##'"
+	script := (Provider{}).LiveCaptureSource() + `
+export ZP_LIVE_EMPTY=''
+export ZP_LIVE_MULTI=$'line one\nline two'
+aliases[ZP_LIVE_ALIAS]=$'print -r -- "quoted\nbody"'
+functions[ZP_LIVE_FUNCTION]=$'print -r -- '\''one'\''\nprint -r -- '\''##END##'\'''
+path=('/one:colon' '' '/three space')
+fpath=('' '/functions:colon')
+setopt AUTO_CD
+unsetopt NOMATCH
+_zp_live_capture
+`
+	cmd := exec.Command("zsh", "-f")
+	cmd.Stdin = strings.NewReader(script)
+	frame, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("live capture failed: %v", err)
+	}
+
+	snapshot, err := (Provider{}).DecodeLiveSnapshot(frame)
+	if err != nil {
+		t.Fatalf("DecodeLiveSnapshot: %v", err)
+	}
+	if snapshot.ByteSize != uint64(len(frame)) {
+		t.Fatalf("ByteSize=%d want %d", snapshot.ByteSize, len(frame))
+	}
+	checks := []struct {
+		identity model.Identity
+		want     model.LiveValue
+	}{
+		{model.Identity{Kind: model.LiveEnv, Name: "ZP_LIVE_EMPTY"}, model.ScalarLiveValue("")},
+		{model.Identity{Kind: model.LiveEnv, Name: "ZP_LIVE_MULTI"}, model.ScalarLiveValue("line one\nline two")},
+		{model.Identity{Kind: model.LiveAlias, Name: "ZP_LIVE_ALIAS"}, model.ScalarLiveValue("print -r -- \"quoted\nbody\"")},
+		{model.Identity{Kind: model.LiveFunction, Name: "ZP_LIVE_FUNCTION"}, model.ScalarLiveValue(functionBody)},
+		{model.Identity{Kind: model.LivePath, Name: "PATH"}, model.ListLiveValue([]string{"/one:colon", "", "/three space"})},
+		{model.Identity{Kind: model.LiveFPath, Name: "FPATH"}, model.ListLiveValue([]string{"", "/functions:colon"})},
+		{model.Identity{Kind: model.LiveOption, Name: "AUTO_CD"}, model.OptionLiveValue(true)},
+		{model.Identity{Kind: model.LiveOption, Name: "NOMATCH"}, model.OptionLiveValue(false)},
+	}
+	for _, check := range checks {
+		got := findLiveTestState(t, snapshot, check.identity)
+		if !model.EqualLiveValue(check.identity.Kind, got, check.want) {
+			t.Errorf("%#v=%#v want %#v", check.identity, got, check.want)
+		}
+	}
+}
+
+func TestLiveCaptureSourceHasNoChildOrProcessLocalRecords(t *testing.T) {
+	source := (Provider{}).LiveCaptureSource()
+	if source == "" {
+		t.Fatal("live capture source is empty")
+	}
+	for _, forbidden := range []string{"zsh -f", "exec ", "command zsh", "\x00pwd\x00", "\x00jobs\x00", "\x00history\x00", "\x00buffer\x00"} {
+		if strings.Contains(strings.ToLower(source), forbidden) {
+			t.Fatalf("live capture source contains forbidden %q", forbidden)
+		}
+	}
+}
+
+func TestDecodeLiveSnapshotExactBounds(t *testing.T) {
+	provider := Provider{}
+	for name, frame := range map[string][]byte{
+		"zero": encodeLiveTestFrame(),
+		"one":  encodeLiveTestFrame(liveFrameTestRecord{kind: model.LiveAlias, name: "a", attribute: "body", values: []string{""}}),
+	} {
+		t.Run(name, func(t *testing.T) {
+			snapshot, err := provider.DecodeLiveSnapshot(frame)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if snapshot.ByteSize != uint64(len(frame)) {
+				t.Fatalf("ByteSize=%d want %d", snapshot.ByteSize, len(frame))
+			}
+		})
+	}
+
+	atCap := make([]liveFrameTestRecord, model.MaxSnapshotRecords)
+	for index := range atCap {
+		atCap[index] = liveFrameTestRecord{
+			kind: model.LiveEnv, name: fmt.Sprintf("ZP_CAP_%05d", index), attribute: "exported", values: []string{"v"},
+		}
+	}
+	if snapshot, err := provider.DecodeLiveSnapshot(encodeLiveTestFrame(atCap...)); err != nil || len(snapshot.States) != model.MaxSnapshotRecords {
+		t.Fatalf("exact record cap = (%d, %v)", len(snapshot.States), err)
+	}
+	overCap := append(atCap, liveFrameTestRecord{kind: model.LiveEnv, name: "ZP_CAP_OVER", attribute: "exported", values: []string{"v"}})
+	if snapshot, err := provider.DecodeLiveSnapshot(encodeLiveTestFrame(overCap...)); err == nil || !reflect.DeepEqual(snapshot, model.LiveSnapshot{}) {
+		t.Fatalf("cap+1 = (%#v, %v), want zero snapshot error", snapshot, err)
+	}
+
+	prefix := encodeLiveTestFrame(liveFrameTestRecord{kind: model.LiveEnv, name: "ZP_BYTES", attribute: "exported", values: []string{""}})
+	exactValueBytes := model.MaxSnapshotBytes - len(prefix)
+	exact := encodeLiveTestFrame(liveFrameTestRecord{kind: model.LiveEnv, name: "ZP_BYTES", attribute: "exported", values: []string{strings.Repeat("x", exactValueBytes)}})
+	if len(exact) != model.MaxSnapshotBytes {
+		t.Fatalf("exact frame size=%d", len(exact))
+	}
+	if _, err := provider.DecodeLiveSnapshot(exact); err != nil {
+		t.Fatalf("exact byte cap: %v", err)
+	}
+	overBytes := encodeLiveTestFrame(liveFrameTestRecord{kind: model.LiveEnv, name: "ZP_BYTES", attribute: "exported", values: []string{strings.Repeat("x", exactValueBytes+1)}})
+	if snapshot, err := provider.DecodeLiveSnapshot(overBytes); err == nil || !reflect.DeepEqual(snapshot, model.LiveSnapshot{}) {
+		t.Fatalf("byte cap+1 = (%#v, %v), want zero snapshot error", snapshot, err)
+	}
+}
+
+func TestDecodeLiveSnapshotRejectsMalformedWithoutPartialState(t *testing.T) {
+	valid := encodeLiveTestFrame(liveFrameTestRecord{kind: model.LiveEnv, name: "GOOD", attribute: "exported", values: []string{"safe"}})
+	malformed := map[string][]byte{
+		"missing terminal NUL": valid[:len(valid)-1],
+		"wrong marker":         bytes.Replace(valid, []byte("ZP_LIVE_SNAPSHOT"), []byte("BAD_LIVE_SNAPSHOT"), 1),
+		"wrong schema":         bytes.Replace(valid, []byte("\x001\x00"), []byte("\x002\x00"), 1),
+		"wrong record marker":  bytes.Replace(valid, []byte("\x00R\x00"), []byte("\x00X\x00"), 1),
+		"wrong kind":           bytes.Replace(valid, []byte("\x00env\x00"), []byte("\x00pwd\x00"), 1),
+		"wrong name":           bytes.Replace(valid, []byte("\x00GOOD\x00"), []byte("\x00BAD-NAME\x00"), 1),
+		"wrong attribute":      bytes.Replace(valid, []byte("\x00exported\x00"), []byte("\x00plain\x00"), 1),
+		"wrong arity":          bytes.Replace(valid, []byte("\x001\x00safe\x00"), []byte("\x002\x00safe\x00"), 1),
+		"trailing record":      append(append([]byte(nil), valid...), []byte("extra\x00")...),
+	}
+	for name, frame := range malformed {
+		t.Run(name, func(t *testing.T) {
+			snapshot, err := (Provider{}).DecodeLiveSnapshot(frame)
+			if err == nil || !reflect.DeepEqual(snapshot, model.LiveSnapshot{}) {
+				t.Fatalf("DecodeLiveSnapshot = (%#v, %v), want zero snapshot error", snapshot, err)
+			}
+		})
+	}
+}
 
 func TestIntrospectReadsAliasesAndFunctions(t *testing.T) {
 	if _, err := exec.LookPath("zsh"); err != nil {
