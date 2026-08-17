@@ -77,3 +77,7 @@ func (Provider) Classify(b model.Block) (model.Category, model.Confidence) {
 		return model.CatMisc, model.ConfLow
 	}
 }
+
+// IsLiveSecretIdentity is introduced as a compile-safe RED scaffold. The
+// classifier-backed behavior is implemented after the contract tests fail.
+func (Provider) IsLiveSecretIdentity(model.Identity) bool { return false }

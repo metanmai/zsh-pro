@@ -37,6 +37,38 @@ type Regenerator interface {
 	Regenerate(e model.Entry) string
 }
 
+// WorktreeRegenerator emits the complete generated source for one validated,
+// materialized worktree document. It remains optional so legacy Provider
+// consumers do not need to implement Phase 7 behavior.
+type WorktreeRegenerator interface {
+	RegenerateWorktree(model.CommittedWorktree) ([]byte, error)
+}
+
+// LiveSecretPolicy is the classifier-owned admission boundary for newly
+// observed live identities.
+type LiveSecretPolicy interface {
+	IsLiveSecretIdentity(model.Identity) bool
+}
+
+// LiveCaptureSource provides the sourced-shell program that records current
+// supported state. The concrete shell owns this source; consumers only run or
+// transport it.
+type LiveCaptureSource interface {
+	LiveCaptureSource() string
+}
+
+// LiveSnapshotDecoder validates and decodes one bounded semantic capture.
+type LiveSnapshotDecoder interface {
+	DecodeLiveSnapshot([]byte) (model.LiveSnapshot, error)
+}
+
+// LivePatchEmitter renders validated shell-neutral operations into one exact
+// caller-named apply/replacement-reverse payload. It remains separate from the
+// broad Provider until the concrete live emitter exists.
+type LivePatchEmitter interface {
+	EmitLivePatch(forward, replacementReverse []activate.Op, applyName, reverseName string) ([]byte, error)
+}
+
 // Emitter is the sole reverse-zsh code-generation seam. Implementations turn
 // the shell-agnostic activation plan into apply and deactivate loader blocks.
 type Emitter interface {
