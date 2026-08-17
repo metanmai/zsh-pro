@@ -110,15 +110,21 @@ func TestLiveCaptureSourceSkipsUnsupportedSymbolNamesBeforeBodies(t *testing.T) 
 		t.Skip("zsh not installed")
 	}
 	const unsupportedCanary = "unsupported-symbol-body-canary"
+	const reservedCanary = "reserved-symbol-body-canary"
 	const validAliasBody = "print -r -- valid-alias"
 	const validFunctionBody = "\tprint -r -- valid-function\n\tprint -r -- second-line"
 	script := (Provider{}).LiveCaptureSource() + `
 aliases[valid.alias-1]='` + validAliasBody + `'
+aliases[_ordinary_user_alias]='print -r -- ordinary-underscore'
 aliases[azhw:zle-alias]='` + unsupportedCanary + `-alias'
 aliases[-leading]='` + unsupportedCanary + `-leading'
+aliases[_zp_private_alias]='` + reservedCanary + `-alias'
 functions[valid.function-1]=$'print -r -- valid-function\nprint -r -- second-line'
+functions[_ordinary_user_function]='print -r -- ordinary-underscore'
 functions[azhw:zle-history-line-set]='print -r -- ` + unsupportedCanary + `-function'
 functions[.leading]='print -r -- ` + unsupportedCanary + `-dot'
+functions[__zp_worktree_reverse_1_1]='print -r -- ` + reservedCanary + `-reverse'
+functions[_zp_private_function]='print -r -- ` + reservedCanary + `-function'
 _zp_live_capture
 `
 	cmd := exec.Command("zsh", "-f")
@@ -127,8 +133,9 @@ _zp_live_capture
 	if err != nil {
 		t.Fatalf("live capture failed: %v", err)
 	}
-	if bytes.Contains(frame, []byte(unsupportedCanary)) || bytes.Contains(frame, []byte("azhw:zle-")) {
-		t.Fatal("unsupported symbol name or body entered the live frame")
+	if bytes.Contains(frame, []byte(unsupportedCanary)) || bytes.Contains(frame, []byte(reservedCanary)) ||
+		bytes.Contains(frame, []byte("azhw:zle-")) || bytes.Contains(frame, []byte("__zp_worktree_reverse_")) {
+		t.Fatal("unsupported or loader-owned symbol name/body entered the live frame")
 	}
 
 	snapshot, err := (Provider{}).DecodeLiveSnapshot(frame)
@@ -140,7 +147,9 @@ _zp_live_capture
 		want     string
 	}{
 		{model.Identity{Kind: model.LiveAlias, Name: "valid.alias-1"}, validAliasBody},
+		{model.Identity{Kind: model.LiveAlias, Name: "_ordinary_user_alias"}, "print -r -- ordinary-underscore"},
 		{model.Identity{Kind: model.LiveFunction, Name: "valid.function-1"}, validFunctionBody},
+		{model.Identity{Kind: model.LiveFunction, Name: "_ordinary_user_function"}, "\tprint -r -- ordinary-underscore"},
 	}
 	for _, check := range checks {
 		got := findLiveTestState(t, snapshot, check.identity)

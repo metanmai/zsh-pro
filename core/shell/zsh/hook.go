@@ -554,11 +554,13 @@ _zp_worktree_capture() {
     _ZP_WORKTREE_CAPTURE_COUNTS+=(6)
   done
   for name in "${(@ok)aliases}"; do
+		[[ "${name:l}" != _zp_* && "${name:l}" != __zp_* ]] || continue
 		[[ "$name" == [0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_]* && "$name" != *[^0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_.-]* ]] || continue
     _ZP_WORKTREE_CAPTURE_FIELDS+=(R alias "$name" body 1 "${aliases[$name]}")
     _ZP_WORKTREE_CAPTURE_COUNTS+=(6)
   done
   for name in "${(@ok)functions}"; do
+		[[ "${name:l}" != _zp_* && "${name:l}" != __zp_* ]] || continue
 		[[ "$name" == [0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_]* && "$name" != *[^0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_.-]* ]] || continue
     _ZP_WORKTREE_CAPTURE_FIELDS+=(R function "$name" body 1 "${functions[$name]}")
     _ZP_WORKTREE_CAPTURE_COUNTS+=(6)

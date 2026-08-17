@@ -292,7 +292,7 @@ func validateRegistrySecretRef(entry model.Entry) error {
 
 func isBookkeepingIdentity(identity model.Identity) bool {
 	upper := strings.ToUpper(identity.Name)
-	return strings.HasPrefix(upper, "ZP_") || strings.HasPrefix(upper, "_ZP_") ||
+	return strings.HasPrefix(upper, "ZP_") || strings.HasPrefix(upper, "_ZP_") || strings.HasPrefix(upper, "__ZP_") ||
 		strings.HasPrefix(upper, "ZSHPRO_") || strings.EqualFold(identity.Name, "zsh-pro")
 }
 

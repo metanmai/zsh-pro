@@ -44,10 +44,12 @@ _zp_live_capture() {
     builtin printf '%s\0' R env "$name" exported 1 "$value"
   done
   for name in "${(@ok)aliases}"; do
+	[[ "${name:l}" != _zp_* && "${name:l}" != __zp_* ]] || continue
 	[[ "$name" == [0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_]* && "$name" != *[^0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_.-]* ]] || continue
     builtin printf '%s\0' R alias "$name" body 1 "${aliases[$name]}"
   done
   for name in "${(@ok)functions}"; do
+	[[ "${name:l}" != _zp_* && "${name:l}" != __zp_* ]] || continue
 	[[ "$name" == [0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_]* && "$name" != *[^0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_.-]* ]] || continue
     builtin printf '%s\0' R function "$name" body 1 "${functions[$name]}"
   done
