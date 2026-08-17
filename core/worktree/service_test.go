@@ -341,6 +341,26 @@ func TestHistoryGapDirtyPublishRequiresExplicitSharedResolution(t *testing.T) {
 }
 
 func TestCrashReplayPublishResolveAndAcknowledgeIsIdempotent(t *testing.T) {
+	t.Run("before-publish-replace", func(t *testing.T) {
+		harness := materializedServiceHarness(t, fakeLiveSecretPolicy{})
+		a := serviceCredential(t, "shell-a", 'A')
+		harness.attach(t, a, "attach-a")
+		request := model.PublishRequest{OperationID: "publish-before", Credential: a, AcknowledgedRevision: 1, Delta: []model.LiveChange{serviceUpdate(serviceIdentity("BEFORE"), "retry")}}
+		harness.store.faults.beforeRename = func() error { return errors.New("crash before replace") }
+		if _, err := harness.service.Publish(context.Background(), request); err == nil {
+			t.Fatal("before-replace fault not returned")
+		}
+		if state := harness.state(t); state.HeadRevision != 1 || serviceReceiptCount(state, "publish-before") != 0 {
+			t.Fatalf("pre-replace crash exposed partial transition: %#v", state)
+		}
+		harness.store.faults.beforeRename = nil
+		reopened := reopenService(t, harness.root, fakeLiveSecretPolicy{})
+		result, err := reopened.Publish(context.Background(), request)
+		if err != nil || result.SharedRevision != 2 {
+			t.Fatalf("pre-replace retry = %#v, %v", result, err)
+		}
+	})
+
 	t.Run("publish", func(t *testing.T) {
 		harness := materializedServiceHarness(t, fakeLiveSecretPolicy{})
 		a := serviceCredential(t, "shell-a", 'A')
@@ -351,7 +371,8 @@ func TestCrashReplayPublishResolveAndAcknowledgeIsIdempotent(t *testing.T) {
 			t.Fatal("lost response fault not returned")
 		}
 		harness.store.faults.afterRename = nil
-		result, err := harness.service.Publish(context.Background(), request)
+		reopened := reopenService(t, harness.root, fakeLiveSecretPolicy{})
+		result, err := reopened.Publish(context.Background(), request)
 		if err != nil || result.SharedRevision != 2 {
 			t.Fatalf("publish replay = %#v, %v", result, err)
 		}
@@ -374,7 +395,8 @@ func TestCrashReplayPublishResolveAndAcknowledgeIsIdempotent(t *testing.T) {
 			t.Fatal("lost resolve response not returned")
 		}
 		harness.store.faults.afterRename = nil
-		pending, err := harness.service.ResolveShared(context.Background(), resolve)
+		reopened := reopenService(t, harness.root, fakeLiveSecretPolicy{})
+		pending, err := reopened.ResolveShared(context.Background(), resolve)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -384,7 +406,8 @@ func TestCrashReplayPublishResolveAndAcknowledgeIsIdempotent(t *testing.T) {
 			t.Fatal("lost acknowledgement response not returned")
 		}
 		harness.store.faults.afterDirSync = nil
-		result, err := harness.service.Acknowledge(context.Background(), ack)
+		reopenedAgain := reopenService(t, harness.root, fakeLiveSecretPolicy{})
+		result, err := reopenedAgain.Acknowledge(context.Background(), ack)
 		if err != nil || !result.Acknowledged {
 			t.Fatalf("ack replay = %#v, %v", result, err)
 		}
@@ -446,6 +469,20 @@ func materializedServiceHarness(t *testing.T, policy fakeLiveSecretPolicy) servi
 		t.Fatal(err)
 	}
 	return harness
+}
+
+func reopenService(t *testing.T, root string, policy fakeLiveSecretPolicy) *Service {
+	t.Helper()
+	store, err := OpenStateStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { closeStateStore(t, store) })
+	service, err := NewService(store, NewRegistry(policy))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return service
 }
 
 func serviceCommitted(editor string) model.CommittedWorktree {
