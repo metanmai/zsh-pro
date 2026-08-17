@@ -959,6 +959,31 @@ _zp_worktree_resolve_shared() {
 	_zp_worktree_protected_call _zp_worktree_resolve_shared_impl
 }
 
+_zp_worktree_disable() {
+	# Deactivation is terminal-local: remove the cooperative safe-boundary hooks
+	# before erasing the credential pair so the next prompt cannot immediately
+	# attach and reapply the shared projection.
+	autoload -Uz add-zsh-hook
+	add-zsh-hook -d precmd _zp_worktree_precmd 2>/dev/null || :
+	if (( ${+widgets} )); then
+		autoload -Uz add-zle-hook-widget
+		add-zle-hook-widget -d line-finish _zp_worktree_line_finish 2>/dev/null || :
+	fi
+	unset ZP_WORKTREE_SHELL_ID ZP_WORKTREE_CAPABILITY ZP_WORKTREE_ATTACHED ZP_WORKTREE_ATTACHED_NOW
+	unset ZP_WORKTREE_APPLIED_REVISION ZP_WORKTREE_OPERATION_SEQUENCE ZP_WORKTREE_LAST_ERROR
+	unset ZP_WORKTREE_CONFLICT_COUNT ZP_WORKTREE_CONFLICT_KIND ZP_WORKTREE_CONFLICT_IDENTITY_KIND
+	unset ZP_WORKTREE_CONFLICT_IDENTITY_NAME ZP_WORKTREE_CONFLICT_TOKEN
+	unset ZP_WORKTREE_AUTO_APPLY_DEFAULT ZP_WORKTREE_AUTO_APPLY_EFFECTIVE
+	unset ZP_WORKTREE_ATTACH_OPERATION_ID ZP_WORKTREE_PREPARE_OPERATION_ID
+	unset ZP_WORKTREE_ACK_OPERATION_ID ZP_WORKTREE_RESOLVE_OPERATION_ID
+	unset ZP_WORKTREE_REPLY_PROTOCOL ZP_WORKTREE_REPLY_REVISION ZP_WORKTREE_REPLY_TOKEN
+	unset ZP_WORKTREE_REPLY_FINGERPRINT ZP_WORKTREE_REPLY_COMPLETE
+	unset ZP_WORKTREE_TRANSITION_DEADLINE ZP_WORKTREE_GUARD ZP_WORKTREE_UNSUPPORTED
+	unset ZP_WORKTREE_BASELINE_FIELDS ZP_WORKTREE_BASELINE_COUNTS
+	unset _ZP_WORKTREE_CAPTURE_FIELDS _ZP_WORKTREE_CAPTURE_COUNTS
+	return 0
+}
+
 _zp_worktree_effective_auto_apply() {
   case "${ZSHPRO_AUTO_APPLY-}" in
     '') typeset -g ZP_WORKTREE_AUTO_APPLY_EFFECTIVE="$ZP_WORKTREE_AUTO_APPLY_DEFAULT" ;;
@@ -1127,6 +1152,16 @@ deactivate() {
 	fi
 	local rc=1
 	{
+		if _zp_worktree_dispatcher_installed && [[ "${ZP_ACTIVE_REVERSE_FN-}" == __zp_worktree_reverse_* ]]; then
+			if _zp_worktree_protected_call _zp_run_retained_reverse "$ZP_ACTIVE_REVERSE_FN"; then
+				_zp_worktree_disable
+				_zp_runtime_ok
+				return 0
+			fi
+			rc=$?
+			_zp_runtime_error "$rc" "worktree deactivation failed; recovery is retained"
+			return 0
+		fi
 		if [[ "${ZP_RECOVERY_REVERSE_FN+x}" == x ]]; then
 			if _zp_recover_failed_target; then :; else
 				rc=$?

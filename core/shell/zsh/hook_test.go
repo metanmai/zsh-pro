@@ -412,6 +412,46 @@ func TestWorktreeHookBoundariesAndAutoApplyContract(t *testing.T) {
 	}
 }
 
+func TestWorktreeDeactivateConsumesReverseAndDisablesReattach(t *testing.T) {
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("zsh not installed")
+	}
+	dir := t.TempDir()
+	loader := filepath.Join(dir, "loader.zsh")
+	if err := os.WriteFile(loader, []byte((Provider{}).HookScript()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const body = `
+source "$1" || exit 10
+export WORKTREE_DEACTIVATE_ENV=applied
+alias worktree-deactivate-alias='print applied'
+functions[_ordinary_user_function]='print ordinary'
+__zp_worktree_reverse_1_1() {
+  unset WORKTREE_DEACTIVATE_ENV
+  unalias worktree-deactivate-alias
+}
+typeset -g ZP_ACTIVE_REVERSE_FN=__zp_worktree_reverse_1_1
+typeset -g ZP_WORKTREE_ATTACHED=1 ZP_WORKTREE_ATTACHED_NOW=1 ZP_WORKTREE_APPLIED_REVISION=7
+typeset -g ZP_WORKTREE_SHELL_ID=${(l:64::a:)} ZP_WORKTREE_CAPABILITY=${(l:64::b:)}
+typeset -g ZP_WORKTREE_REPLY_PROTOCOL=1 ZP_WORKTREE_REPLY_COMPLETE=1 ZP_WORKTREE_CONFLICT_TOKEN=private-token
+deactivate || exit 11
+[[ ${+WORKTREE_DEACTIVATE_ENV} == 0 && ${+aliases[worktree-deactivate-alias]} == 0 ]] || exit 12
+[[ ${+functions[__zp_worktree_reverse_1_1]} == 0 && ${+ZP_ACTIVE_REVERSE_FN} == 0 ]] || exit 13
+[[ ${+functions[_ordinary_user_function]} == 1 ]] || exit 14
+[[ "${precmd_functions[(r)_zp_worktree_precmd]-}" != _zp_worktree_precmd ]] || exit 15
+for name in ZP_WORKTREE_SHELL_ID ZP_WORKTREE_CAPABILITY ZP_WORKTREE_ATTACHED ZP_WORKTREE_APPLIED_REVISION ZP_WORKTREE_BASELINE_FIELDS ZP_WORKTREE_REPLY_PROTOCOL ZP_WORKTREE_REPLY_COMPLETE ZP_WORKTREE_CONFLICT_TOKEN; do
+  (( ${+parameters[$name]} == 0 )) || exit 16
+done
+deactivate || exit 17
+print -r -- usable
+`
+	cmd := exec.Command("zsh", "-f", "-c", body, "zsh-pro-worktree-deactivate", loader)
+	out, err := cmd.CombinedOutput()
+	if err != nil || string(out) != "usable\n" {
+		t.Fatalf("worktree deactivate = (%v, %q)", err, out)
+	}
+}
+
 func functionBody(script, name string) string {
 	start := strings.Index(script, name+"() {")
 	if start < 0 {
