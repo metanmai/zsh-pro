@@ -2,7 +2,6 @@ package zsh
 
 import (
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -150,15 +149,114 @@ func emitLiveOperation(operation activate.Op) ([]byte, error) {
 	}
 }
 
-// EmitLivePatch is the concrete-shell boundary for a caller-named live patch.
-func (Provider) EmitLivePatch(_, _ []activate.Op, _, _ string) ([]byte, error) {
-	return nil, errors.New("live patch emission is not implemented")
+// EmitLivePatch validates the complete shell-neutral patch before returning a
+// byte. The caller owns the private function names; zsh owns every byte of the
+// executable source.
+func (Provider) EmitLivePatch(forward, replacementReverse []activate.Op, applyName, reverseName string) ([]byte, error) {
+	if !safeRuntimeLiveFunctionName(applyName) || !safeRuntimeLiveFunctionName(reverseName) || applyName == reverseName {
+		return nil, fmt.Errorf("live patch requires distinct safe function names")
+	}
+	forwardSource, err := validateAndEmitLiveOperations(forward)
+	if err != nil {
+		return nil, err
+	}
+	reverseSource, err := validateAndEmitLiveOperations(replacementReverse)
+	if err != nil {
+		return nil, err
+	}
+
+	var source strings.Builder
+	fmt.Fprintf(&source, "%s() {\n", applyName)
+	for _, operation := range forwardSource {
+		source.Write(operation)
+	}
+	source.WriteString("}\n")
+	fmt.Fprintf(&source, "%s() {\n", reverseName)
+	for _, operation := range reverseSource {
+		source.Write(operation)
+	}
+	source.WriteString("}\n")
+	return []byte(source.String()), nil
 }
 
-// EmitRuntimeTransition is the concrete-shell boundary for one private patch
-// and its acknowledgement envelope.
-func (Provider) EmitRuntimeTransition(_, _ []activate.Op, _, _ string, _, _ uint64, _ string) ([]byte, error) {
-	return nil, errors.New("runtime transition emission is not implemented")
+// EmitRuntimeTransition appends the only public acknowledgement fields to a
+// fully validated private live patch. A pending metadata-only transition emits
+// no empty patch functions, but it still carries a complete acknowledgement.
+func (provider Provider) EmitRuntimeTransition(forward, replacementReverse []activate.Op, applyName, reverseName string, revision, token uint64, fingerprint string) ([]byte, error) {
+	if revision == 0 || token == 0 {
+		return nil, fmt.Errorf("runtime transition revision and token must be non-zero")
+	}
+	if !runtimeReplyFingerprintRe.MatchString(fingerprint) {
+		return nil, fmt.Errorf("runtime transition fingerprint must be 64 lowercase hexadecimal bytes")
+	}
+	if !safeRuntimeLiveFunctionName(applyName) || !safeRuntimeLiveFunctionName(reverseName) || applyName == reverseName {
+		return nil, fmt.Errorf("runtime transition requires distinct safe function names")
+	}
+
+	var source strings.Builder
+	if len(forward) != 0 || len(replacementReverse) != 0 {
+		patch, err := provider.EmitLivePatch(forward, replacementReverse, applyName, reverseName)
+		if err != nil {
+			return nil, err
+		}
+		source.Write(patch)
+	} else {
+		// Validate the names above even though metadata-only transitions do not
+		// render the functions. This keeps all malformed inputs all-or-none.
+		if _, err := validateAndEmitLiveOperations(forward); err != nil {
+			return nil, err
+		}
+	}
+	fmt.Fprintf(&source, "typeset -g ZP_WORKTREE_REPLY_PROTOCOL=%s\n", zquote("1"))
+	fmt.Fprintf(&source, "typeset -g ZP_WORKTREE_REPLY_REVISION=%s\n", zquote(fmt.Sprintf("%d", revision)))
+	fmt.Fprintf(&source, "typeset -g ZP_WORKTREE_REPLY_TOKEN=%s\n", zquote(fmt.Sprintf("%d", token)))
+	fmt.Fprintf(&source, "typeset -g ZP_WORKTREE_REPLY_FINGERPRINT=%s\n", zquote(fingerprint))
+	fmt.Fprintf(&source, "typeset -g ZP_WORKTREE_REPLY_COMPLETE=%s\n", zquote("1"))
+	return []byte(source.String()), nil
+}
+
+func validateAndEmitLiveOperations(operations []activate.Op) ([][]byte, error) {
+	source := make([][]byte, 0, len(operations))
+	for _, operation := range operations {
+		identity, err := liveOperationIdentity(operation)
+		if err != nil {
+			return nil, err
+		}
+		if reservedWorktreeReplyName(identity.Name) {
+			return nil, fmt.Errorf("live identity %q uses the reserved acknowledgement namespace", identity.Name)
+		}
+		emitted, err := emitLiveOperation(operation)
+		if err != nil {
+			return nil, err
+		}
+		source = append(source, emitted)
+	}
+	return source, nil
+}
+
+func liveOperationIdentity(operation activate.Op) (model.Identity, error) {
+	switch operation := operation.(type) {
+	case activate.SetLiveScalar:
+		return operation.Identity, nil
+	case activate.RemoveLiveScalar:
+		return operation.Identity, nil
+	case activate.TransitionLiveList:
+		return operation.Identity, nil
+	case activate.SetLiveOptionState:
+		return operation.Identity, nil
+	case activate.RemoveLiveOptionState:
+		return operation.Identity, nil
+	default:
+		return model.Identity{}, fmt.Errorf("live patch: unsupported operation %T", operation)
+	}
+}
+
+func safeRuntimeLiveFunctionName(name string) bool {
+	return safeAliasFuncName(name) && !reservedWorktreeReplyName(name)
+}
+
+func reservedWorktreeReplyName(name string) bool {
+	return strings.HasPrefix(strings.ToUpper(name), "ZP_WORKTREE_REPLY_")
 }
 
 func validateLiveListSide(kind model.LiveKind, present bool, elements []string) error {
@@ -223,6 +321,7 @@ func renderListDelta(name string, additions []string, baseIndex *int, dynamic []
 var optionNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 var aliasFuncNameRe = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]*$`)
 var envNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+var runtimeReplyFingerprintRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // zquote emits one shell literal. Single quotes are escaped using the
 // standard close-quote/backslash-quote/reopen sequence; newlines and all

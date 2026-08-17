@@ -4,13 +4,17 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 
 	"zsh-pro/core/activate"
 	"zsh-pro/core/model"
 	"zsh-pro/core/shell"
+	"zsh-pro/core/worktree"
 )
 
 // RuntimePatchMetadata is the value-free public description of one pending
@@ -63,24 +67,227 @@ type runtimeWorktreeAdapter struct {
 	emitter RuntimeTransitionEmitter
 }
 
-func (*runtimeWorktreeAdapter) Attach(_ context.Context, credential model.ShellCredential, _ string, _ []byte) (runtimeAttachCredential, error) {
-	return runtimeAttachCredential{result: model.AttachResult{}, credential: credential}, errors.New("runtime worktree attach is not implemented")
+type runtimeStateStoreConstructor func(*os.File) (*worktree.StateStore, error)
+type runtimeServiceConstructor func(*worktree.StateStore, *worktree.Registry) (runtimeWorktreeService, error)
+
+// RuntimeWorktreeFactory retains constructors and shell policy only. Bind is
+// the first point at which an authenticated RuntimeRoot becomes a StateStore,
+// Registry, Service, and operation-scoped adapter.
+type RuntimeWorktreeFactory struct {
+	decoder    shell.LiveSnapshotDecoder
+	emitter    RuntimeTransitionEmitter
+	policy     shell.LiveSecretPolicy
+	newState   runtimeStateStoreConstructor
+	newService runtimeServiceConstructor
 }
 
-func (*runtimeWorktreeAdapter) Publish(context.Context, model.ShellCredential, string, uint64, model.LiveSnapshot, []byte) (model.PublishResult, error) {
-	return model.PublishResult{}, errors.New("runtime worktree publish is not implemented")
+// NewRuntimeWorktreeFactory configures late descriptor-bound worktree wiring.
+func NewRuntimeWorktreeFactory(decoder shell.LiveSnapshotDecoder, emitter RuntimeTransitionEmitter, policy shell.LiveSecretPolicy) RuntimeWorktreeFactory {
+	return RuntimeWorktreeFactory{
+		decoder:  decoder,
+		emitter:  emitter,
+		policy:   policy,
+		newState: worktree.NewStateStoreFromAuthenticatedRoot,
+		newService: func(store *worktree.StateStore, registry *worktree.Registry) (runtimeWorktreeService, error) {
+			return worktree.NewService(store, registry)
+		},
+	}
 }
 
-func (*runtimeWorktreeAdapter) Prepare(context.Context, model.ShellCredential, string, uint64, []byte, string, string) (runtimePatchPayload, error) {
-	return runtimePatchPayload{}, errors.New("runtime worktree prepare is not implemented")
+// Bind duplicates the authenticated repository descriptor into a fresh state
+// store. The returned closer owns only that duplicate; RuntimeRoot remains
+// caller-owned and is never closed here.
+func (factory RuntimeWorktreeFactory) Bind(root *RuntimeRoot) (RuntimeWorktree, io.Closer, error) {
+	if root == nil || isNilLike(factory.decoder) || isNilLike(factory.emitter) || isNilLike(factory.policy) || factory.newState == nil || factory.newService == nil {
+		return nil, nil, errors.New("runtime worktree factory is not configured")
+	}
+	repository, _ := root.Files()
+	if repository == nil {
+		return nil, nil, errors.New("runtime worktree root descriptor is unavailable")
+	}
+	state, err := factory.newState(repository)
+	if err != nil {
+		return nil, nil, err
+	}
+	service, err := factory.newService(state, worktree.NewRegistry(factory.policy))
+	if err != nil {
+		_ = state.Close()
+		return nil, nil, err
+	}
+	return &runtimeWorktreeAdapter{service: service, decoder: factory.decoder, emitter: factory.emitter}, state, nil
 }
 
-func (*runtimeWorktreeAdapter) Acknowledge(context.Context, model.ShellCredential, string, uint64, model.ResolutionToken, []byte) (model.AcknowledgeResult, error) {
-	return model.AcknowledgeResult{}, errors.New("runtime worktree acknowledge is not implemented")
+func (runtime *runtimeWorktreeAdapter) Attach(ctx context.Context, credential model.ShellCredential, operationID string, frame []byte) (runtimeAttachCredential, error) {
+	if err := runtime.ready(); err != nil {
+		return runtimeAttachCredential{}, err
+	}
+	snapshot, err := runtime.decoder.DecodeLiveSnapshot(frame)
+	if err != nil {
+		return runtimeAttachCredential{}, err
+	}
+	result, err := runtime.service.Attach(ctx, model.AttachRequest{
+		OperationID: operationID,
+		Credential:  credential,
+		Initial:     snapshot,
+	})
+	if err != nil {
+		return runtimeAttachCredential{}, err
+	}
+	return runtimeAttachCredential{result: result, credential: credential}, nil
 }
 
-func (*runtimeWorktreeAdapter) Resolve(context.Context, model.ShellCredential, string, model.Identity, model.ResolutionToken, []byte, string, string) (runtimePatchPayload, error) {
-	return runtimePatchPayload{}, errors.New("runtime worktree resolve is not implemented")
+func (runtime *runtimeWorktreeAdapter) Publish(ctx context.Context, credential model.ShellCredential, operationID string, acknowledgedRevision uint64, baseline model.LiveSnapshot, frame []byte) (model.PublishResult, error) {
+	if err := runtime.ready(); err != nil {
+		return model.PublishResult{}, err
+	}
+	snapshot, err := runtime.decoder.DecodeLiveSnapshot(frame)
+	if err != nil {
+		return model.PublishResult{}, err
+	}
+	delta, err := worktree.DiffSnapshot(baseline, snapshot)
+	if err != nil {
+		return model.PublishResult{}, err
+	}
+	return runtime.service.Publish(ctx, model.PublishRequest{
+		OperationID:          operationID,
+		Credential:           credential,
+		AcknowledgedRevision: acknowledgedRevision,
+		Delta:                delta,
+	})
+}
+
+func (runtime *runtimeWorktreeAdapter) Prepare(ctx context.Context, credential model.ShellCredential, operationID string, appliedRevision uint64, frame []byte, applyName, reverseName string) (runtimePatchPayload, error) {
+	if err := runtime.ready(); err != nil {
+		return runtimePatchPayload{}, err
+	}
+	current, err := runtime.decoder.DecodeLiveSnapshot(frame)
+	if err != nil {
+		return runtimePatchPayload{}, err
+	}
+	result, err := runtime.service.PreparePull(ctx, model.PreparePullRequest{
+		OperationID:     operationID,
+		Credential:      credential,
+		AppliedRevision: appliedRevision,
+	})
+	if err != nil {
+		return runtimePatchPayload{}, err
+	}
+	if result.PendingRevision == 0 {
+		if result.Token != "" || len(result.Changes) != 0 {
+			return runtimePatchPayload{}, errors.New("at-head prepare returned transition data")
+		}
+		return runtimePatchPayload{}, nil
+	}
+	return runtime.buildTransition(current, result.PendingRevision, result.Token, result.Changes, applyName, reverseName)
+}
+
+func (runtime *runtimeWorktreeAdapter) Acknowledge(ctx context.Context, credential model.ShellCredential, operationID string, revision uint64, token model.ResolutionToken, frame []byte) (model.AcknowledgeResult, error) {
+	if err := runtime.ready(); err != nil {
+		return model.AcknowledgeResult{}, err
+	}
+	snapshot, err := runtime.decoder.DecodeLiveSnapshot(frame)
+	if err != nil {
+		return model.AcknowledgeResult{}, err
+	}
+	return runtime.service.Acknowledge(ctx, model.AcknowledgeRequest{
+		OperationID: operationID,
+		Credential:  credential,
+		Revision:    revision,
+		Token:       token,
+		Snapshot:    snapshot,
+	})
+}
+
+func (runtime *runtimeWorktreeAdapter) Resolve(ctx context.Context, credential model.ShellCredential, operationID string, conflict model.Identity, token model.ResolutionToken, frame []byte, applyName, reverseName string) (runtimePatchPayload, error) {
+	if err := runtime.ready(); err != nil {
+		return runtimePatchPayload{}, err
+	}
+	current, err := runtime.decoder.DecodeLiveSnapshot(frame)
+	if err != nil {
+		return runtimePatchPayload{}, err
+	}
+	result, err := runtime.service.ResolveShared(ctx, model.ResolveSharedRequest{
+		OperationID: operationID,
+		Credential:  credential,
+		Conflict:    conflict,
+		Token:       token,
+		Snapshot:    current,
+	})
+	if err != nil {
+		return runtimePatchPayload{}, err
+	}
+	if result.PendingRevision == 0 {
+		if result.Token != "" || len(result.Changes) != 0 {
+			return runtimePatchPayload{}, errors.New("resolved transition omitted its revision")
+		}
+		return runtimePatchPayload{}, nil
+	}
+	return runtime.buildTransition(current, result.PendingRevision, result.Token, result.Changes, applyName, reverseName)
+}
+
+func (runtime *runtimeWorktreeAdapter) ready() error {
+	if runtime == nil || isNilLike(runtime.service) || isNilLike(runtime.decoder) || isNilLike(runtime.emitter) {
+		return errors.New("runtime worktree adapter is unavailable")
+	}
+	return nil
+}
+
+func (runtime *runtimeWorktreeAdapter) buildTransition(current model.LiveSnapshot, revision uint64, token model.ResolutionToken, changes []model.LiveChange, applyName, reverseName string) (runtimePatchPayload, error) {
+	if revision == 0 {
+		return runtimePatchPayload{}, errors.New("runtime transition revision is missing")
+	}
+	if err := token.Validate(); err != nil {
+		return runtimePatchPayload{}, err
+	}
+	overlay := make([]model.OverlayEntry, 0, len(changes))
+	for _, change := range changes {
+		switch change.Kind {
+		case model.LiveAdd, model.LiveUpdate:
+			overlay = append(overlay, model.OverlayEntry{Identity: change.Identity, Value: model.CloneLiveValue(change.Value)})
+		case model.LiveRemove:
+			overlay = append(overlay, model.OverlayEntry{Identity: change.Identity, Tombstone: true})
+		default:
+			return runtimePatchPayload{}, fmt.Errorf("runtime transition change kind %q is invalid", change.Kind)
+		}
+	}
+	targetStates, err := worktree.ApplyOverlay(current.States, overlay)
+	if err != nil {
+		return runtimePatchPayload{}, err
+	}
+	target := model.LiveSnapshot{States: targetStates}
+	patch, err := activate.BuildLivePatch(current.States, targetStates)
+	if err != nil {
+		return runtimePatchPayload{}, err
+	}
+	fingerprint, err := worktree.FingerprintSnapshot(target)
+	if err != nil {
+		return runtimePatchPayload{}, err
+	}
+	transportToken := runtimeTransitionToken(token)
+	if transportToken == 0 {
+		return runtimePatchPayload{}, errors.New("runtime transition token cannot be represented")
+	}
+	metadata := RuntimePatchMetadata{
+		Revision:    revision,
+		Token:       transportToken,
+		ChangeCount: uint64(len(changes)),
+		Fingerprint: [sha256.Size]byte(fingerprint),
+	}
+	encodedFingerprint := hex.EncodeToString(metadata.Fingerprint[:])
+	source, err := runtime.emitter.EmitRuntimeTransition(patch.Forward, patch.ReplacementReverse, applyName, reverseName, metadata.Revision, metadata.Token, encodedFingerprint)
+	if err != nil {
+		return runtimePatchPayload{}, err
+	}
+	return runtimePatchPayload{
+		transition: true,
+		source:     append([]byte(nil), source...),
+		metadata:   metadata,
+	}, nil
+}
+
+func runtimeTransitionToken(token model.ResolutionToken) uint64 {
+	digest := sha256.Sum256([]byte(token))
+	return binary.BigEndian.Uint64(digest[:8])
 }
 
 // Emitter is the CLI-to-runtime-code seam. It returns a single emitted shell

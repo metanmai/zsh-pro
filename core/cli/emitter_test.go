@@ -19,6 +19,7 @@ import (
 	"zsh-pro/core/model"
 	"zsh-pro/core/shell/zsh"
 	"zsh-pro/core/store"
+	"zsh-pro/core/worktree"
 )
 
 type runtimeServiceSpy struct {
@@ -225,6 +226,105 @@ func TestRuntimePrepareAtHeadIsExactNoOp(t *testing.T) {
 	}
 	if payload.transition || len(payload.source) != 0 || payload.metadata != (RuntimePatchMetadata{}) || emitter.calls != 0 {
 		t.Fatalf("at-head prepare was not an exact no-op: payload=%#v calls=%d", payload, emitter.calls)
+	}
+}
+
+func TestRuntimePreparePendingEmptyEmitsMetadataOnlyTransition(t *testing.T) {
+	service := &runtimeServiceSpy{prepare: model.PreparePullResult{
+		PendingRevision: 11,
+		Token:           model.ResolutionToken("pull:11111111111111111111111111111111"),
+	}}
+	emitter := &runtimeTransitionSpy{source: []byte("metadata-only-envelope")}
+	runtime := &runtimeWorktreeAdapter{
+		service: service,
+		decoder: runtimeDecoderStub{snapshots: map[string]model.LiveSnapshot{"empty": {}}},
+		emitter: emitter,
+	}
+	payload, err := runtime.Prepare(context.Background(), runtimeTestCredential(t), "pending-empty-08", 10, []byte("empty"), "__zp08_apply", "__zp08_reverse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !payload.transition || string(payload.source) != "metadata-only-envelope" || payload.metadata.Revision != 11 || payload.metadata.ChangeCount != 0 || emitter.calls != 1 {
+		t.Fatalf("pending empty prepare did not emit metadata-only transition: payload=%#v calls=%d", payload, emitter.calls)
+	}
+}
+
+func TestRuntimeWorktreeFactoryBindsCanonicalDescriptorAndOwnsOnlyDuplicate(t *testing.T) {
+	base := t.TempDir()
+	rootPath := filepath.Join(base, "repo")
+	if err := os.Mkdir(rootPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	state, err := worktree.OpenStateStore(rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := worktree.NewService(state, worktree.NewRegistry(zsh.Provider{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Materialize(context.Background(), "main", strings.Repeat("a", 40), model.NewCommittedWorktree(model.Profile{}, model.LiveProjection{})); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	repository, err := os.Open(rootPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeRoot := &RuntimeRoot{repository: repository}
+	t.Cleanup(func() { _ = runtimeRoot.Close() })
+	factory := NewRuntimeWorktreeFactory(zsh.Provider{}, zsh.Provider{}, zsh.Provider{})
+	bound, closer, err := factory.Bind(runtimeRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bound == nil || closer == nil {
+		t.Fatal("factory returned an incomplete descriptor-bound runtime")
+	}
+
+	originalPath := filepath.Join(base, "authenticated-original")
+	if err := os.Rename(rootPath, originalPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(rootPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	emptyFrame := []byte("ZP_LIVE_SNAPSHOT\x001\x00E\x00")
+	response, err := bound.Attach(context.Background(), runtimeTestCredential(t), "descriptor-attach-08", emptyFrame)
+	if err != nil {
+		t.Fatalf("bound runtime followed replaced path instead of authenticated descriptor: %v", err)
+	}
+	if !response.result.Attached {
+		t.Fatalf("canonical descriptor state was not observed: %#v", response.result)
+	}
+	if err := closer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.Stat(); err != nil {
+		t.Fatalf("bound closer closed caller-owned RuntimeRoot descriptor: %v", err)
+	}
+	if err := closer.Close(); err != nil {
+		t.Fatalf("bound closer is not exactly-once/idempotent: %v", err)
+	}
+}
+
+func TestRuntimeWorktreeFactoryRejectsMissingOrTypedNilDependencies(t *testing.T) {
+	var nilDecoder *zsh.Provider
+	var nilEmitter *zsh.Provider
+	var nilPolicy *zsh.Provider
+	root := &RuntimeRoot{}
+	for _, factory := range []RuntimeWorktreeFactory{
+		{},
+		NewRuntimeWorktreeFactory(nilDecoder, zsh.Provider{}, zsh.Provider{}),
+		NewRuntimeWorktreeFactory(zsh.Provider{}, nilEmitter, zsh.Provider{}),
+		NewRuntimeWorktreeFactory(zsh.Provider{}, zsh.Provider{}, nilPolicy),
+	} {
+		if runtime, closer, err := factory.Bind(root); err == nil || runtime != nil || closer != nil {
+			t.Fatalf("invalid factory escaped: runtime=%#v closer=%#v err=%v", runtime, closer, err)
+		}
 	}
 }
 
