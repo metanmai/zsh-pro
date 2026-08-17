@@ -5,8 +5,8 @@ milestone_name: Branchable Shell Environments
 current_phase: 07
 current_phase_name: Git-Like Shared Working Environment
 status: executing
-stopped_at: Completed 07-07-PLAN.md
-last_updated: "2026-08-17T14:53:04.894Z"
+stopped_at: Completed 07-09-PLAN.md
+last_updated: "2026-08-17T16:02:17.138Z"
 last_activity: 2026-08-17
 last_activity_desc: Phase 07 execution started
 progress:
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-06-25)
 ## Current Position
 
 Phase: 07 (Git-Like Shared Working Environment) — EXECUTING
-Plan: 9 of 10
+Plan: 10 of 10
 Status: Ready to execute
 Last activity: 2026-08-17 — Phase 07 execution started
 
@@ -104,6 +104,7 @@ Progress: [██████████] 100%
 | Phase 07 P08 | 30m | 2 tasks | 6 files |
 | Phase 07 P06 | 29m | 2 tasks | 6 files |
 | Phase 07-git-like-shared-working-environment P07 | 25m | 2 tasks | 7 files |
+| Phase 07-git-like-shared-working-environment P09 | 65m | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -212,6 +213,10 @@ Recent decisions affecting current work:
 - [Phase ?]: [07-07]: Ingest publishes a versioned combined worktree DTO; legacy source-only objects remain readable only through the legacy source decoder.
 - [Phase ?]: [07-07]: Public worktree authority is lazy path-bound state, while runtime Services remain late-bound to authenticated descriptors with the same concrete zsh policy.
 - [Phase ?]: [07-07]: Existing-generation materialization delegates to exact under-lock Service repair and succeeds only when the published projection equals shared state.
+- [Phase ?]: [07-09]: Carry every private credential and operation field in one exact bounded ZPWT v1 stdin frame.
+- [Phase ?]: [07-09]: Publish returns only bounded value-free conflict identity and durable token metadata needed for explicit shared resolution.
+- [Phase ?]: [07-09]: One sealed 250 ms absolute budget spans runtime work and parent eval, fresh capture, and acknowledgement.
+- [Phase ?]: [07-09]: Legacy fail-open routing is limited to unsupported helpers, already-active legacy shells, or deliberately replaced dispatchers.
 
 ### Pending Todos
 
@@ -240,6 +245,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-08-17T14:53:04.887Z
-Stopped at: Completed 07-07-PLAN.md
+Last session: 2026-08-17T16:02:17.130Z
+Stopped at: Completed 07-09-PLAN.md
 Resume file: None
