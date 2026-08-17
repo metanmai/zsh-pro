@@ -467,6 +467,62 @@ zsh-pro config set auto-apply true >/dev/null || exit 21
 	}
 }
 
+func TestWorktreeMutationDispatcherPreservesValidationAndDelegatedFailure(t *testing.T) {
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("zsh not installed")
+	}
+	dir := t.TempDir()
+	loader := filepath.Join(dir, "loader.zsh")
+	if err := os.WriteFile(loader, []byte((Provider{}).HookScript()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	shim := filepath.Join(dir, "zsh-pro")
+	shimSource := `#!/bin/sh
+printf 'command:%s\n' "$*" >> "$ZP_MUTATION_CALLS"
+case "$*" in
+  'checkout dirty') exit 7 ;;
+  'reset --hard') exit 8 ;;
+esac
+exit 0
+`
+	if err := os.WriteFile(shim, []byte(shimSource), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	calls := filepath.Join(dir, "calls")
+	const body = `
+source "$1" || exit 10
+typeset -g ZP_WORKTREE_ATTACHED=1 ZP_WORKTREE_ATTACHED_NOW=0 ZP_WORKTREE_CONFLICT_COUNT=0
+typeset -g ZP_WORKTREE_SHELL_ID=${(l:64::a:)}
+typeset -g ZP_WORKTREE_CAPABILITY=${(l:64::b:)}
+_zp_worktree_publish() { print -r -- publish >> "$ZP_MUTATION_CALLS"; return ${ZP_PUBLISH_RC:-0} }
+_zp_worktree_pull() { print -r -- pull >> "$ZP_MUTATION_CALLS"; return 0 }
+zsh-pro checkout -b >/dev/null 2>&1; [[ $? == 2 ]] || exit 11
+zsh-pro checkout main extra >/dev/null 2>&1; [[ $? == 2 ]] || exit 12
+zsh-pro reset --soft >/dev/null 2>&1; [[ $? == 2 ]] || exit 13
+[[ ! -e $ZP_MUTATION_CALLS ]] || exit 14
+zsh-pro checkout dirty >/dev/null 2>&1; [[ $? == 7 ]] || exit 15
+zsh-pro reset --hard >/dev/null 2>&1; [[ $? == 8 ]] || exit 16
+ZP_WORKTREE_CONFLICT_COUNT=1
+zsh-pro checkout conflict >/dev/null 2>&1; [[ $? == 1 ]] || exit 17
+ZP_WORKTREE_CONFLICT_COUNT=0
+ZP_PUBLISH_RC=6 zsh-pro checkout publish-failed >/dev/null 2>&1; [[ $? == 6 ]] || exit 18
+zsh-pro checkout main >/dev/null 2>&1 || exit 19
+`
+	cmd := exec.Command("zsh", "-f", "-c", body, "zsh-pro-mutation-dispatch", loader)
+	cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "ZP_MUTATION_CALLS="+calls)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("mutation dispatcher: %v\n%s", err, output)
+	}
+	payload, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "publish\ncommand:checkout dirty\npublish\ncommand:reset --hard\npublish\npublish\npublish\ncommand:checkout main\npull\n"
+	if string(payload) != want {
+		t.Fatalf("mutation dispatcher calls = %q, want %q", payload, want)
+	}
+}
+
 func TestWorktreeDeactivateConsumesReverseAndDisablesReattach(t *testing.T) {
 	if _, err := exec.LookPath("zsh"); err != nil {
 		t.Skip("zsh not installed")

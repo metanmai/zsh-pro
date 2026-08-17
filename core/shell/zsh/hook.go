@@ -1071,7 +1071,7 @@ zsh-pro() {
 			;;
 		checkout:*|reset:*)
 			case "$verb:$#" in
-				checkout:2) [[ -n "$2" ]] || { _zp_worktree_error "usage: zsh-pro checkout [-b] <branch>"; return 2; } ;;
+				checkout:2) [[ -n "$2" && "$2" != -b ]] || { _zp_worktree_error "usage: zsh-pro checkout [-b] <branch>"; return 2; } ;;
 				checkout:3) [[ "$2" == -b && -n "$3" ]] || { _zp_worktree_error "usage: zsh-pro checkout [-b] <branch>"; return 2; } ;;
 				reset:2) [[ "$2" == --hard ]] || { _zp_worktree_error "usage: zsh-pro reset --hard"; return 2; } ;;
 				*) _zp_worktree_error "invalid worktree mutation syntax"; return 2 ;;
@@ -1080,11 +1080,11 @@ zsh-pro() {
 			_zp_worktree_ensure_attached || return $?
 			if (( ! ZP_WORKTREE_ATTACHED_NOW )); then _zp_worktree_publish || return $?; fi
       (( ZP_WORKTREE_CONFLICT_COUNT == 0 )) || return 1
-      if ZSHPRO_SHELL_ID="$ZP_WORKTREE_SHELL_ID" command zsh-pro "$@"; then
-        _zp_worktree_pull || return $?
-        return 0
-      fi
-      return $?
+			ZSHPRO_SHELL_ID="$ZP_WORKTREE_SHELL_ID" command zsh-pro "$@"
+			rc=$?
+			(( rc == 0 )) || return "$rc"
+			_zp_worktree_pull || return $?
+			return 0
       ;;
     *)
       _zp_worktree_ensure_attached || :
