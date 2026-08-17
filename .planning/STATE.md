@@ -5,8 +5,8 @@ milestone_name: Branchable Shell Environments
 current_phase: 07
 current_phase_name: Git-Like Shared Working Environment
 status: executing
-stopped_at: Completed 07-08-PLAN.md
-last_updated: "2026-08-17T13:41:49.138Z"
+stopped_at: Completed 07-06-PLAN.md
+last_updated: "2026-08-17T14:15:30.018Z"
 last_activity: 2026-08-17
 last_activity_desc: Phase 07 execution started
 progress:
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-06-25)
 ## Current Position
 
 Phase: 07 (Git-Like Shared Working Environment) — EXECUTING
-Plan: 7 of 10
+Plan: 8 of 10
 Status: Ready to execute
 Last activity: 2026-08-17 — Phase 07 execution started
 
@@ -102,6 +102,7 @@ Progress: [██████████] 100%
 | Phase 07-git-like-shared-working-environment P04 | 20min | 2 tasks | 8 files |
 | Phase 07 P05 | 26min | 2 tasks | 6 files |
 | Phase 07 P08 | 30m | 2 tasks | 6 files |
+| Phase 07 P06 | 29m | 2 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -202,6 +203,10 @@ Recent decisions affecting current work:
 - [Phase 07]: Keep executable patch source unexported and public RuntimePatchMetadata limited to uint64 fields and a fixed SHA-256 fingerprint.
 - [Phase 07]: Make concrete zsh the sole owner of the complete ordered acknowledgement assignment footer.
 - [Phase 07]: Resolve decimal reply token handles through descriptor-bound durable pending state before Service transactionally verifies the opaque token and credential.
+- [Phase ?]: [07-06]: Durable State.Branch/BaseOID/HeadRevision are the sole shared workflow authority; process-local profile markers never select workflow state.
+- [Phase ?]: [07-06]: Commit every semantic dirty identity through BuildEffective and claim clean only after exact published-object readback plus canonical save.
+- [Phase ?]: [07-06]: Observed-ref repair is allowed only when the exact committed projection already equals locked shared state; different external projections are never imported implicitly.
+- [Phase ?]: [07-06]: Validate full Git-shaped argv and optional ZSHPRO_SHELL_ID before access; use the ID only for shell status lookup and render value-free output.
 
 ### Pending Todos
 
@@ -230,6 +235,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-08-17T13:41:49.131Z
-Stopped at: Completed 07-08-PLAN.md
+Last session: 2026-08-17T14:15:30.010Z
+Stopped at: Completed 07-06-PLAN.md
 Resume file: None
