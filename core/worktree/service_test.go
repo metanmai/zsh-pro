@@ -439,10 +439,317 @@ func TestStatusAndDiffRemainValueFreeAndUseDurableAuthority(t *testing.T) {
 	}
 }
 
+func TestWorktreeCommitIncludesEveryDirtyIdentityAndClearsOnlyCommittedOverlay(t *testing.T) {
+	harness, repository := workflowServiceHarness(t)
+	harness.makeDirty(t,
+		serviceUpdate(serviceIdentity("EDITOR"), "changed"),
+		serviceUpdate(serviceIdentity("NEW_VALUE"), "new"),
+	)
+
+	result, err := harness.service.Commit(context.Background(), "commit every dirty identity")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Committed || result.Conflict || result.RecoveryRequired || result.OID != strings.Repeat("b", 40) {
+		t.Fatalf("commit result = %#v", result)
+	}
+	if repository.commitCalls != 1 || repository.lastCommit.branch != "main" || repository.lastCommit.baseOID != strings.Repeat("a", 40) {
+		t.Fatalf("repository commit call = %#v", repository.lastCommit)
+	}
+	wantStates := []model.LiveIdentityState{
+		serviceState("EDITOR", "changed"),
+		serviceState("NEW_VALUE", "new"),
+	}
+	if got := repository.lastCommit.document.Projection.States; !reflect.DeepEqual(got, wantStates) {
+		t.Fatalf("committed projection = %#v, want %#v", got, wantStates)
+	}
+	state := harness.state(t)
+	if state.BaseOID != result.OID || !reflect.DeepEqual(state.Committed, repository.lastCommit.document) || !equalLiveStates(state.Shared, wantStates) {
+		t.Fatalf("committed canonical state = %#v", state)
+	}
+	if diff, diffErr := harness.service.Diff(context.Background()); diffErr != nil || categorizedDiffCount(diff) != 0 {
+		t.Fatalf("post-commit diff = %#v, %v", diff, diffErr)
+	}
+	clean, err := harness.service.Commit(context.Background(), "must not create an empty commit")
+	if err != nil || clean.Committed || repository.commitCalls != 1 {
+		t.Fatalf("clean commit = %#v, %v; calls=%d", clean, err, repository.commitCalls)
+	}
+}
+
+func TestBranchUsesCurrentBaseAndCheckoutRejectsDirtyBeforeRepositoryAccess(t *testing.T) {
+	harness, repository := workflowServiceHarness(t)
+	t.Setenv("ZSHPRO_PROFILE", "stale-profile-marker")
+	t.Setenv("ZP_ACTIVE_PROFILE", "stale-active-marker")
+
+	if err := harness.service.Branch(context.Background(), "feature"); err != nil {
+		t.Fatal(err)
+	}
+	if repository.createCalls != 1 || repository.lastCreate.branch != "feature" || repository.lastCreate.baseOID != strings.Repeat("a", 40) {
+		t.Fatalf("create from = %#v", repository.lastCreate)
+	}
+	if state := harness.state(t); state.Branch != "main" || state.BaseOID != strings.Repeat("a", 40) {
+		t.Fatalf("branch creation switched durable authority: %#v", state)
+	}
+
+	harness.makeDirty(t, serviceUpdate(serviceIdentity("EDITOR"), "dirty"))
+	resolveBefore := repository.resolveCalls
+	readBefore := repository.readCalls
+	if err := harness.service.Checkout(context.Background(), "feature", false); !errors.Is(err, ErrWorktreeDirty) {
+		t.Fatalf("dirty checkout = %v", err)
+	}
+	if repository.resolveCalls != resolveBefore || repository.readCalls != readBefore {
+		t.Fatal("dirty checkout accessed repository before rejecting")
+	}
+	if state := harness.state(t); state.Branch != "main" || !serviceStateHas(state.Shared, serviceIdentity("EDITOR"), "dirty") {
+		t.Fatalf("dirty checkout discarded or switched state: %#v", state)
+	}
+}
+
+func TestCheckoutAndResetHardPublishExactRevisionEvents(t *testing.T) {
+	harness, repository := workflowServiceHarness(t)
+	targetOID := strings.Repeat("c", 40)
+	target := serviceCommitted("feature")
+	repository.branches["feature"] = targetOID
+	repository.documents[targetOID] = target
+
+	if err := harness.service.Checkout(context.Background(), "feature", false); err != nil {
+		t.Fatal(err)
+	}
+	state := harness.state(t)
+	if state.Branch != "feature" || state.BaseOID != targetOID || state.HeadRevision != 2 || len(state.Events) != 2 ||
+		!serviceStateHas(state.Shared, serviceIdentity("EDITOR"), "feature") {
+		t.Fatalf("checkout state = %#v", state)
+	}
+	if repository.lastResolvedBranch != "feature" || repository.lastReadRevision != targetOID {
+		t.Fatalf("checkout exact reads = branch %q revision %q", repository.lastResolvedBranch, repository.lastReadRevision)
+	}
+
+	harness.makeDirty(t, serviceUpdate(serviceIdentity("EDITOR"), "discard-me"), serviceUpdate(serviceIdentity("TEMP"), "discard-me"))
+	if err := harness.service.ResetHard(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	state = harness.state(t)
+	if state.Branch != "feature" || state.BaseOID != targetOID || !serviceStateHas(state.Shared, serviceIdentity("EDITOR"), "feature") ||
+		serviceStateHas(state.Shared, serviceIdentity("TEMP"), "discard-me") || state.HeadRevision != 4 {
+		t.Fatalf("hard reset state = %#v", state)
+	}
+	if repository.lastReadRevision != targetOID {
+		t.Fatalf("reset read revision = %q", repository.lastReadRevision)
+	}
+}
+
+func TestAutoApplyDefaultPreservesExplicitFalseOverrideAndDurableIdentity(t *testing.T) {
+	harness, repository := workflowServiceHarness(t)
+	credential := serviceCredential(t, "shell-a", 'A')
+	harness.attach(t, credential, "attach-auto")
+	override := true
+	if err := harness.store.WithTransaction(context.Background(), func(state *State) error {
+		shell := state.Shells[credential.ShellID]
+		shell.AutoApplyOverride = &override
+		state.Shells[credential.ShellID] = shell
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before := harness.state(t)
+	if err := harness.service.SetAutoApplyDefault(context.Background(), false); err != nil {
+		t.Fatal(err)
+	}
+	after := harness.state(t)
+	if after.AutoApplyDefault || after.Branch != before.Branch || after.BaseOID != before.BaseOID ||
+		after.HeadRevision != before.HeadRevision || !equalLiveStates(after.Shared, before.Shared) ||
+		after.Shells[credential.ShellID].AutoApplyOverride == nil || !*after.Shells[credential.ShellID].AutoApplyOverride {
+		t.Fatalf("default update changed unrelated authority: before=%#v after=%#v", before, after)
+	}
+	attached, err := harness.service.WorkflowStatus(context.Background(), credential.ShellID)
+	if err != nil || attached.PersistedDefault || !attached.Effective || attached.Source != AutoApplyShellSource {
+		t.Fatalf("attached auto status = %#v, %v", attached, err)
+	}
+	sharedOnly, err := harness.service.WorkflowStatus(context.Background(), "")
+	if err != nil || sharedOnly.PersistedDefault || sharedOnly.Effective || sharedOnly.Source != AutoApplyDefaultSource || sharedOnly.Worktree.Shell != nil {
+		t.Fatalf("shared-only auto status = %#v, %v", sharedOnly, err)
+	}
+
+	second, err := NewService(harness.store, NewRegistry(fakeLiveSecretPolicy{}), repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := second.WorkflowStatus(context.Background(), credential.ShellID)
+	if err != nil || !reflect.DeepEqual(other, attached) {
+		t.Fatalf("distinct service status = %#v, %v; want %#v", other, err, attached)
+	}
+}
+
+func TestRecoveryAfterCommittedStateSaveFailureUsesExactPublishedRevision(t *testing.T) {
+	harness, repository := workflowServiceHarness(t)
+	harness.makeDirty(t, serviceUpdate(serviceIdentity("EDITOR"), "published"))
+	injected := errors.New("state replace failed before rename")
+	fired := false
+	harness.store.faults.beforeRename = func() error {
+		if !fired {
+			fired = true
+			return injected
+		}
+		return nil
+	}
+
+	result, err := harness.service.Commit(context.Background(), "published before state save")
+	if !errors.Is(err, ErrRecoveryRequired) || !result.Committed || !result.RecoveryRequired || result.OID != strings.Repeat("b", 40) {
+		t.Fatalf("split result = %#v, %v", result, err)
+	}
+	harness.store.faults.beforeRename = nil
+	old := harness.state(t)
+	if old.BaseOID != strings.Repeat("a", 40) {
+		t.Fatalf("failed state save claimed clean candidate: %#v", old)
+	}
+
+	status, err := harness.service.WorkflowStatus(context.Background(), "")
+	if err != nil || status.Worktree.BaseOID != result.OID || status.Worktree.DirtyCount != 0 {
+		t.Fatalf("repaired status = %#v, %v", status, err)
+	}
+	if repository.lastReadRevision != result.OID {
+		t.Fatalf("recovery read %q, want exact candidate %q", repository.lastReadRevision, result.OID)
+	}
+	repaired := harness.state(t)
+	if repaired.BaseOID != result.OID || !reflect.DeepEqual(repaired.Committed, repository.documents[result.OID]) {
+		t.Fatalf("repaired state = %#v", repaired)
+	}
+}
+
 type serviceHarness struct {
 	root    string
 	store   *StateStore
 	service *Service
+}
+
+type workflowRepository struct {
+	branches  map[string]string
+	documents map[string]model.CommittedWorktree
+
+	commitCalls  int
+	createCalls  int
+	resolveCalls int
+	readCalls    int
+
+	lastCommit struct {
+		branch   string
+		baseOID  string
+		document model.CommittedWorktree
+		message  string
+	}
+	lastCreate struct {
+		branch  string
+		baseOID string
+	}
+	lastResolvedBranch string
+	lastReadRevision   string
+	commitResult       model.WorktreeCommitResult
+	commitErr          error
+}
+
+func (repository *workflowRepository) Branches(context.Context) ([]string, error) {
+	names := make([]string, 0, len(repository.branches))
+	for name := range repository.branches {
+		names = append(names, name)
+	}
+	for i := 1; i < len(names); i++ {
+		for j := i; j > 0 && names[j-1] > names[j]; j-- {
+			names[j-1], names[j] = names[j], names[j-1]
+		}
+	}
+	return names, nil
+}
+
+func (repository *workflowRepository) ResolveWorktreeRevision(_ context.Context, branch string) (string, error) {
+	repository.resolveCalls++
+	repository.lastResolvedBranch = branch
+	revision, ok := repository.branches[branch]
+	if !ok {
+		return "", errors.New("worktree branch is unavailable")
+	}
+	return revision, nil
+}
+
+func (repository *workflowRepository) ReadWorktreeRevision(_ context.Context, revision string) (model.CommittedWorktree, error) {
+	repository.readCalls++
+	repository.lastReadRevision = revision
+	document, ok := repository.documents[revision]
+	if !ok {
+		return model.CommittedWorktree{}, errors.New("worktree revision is unavailable")
+	}
+	return model.NewCommittedWorktree(document.Source, document.Projection), nil
+}
+
+func (repository *workflowRepository) CreateFrom(_ context.Context, branch, baseOID string) error {
+	repository.createCalls++
+	repository.lastCreate.branch = branch
+	repository.lastCreate.baseOID = baseOID
+	if _, exists := repository.branches[branch]; exists {
+		return errors.New("worktree branch already exists")
+	}
+	repository.branches[branch] = baseOID
+	return nil
+}
+
+func (repository *workflowRepository) CommitWorktree(_ context.Context, branch, baseOID string, document model.CommittedWorktree, message string) (model.WorktreeCommitResult, error) {
+	repository.commitCalls++
+	repository.lastCommit.branch = branch
+	repository.lastCommit.baseOID = baseOID
+	repository.lastCommit.document = model.NewCommittedWorktree(document.Source, document.Projection)
+	repository.lastCommit.message = message
+	result := repository.commitResult
+	if result == (model.WorktreeCommitResult{}) && repository.commitErr == nil {
+		result = model.WorktreeCommitResult{Committed: true, OID: strings.Repeat("b", 40)}
+	}
+	if result.Committed {
+		repository.branches[branch] = result.OID
+		repository.documents[result.OID] = model.NewCommittedWorktree(document.Source, document.Projection)
+	}
+	return result, repository.commitErr
+}
+
+func workflowServiceHarness(t *testing.T) (serviceHarness, *workflowRepository) {
+	t.Helper()
+	harness := newServiceHarness(t, fakeLiveSecretPolicy{})
+	baseOID := strings.Repeat("a", 40)
+	committed := serviceCommitted("shared")
+	repository := &workflowRepository{
+		branches:  map[string]string{"main": baseOID},
+		documents: map[string]model.CommittedWorktree{baseOID: committed},
+	}
+	service, err := NewService(harness.store, NewRegistry(fakeLiveSecretPolicy{}), repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	harness.service = service
+	if err := harness.service.Materialize(context.Background(), "main", baseOID, committed); err != nil {
+		t.Fatal(err)
+	}
+	return harness, repository
+}
+
+func (h serviceHarness) makeDirty(t *testing.T, changes ...model.LiveChange) {
+	t.Helper()
+	if err := h.store.WithTransaction(context.Background(), func(state *State) error {
+		next, err := model.NextRevision(state.HeadRevision)
+		if err != nil {
+			return err
+		}
+		shared, err := applyStateChanges(state.Shared, changes)
+		if err != nil {
+			return err
+		}
+		state.Shared = shared
+		state.HeadRevision = next
+		state.Events = append(state.Events, StateEvent{Revision: next, OperationID: fmt.Sprintf("test-dirty-%d", next), Changes: model.CloneLiveChanges(changes)})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func categorizedDiffCount(diff model.CategorizedDiff) int {
+	return len(diff.Environment) + len(diff.Aliases) + len(diff.Functions) + len(diff.Path) + len(diff.FPath) + len(diff.Options)
 }
 
 func newServiceHarness(t *testing.T, policy fakeLiveSecretPolicy) serviceHarness {

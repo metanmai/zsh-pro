@@ -9,6 +9,7 @@ import (
 	"errors"
 	"reflect"
 
+	"zsh-pro/core/activate"
 	"zsh-pro/core/model"
 )
 
@@ -21,7 +22,35 @@ var (
 	ErrNeedsReconcile             = errors.New("worktree shell requires reconciliation")
 	ErrConflictRequiresResolution = errors.New("worktree conflict requires resolution")
 	ErrAcknowledgeMismatch        = errors.New("worktree acknowledgement does not match pending state")
+	ErrWorktreeDirty              = errors.New("worktree has uncommitted changes")
+	ErrWorkflowUnavailable        = errors.New("worktree workflow is unavailable")
 )
+
+// Repository is the exact Git boundary required by the shared worktree
+// workflow. It deliberately excludes every legacy process-local Store adapter.
+type Repository interface {
+	Branches(context.Context) ([]string, error)
+	ResolveWorktreeRevision(context.Context, string) (string, error)
+	ReadWorktreeRevision(context.Context, string) (model.CommittedWorktree, error)
+	CreateFrom(context.Context, string, string) error
+	CommitWorktree(context.Context, string, string, model.CommittedWorktree, string) (model.WorktreeCommitResult, error)
+}
+
+type AutoApplySource string
+
+const (
+	AutoApplyDefaultSource AutoApplySource = "default"
+	AutoApplyShellSource   AutoApplySource = "shell"
+)
+
+// WorkflowStatus adds effective configuration provenance without widening the
+// public model's value-free shared/shell status contract.
+type WorkflowStatus struct {
+	Worktree         model.WorktreeStatus
+	PersistedDefault bool
+	Effective        bool
+	Source           AutoApplySource
+}
 
 // Service applies the shared-worktree state machine to one canonical Store.
 // Distinct Service values may safely share authority through the same
@@ -29,14 +58,67 @@ var (
 type Service struct {
 	store    *StateStore
 	registry *Registry
+	repo     Repository
 }
 
-func NewService(store *StateStore, registry *Registry) (*Service, error) {
+func NewService(store *StateStore, registry *Registry, repositories ...Repository) (*Service, error) {
 	if store == nil || registry == nil {
 		return nil, errors.New("worktree service dependencies are unavailable")
 	}
-	return &Service{store: store, registry: registry}, nil
+	if len(repositories) > 1 {
+		return nil, errors.New("worktree service received multiple repositories")
+	}
+	var repository Repository
+	if len(repositories) == 1 && !isNilWorkflowRepository(repositories[0]) {
+		repository = repositories[0]
+	}
+	return &Service{store: store, registry: registry, repo: repository}, nil
 }
+
+// Commit publishes every effective dirty identity without a staging or partial
+// selection input. The implementation lands in the GREEN phase.
+func (s *Service) Commit(context.Context, string) (model.WorktreeCommitResult, error) {
+	return model.WorktreeCommitResult{}, ErrWorkflowUnavailable
+}
+
+func (s *Service) Branches(context.Context) ([]string, error) {
+	return nil, ErrWorkflowUnavailable
+}
+
+func (s *Service) Branch(context.Context, string) error {
+	return ErrWorkflowUnavailable
+}
+
+func (s *Service) Checkout(context.Context, string, bool) error {
+	return ErrWorkflowUnavailable
+}
+
+func (s *Service) ResetHard(context.Context) error {
+	return ErrWorkflowUnavailable
+}
+
+func (s *Service) SetAutoApplyDefault(context.Context, bool) error {
+	return ErrWorkflowUnavailable
+}
+
+func (s *Service) WorkflowStatus(context.Context, string) (WorkflowStatus, error) {
+	return WorkflowStatus{}, ErrWorkflowUnavailable
+}
+
+func isNilWorkflowRepository(repository Repository) bool {
+	if repository == nil {
+		return true
+	}
+	value := reflect.ValueOf(repository)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
+}
+
+var _ = activate.BuildEffective
 
 // Materialize creates the first exact branch/OID generation. A repeat is a
 // no-op only when all immutable materialization inputs match.
