@@ -21,7 +21,7 @@ import (
 const (
 	stateFileName             = "worktree.json"
 	stateLockFileName         = "worktree.lock"
-	stateForensicFileName     = "worktree.events"
+	stateForensicFileName     = "events.jsonl"
 	stateTemporaryPrefix      = ".worktree-state-"
 	stateLockRetryInterval    = 5 * time.Millisecond
 	maxStateForensicFileBytes = 64 * 1024
