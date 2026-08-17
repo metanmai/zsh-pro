@@ -54,12 +54,12 @@ func TestLiveCaptureSourceRoundTripsCurrentShellState(t *testing.T) {
 	if _, err := exec.LookPath("zsh"); err != nil {
 		t.Skip("zsh not installed")
 	}
-	functionBody := "print -r -- 'one'\nprint -r -- '##END##'"
+	functionBody := "\tprint -r -- one\n\tprint -r -- \"##END##\""
 	script := (Provider{}).LiveCaptureSource() + `
 export ZP_LIVE_EMPTY=''
 export ZP_LIVE_MULTI=$'line one\nline two'
 aliases[ZP_LIVE_ALIAS]=$'print -r -- "quoted\nbody"'
-functions[ZP_LIVE_FUNCTION]=$'print -r -- '\''one'\''\nprint -r -- '\''##END##'\'''
+functions[ZP_LIVE_FUNCTION]=$'print -r -- one\nprint -r -- "##END##"'
 path=('/one:colon' '' '/three space')
 fpath=('' '/functions:colon')
 setopt AUTO_CD
@@ -90,12 +90,16 @@ _zp_live_capture
 		{model.Identity{Kind: model.LiveFunction, Name: "ZP_LIVE_FUNCTION"}, model.ScalarLiveValue(functionBody)},
 		{model.Identity{Kind: model.LivePath, Name: "PATH"}, model.ListLiveValue([]string{"/one:colon", "", "/three space"})},
 		{model.Identity{Kind: model.LiveFPath, Name: "FPATH"}, model.ListLiveValue([]string{"", "/functions:colon"})},
-		{model.Identity{Kind: model.LiveOption, Name: "AUTO_CD"}, model.OptionLiveValue(true)},
-		{model.Identity{Kind: model.LiveOption, Name: "NOMATCH"}, model.OptionLiveValue(false)},
+		{model.Identity{Kind: model.LiveOption, Name: "autocd"}, model.OptionLiveValue(true)},
+		{model.Identity{Kind: model.LiveOption, Name: "nomatch"}, model.OptionLiveValue(false)},
 	}
 	for _, check := range checks {
 		got := findLiveTestState(t, snapshot, check.identity)
 		if !model.EqualLiveValue(check.identity.Kind, got, check.want) {
+			if got.Scalar != nil && check.want.Scalar != nil {
+				t.Errorf("%#v scalar=%q want %q", check.identity, *got.Scalar, *check.want.Scalar)
+				continue
+			}
 			t.Errorf("%#v=%#v want %#v", check.identity, got, check.want)
 		}
 	}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,12 +18,206 @@ var _ shell.Provider = Provider{}
 
 var errLiveSnapshotFrame = errors.New("live snapshot frame is invalid")
 
-// LiveCaptureSource is implemented in the GREEN phase of Plan 07-08.
-func (Provider) LiveCaptureSource() string { return "" }
+const (
+	liveSnapshotMarker  = "ZP_LIVE_SNAPSHOT"
+	liveSnapshotVersion = "1"
+	liveRecordMarker    = "R"
+	liveEndMarker       = "E"
+)
 
-// DecodeLiveSnapshot is implemented in the GREEN phase of Plan 07-08.
-func (Provider) DecodeLiveSnapshot([]byte) (model.LiveSnapshot, error) {
-	return model.LiveSnapshot{}, errLiveSnapshotFrame
+// liveCaptureProgram defines one composable function that records supported
+// state from the zsh process which sources it. It deliberately does not use
+// emulate/local-options because the caller's option state is part of the
+// snapshot, and it never launches a child shell.
+const liveCaptureProgram = `
+_zp_live_capture() {
+  zmodload zsh/parameter 2>/dev/null || return 1
+  local name descriptor value option_state
+  local -a elements
+
+  builtin printf '%s\0' ZP_LIVE_SNAPSHOT 1
+  for name in "${(@ok)parameters}"; do
+    [[ "$name" == PATH || "$name" == FPATH ]] && continue
+    descriptor="${parameters[$name]}"
+    [[ "$descriptor" == *scalar* && "$descriptor" == *export* ]] || continue
+    value="${(P)name}"
+    builtin printf '%s\0' R env "$name" exported 1 "$value"
+  done
+  for name in "${(@ok)aliases}"; do
+    builtin printf '%s\0' R alias "$name" body 1 "${aliases[$name]}"
+  done
+  for name in "${(@ok)functions}"; do
+    builtin printf '%s\0' R function "$name" body 1 "${functions[$name]}"
+  done
+
+  elements=("${path[@]}")
+  builtin printf '%s\0' R path PATH ordered "${#elements}"
+  for value in "${elements[@]}"; do builtin printf '%s\0' "$value"; done
+  elements=("${fpath[@]}")
+  builtin printf '%s\0' R fpath FPATH ordered "${#elements}"
+  for value in "${elements[@]}"; do builtin printf '%s\0' "$value"; done
+
+  for name in "${(@ok)options}"; do
+    option_state="${options[$name]}"
+    builtin printf '%s\0' R option "$name" boolean 1 "$option_state"
+  done
+  builtin printf '%s\0' E
+}
+`
+
+// LiveCaptureSource returns source which must be evaluated by the current zsh;
+// executing it only defines the capture function and performs no subprocess or
+// filesystem work.
+func (Provider) LiveCaptureSource() string { return liveCaptureProgram }
+
+// DecodeLiveSnapshot validates one complete versioned NUL frame. Any malformed
+// input returns the zero snapshot so callers can never observe a trusted prefix.
+func (Provider) DecodeLiveSnapshot(frame []byte) (model.LiveSnapshot, error) {
+	if len(frame) == 0 || len(frame) > model.MaxSnapshotBytes || frame[len(frame)-1] != 0 {
+		return model.LiveSnapshot{}, errLiveSnapshotFrame
+	}
+	reader := liveFrameReader{frame: frame}
+	if !reader.expect(liveSnapshotMarker) || !reader.expect(liveSnapshotVersion) {
+		return model.LiveSnapshot{}, errLiveSnapshotFrame
+	}
+	capacity := len(frame) / 32
+	if capacity > model.MaxSnapshotRecords {
+		capacity = model.MaxSnapshotRecords
+	}
+	states := make([]model.LiveIdentityState, 0, capacity)
+	for {
+		marker, ok := reader.next()
+		if !ok {
+			return model.LiveSnapshot{}, errLiveSnapshotFrame
+		}
+		if marker == liveEndMarker {
+			if !reader.done() {
+				return model.LiveSnapshot{}, errLiveSnapshotFrame
+			}
+			snapshot := model.LiveSnapshot{ByteSize: uint64(len(frame)), States: states}
+			if err := model.ValidateLiveSnapshot(snapshot); err != nil {
+				return model.LiveSnapshot{}, errLiveSnapshotFrame
+			}
+			return snapshot, nil
+		}
+		if marker != liveRecordMarker || len(states) == model.MaxSnapshotRecords {
+			return model.LiveSnapshot{}, errLiveSnapshotFrame
+		}
+		state, ok := decodeLiveRecord(&reader)
+		if !ok || model.ValidateLiveIdentityState(state) != nil {
+			return model.LiveSnapshot{}, errLiveSnapshotFrame
+		}
+		states = append(states, state)
+	}
+}
+
+type liveFrameReader struct {
+	frame  []byte
+	offset int
+}
+
+func (reader *liveFrameReader) next() (string, bool) {
+	if reader.offset >= len(reader.frame) {
+		return "", false
+	}
+	end := bytes.IndexByte(reader.frame[reader.offset:], 0)
+	if end < 0 {
+		return "", false
+	}
+	field := string(reader.frame[reader.offset : reader.offset+end])
+	reader.offset += end + 1
+	return field, true
+}
+
+func (reader *liveFrameReader) expect(want string) bool {
+	got, ok := reader.next()
+	return ok && got == want
+}
+
+func (reader *liveFrameReader) done() bool { return reader.offset == len(reader.frame) }
+
+func decodeLiveRecord(reader *liveFrameReader) (model.LiveIdentityState, bool) {
+	kindField, kindOK := reader.next()
+	name, nameOK := reader.next()
+	attribute, attributeOK := reader.next()
+	countField, countOK := reader.next()
+	if !kindOK || !nameOK || !attributeOK || !countOK {
+		return model.LiveIdentityState{}, false
+	}
+	count, err := strconv.ParseUint(countField, 10, 64)
+	if err != nil || strconv.FormatUint(count, 10) != countField || count > model.MaxSnapshotRecords {
+		return model.LiveIdentityState{}, false
+	}
+	kind := model.LiveKind(kindField)
+	identity := model.Identity{Kind: kind, Name: name}
+	if model.ValidateIdentity(identity) != nil {
+		return model.LiveIdentityState{}, false
+	}
+
+	var value model.LiveValue
+	switch kind {
+	case model.LiveEnv:
+		if attribute != "exported" || count != 1 {
+			return model.LiveIdentityState{}, false
+		}
+		value, countOK = decodeLiveScalar(reader)
+	case model.LiveAlias, model.LiveFunction:
+		if attribute != "body" || count != 1 {
+			return model.LiveIdentityState{}, false
+		}
+		value, countOK = decodeLiveScalar(reader)
+	case model.LivePath, model.LiveFPath:
+		if attribute != "ordered" {
+			return model.LiveIdentityState{}, false
+		}
+		value, countOK = decodeLiveList(reader, int(count))
+	case model.LiveOption:
+		if attribute != "boolean" || count != 1 {
+			return model.LiveIdentityState{}, false
+		}
+		value, countOK = decodeLiveOption(reader)
+	default:
+		return model.LiveIdentityState{}, false
+	}
+	if !countOK {
+		return model.LiveIdentityState{}, false
+	}
+	return model.LiveIdentityState{Identity: identity, Value: value}, true
+}
+
+func decodeLiveScalar(reader *liveFrameReader) (model.LiveValue, bool) {
+	value, ok := reader.next()
+	if !ok {
+		return model.LiveValue{}, false
+	}
+	return model.ScalarLiveValue(value), true
+}
+
+func decodeLiveList(reader *liveFrameReader, count int) (model.LiveValue, bool) {
+	values := make([]string, count)
+	for index := range values {
+		value, ok := reader.next()
+		if !ok {
+			return model.LiveValue{}, false
+		}
+		values[index] = value
+	}
+	return model.ListLiveValue(values), true
+}
+
+func decodeLiveOption(reader *liveFrameReader) (model.LiveValue, bool) {
+	value, ok := reader.next()
+	if !ok {
+		return model.LiveValue{}, false
+	}
+	switch value {
+	case "on":
+		return model.OptionLiveValue(true), true
+	case "off":
+		return model.OptionLiveValue(false), true
+	default:
+		return model.LiveValue{}, false
+	}
 }
 
 // Categories returns the taxonomy in load order.
