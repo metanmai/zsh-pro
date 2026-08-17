@@ -25,11 +25,12 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"syscall"
 
-	"zsh-pro/core/ir"
+	"zsh-pro/core/activate"
 	"zsh-pro/core/model"
 	"zsh-pro/core/shell"
 )
@@ -202,6 +203,32 @@ func NewRuntime(root, vaultParent *os.File, regen shell.Regenerator) (*Store, er
 		installInitializations: make(map[model.InstallInitializationID]*installInitializationRecord),
 		ingestTransactions:     make(map[model.IngestTransactionID]*ingestTransactionRecord),
 	}, nil
+}
+
+// ResolveWorktreeRevision returns the exact commit currently named by one
+// validated local branch. It deliberately uses the direct-ref observation
+// boundary: callers cannot supply a symbolic revision expression, and legacy
+// process-local current-profile state is not consulted.
+func (s *Store) ResolveWorktreeRevision(ctx context.Context, branch string) (string, error) {
+	if s == nil {
+		return "", ErrGitCommand
+	}
+	ref, err := validatedHeadRefForBranch(branch)
+	if err != nil {
+		return "", err
+	}
+	revision, present, err := s.git.observeDirectRef(ctx, ref)
+	if err != nil {
+		return "", err
+	}
+	if !present {
+		return "", ErrProfileNotFound
+	}
+	typeName, err := s.git.objectType(ctx, revision)
+	if err != nil || typeName != "commit" {
+		return "", ErrGitCommand
+	}
+	return revision, nil
 }
 
 // ReadWorktreeRevision reconstructs one exact committed worktree revision only
@@ -715,11 +742,57 @@ func (s *Store) prepareIngestCandidate(
 	profile model.Profile,
 	message string,
 ) (string, error) {
-	jsonBytes, err := MarshalProfile(profile)
+	if s.worktreeRegen == nil {
+		return "", ErrGitCommand
+	}
+	// RuntimeValue has never been part of the persisted Profile DTO. Preserve
+	// that boundary before validating the combined document: in particular, a
+	// dynamic secret remains late-bound source and cannot retain an observed
+	// literal in the durable worktree generation.
+	document, err := activate.BuildEffective(profile, nil)
 	if err != nil {
 		return "", err
 	}
-	zshBytes := ir.Regenerate(profile, s.regen)
+	pinned := committedSourceSecretIdentities(profile)
+	states := make([]model.LiveIdentityState, 0, len(document.Projection.States))
+	for _, state := range document.Projection.States {
+		if !pinned[state.Identity] {
+			states = append(states, state)
+		}
+	}
+	tombstones := make([]model.Identity, 0, len(document.Projection.Tombstones))
+	for _, identity := range document.Projection.Tombstones {
+		if !pinned[identity] {
+			tombstones = append(tombstones, identity)
+		}
+	}
+	document.Projection.States = states
+	document.Projection.Tombstones = tombstones
+	persistedProfile := model.Profile{Entries: append([]model.Entry(nil), profile.Entries...)}
+	for index := range persistedProfile.Entries {
+		entry := &persistedProfile.Entries[index]
+		if entry.Category == model.CatSecrets && entry.Secret == nil && entry.Dynamic {
+			entry.RuntimeValue = nil
+		}
+	}
+	// Keep the source DTO's nil-versus-explicit-empty fidelity byte-for-byte;
+	// NewCommittedWorktree's defensive slice cloning intentionally normalizes
+	// zero-length slices and is therefore reserved for runtime state copies.
+	document.Source = persistedProfile
+	if claim.baseline.ExpectedRevision != nil {
+		current, readErr := s.ReadWorktreeRevision(ctx, *claim.baseline.ExpectedRevision)
+		if readErr == nil && reflect.DeepEqual(current, document) {
+			return *claim.baseline.ExpectedRevision, nil
+		}
+	}
+	jsonBytes, err := MarshalCommittedWorktree(document)
+	if err != nil {
+		return "", err
+	}
+	zshBytes, err := s.worktreeRegen.RegenerateWorktree(document)
+	if err != nil {
+		return "", err
+	}
 	candidate := s.git.candidate(claim.quarantine.indexPath, claim.quarantine.objectsPath)
 	blobJSON, err := candidate.hashObject(ctx, jsonBytes)
 	if err != nil {

@@ -8,19 +8,213 @@ import (
 	"context"
 	"errors"
 	"os"
+	"sync"
 
 	"zsh-pro/core/cli"
+	"zsh-pro/core/model"
 	"zsh-pro/core/shell/zsh"
 	"zsh-pro/core/store"
+	"zsh-pro/core/worktree"
 )
 
 var errCompositionStoreUnavailable = errors.New("profile store unavailable")
+
+type materializingIngestTransactions struct {
+	cli.IngestTransactionStore
+	materializer cli.WorktreeMaterializer
+}
+
+func (transactions materializingIngestTransactions) MaterializeCommittedWorktree(ctx context.Context, branch, revision string) error {
+	return transactions.materializer.MaterializeCommittedWorktree(ctx, branch, revision)
+}
+
+// compositionWorktree retains one path-bound public service over the canonical
+// store root. Construction is lazy so analyze remains read-only and available
+// when profile storage has not been initialized. The runtime factory retains
+// only the configuration needed by the later authenticated-descriptor binding;
+// it never receives or reopens this pathname.
+type compositionWorktree struct {
+	mu              sync.Mutex
+	canonicalRoot   string
+	repository      *store.Store
+	registry        *worktree.Registry
+	runtimeFactory  cli.RuntimeWorktreeFactory
+	constructionErr error
+	state           *worktree.StateStore
+	service         *worktree.Service
+}
+
+func newCompositionWorktree(
+	canonicalRoot string,
+	repository *store.Store,
+	provider zsh.Provider,
+	runtimeFactory cli.RuntimeWorktreeFactory,
+	constructionErr error,
+) *compositionWorktree {
+	return &compositionWorktree{
+		canonicalRoot:   canonicalRoot,
+		repository:      repository,
+		registry:        worktree.NewRegistry(provider),
+		runtimeFactory:  runtimeFactory,
+		constructionErr: constructionErr,
+	}
+}
+
+func (authority *compositionWorktree) bind() (*worktree.Service, *worktree.StateStore, error) {
+	if authority == nil {
+		return nil, nil, errCompositionStoreUnavailable
+	}
+	authority.mu.Lock()
+	defer authority.mu.Unlock()
+	if authority.constructionErr != nil {
+		return nil, nil, authority.constructionErr
+	}
+	if authority.repository == nil || authority.registry == nil || authority.canonicalRoot == "" {
+		return nil, nil, errCompositionStoreUnavailable
+	}
+	if authority.service != nil && authority.state != nil {
+		return authority.service, authority.state, nil
+	}
+	state, err := worktree.OpenStateStore(authority.canonicalRoot)
+	if err != nil {
+		return nil, nil, err
+	}
+	service, err := worktree.NewService(state, authority.registry, authority.repository)
+	if err != nil {
+		_ = state.Close()
+		return nil, nil, err
+	}
+	authority.state = state
+	authority.service = service
+	return service, state, nil
+}
+
+func (authority *compositionWorktree) MaterializeCommittedWorktree(ctx context.Context, branch, revision string) error {
+	service, _, err := authority.bind()
+	if err != nil {
+		return err
+	}
+	committed, err := authority.repository.ReadWorktreeRevision(ctx, revision)
+	if err != nil {
+		return err
+	}
+	if err := service.Materialize(ctx, branch, revision, committed); err != nil {
+		if !errors.Is(err, worktree.ErrRecoveryRequired) {
+			return err
+		}
+		// An earlier exact generation may already be durable. Let Service's
+		// under-lock split-recovery path inspect the current branch OID, read that
+		// exact committed DTO, and advance only when its projection equals shared.
+		status, repairErr := service.WorkflowStatus(ctx, "")
+		if repairErr != nil || status.Worktree.Branch != branch || status.Worktree.BaseOID != revision {
+			return err
+		}
+	}
+	return nil
+}
+
+func (authority *compositionWorktree) ensureMaterialized(ctx context.Context) (*worktree.Service, error) {
+	service, stateStore, err := authority.bind()
+	if err != nil {
+		return nil, err
+	}
+	state, err := stateStore.Read(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if state.Materialized {
+		return service, nil
+	}
+	revision, err := authority.repository.ResolveWorktreeRevision(ctx, "main")
+	if err != nil {
+		return nil, err
+	}
+	committed, err := authority.repository.ReadWorktreeRevision(ctx, revision)
+	if err != nil {
+		return nil, err
+	}
+	if err := service.Materialize(ctx, "main", revision, committed); err != nil {
+		return nil, err
+	}
+	return service, nil
+}
+
+func (authority *compositionWorktree) WorkflowStatus(ctx context.Context, shellID string) (worktree.WorkflowStatus, error) {
+	service, err := authority.ensureMaterialized(ctx)
+	if err != nil {
+		return worktree.WorkflowStatus{}, err
+	}
+	return service.WorkflowStatus(ctx, shellID)
+}
+
+func (authority *compositionWorktree) Diff(ctx context.Context) (model.CategorizedDiff, error) {
+	service, err := authority.ensureMaterialized(ctx)
+	if err != nil {
+		return model.CategorizedDiff{}, err
+	}
+	return service.Diff(ctx)
+}
+
+func (authority *compositionWorktree) Branches(ctx context.Context) ([]string, error) {
+	service, err := authority.ensureMaterialized(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return service.Branches(ctx)
+}
+
+func (authority *compositionWorktree) Commit(ctx context.Context, message string) (model.WorktreeCommitResult, error) {
+	service, _, err := authority.bind()
+	if err != nil {
+		return model.WorktreeCommitResult{}, err
+	}
+	return service.Commit(ctx, message)
+}
+
+func (authority *compositionWorktree) Branch(ctx context.Context, branch string) error {
+	service, _, err := authority.bind()
+	if err != nil {
+		return err
+	}
+	return service.Branch(ctx, branch)
+}
+
+func (authority *compositionWorktree) Checkout(ctx context.Context, branch string, create bool) error {
+	service, _, err := authority.bind()
+	if err != nil {
+		return err
+	}
+	return service.Checkout(ctx, branch, create)
+}
+
+func (authority *compositionWorktree) ResetHard(ctx context.Context) error {
+	service, _, err := authority.bind()
+	if err != nil {
+		return err
+	}
+	return service.ResetHard(ctx)
+}
+
+func (authority *compositionWorktree) SetAutoApplyDefault(ctx context.Context, enabled bool) error {
+	service, _, err := authority.bind()
+	if err != nil {
+		return err
+	}
+	return service.SetAutoApplyDefault(ctx, enabled)
+}
+
+var (
+	_ worktree.Repository      = (*store.Store)(nil)
+	_ cli.WorktreeMaterializer = (*compositionWorktree)(nil)
+	_ cli.WorktreeReader       = (*compositionWorktree)(nil)
+	_ cli.WorktreeWorkflow     = (*compositionWorktree)(nil)
+)
 
 // storeInitializerFor binds the initializer authority and every follow-on
 // ingest operation to one concrete Store. A construction failure is captured
 // once and replayed verbatim; the initializer never attempts replacement
 // construction after CLI dispatch.
-func storeInitializerFor(cliStore *store.Store, canonicalRoot string, constructionErr error) cli.StoreInitializer {
+func storeInitializerFor(cliStore *store.Store, canonicalRoot string, constructionErr error, materializers ...cli.WorktreeMaterializer) cli.StoreInitializer {
 	return func(ctx context.Context) (cli.StoreInitialization, error) {
 		if constructionErr != nil {
 			return cli.StoreInitialization{}, constructionErr
@@ -32,9 +226,16 @@ func storeInitializerFor(cliStore *store.Store, canonicalRoot string, constructi
 		if err != nil {
 			return cli.StoreInitialization{}, err
 		}
+		var transactions cli.IngestTransactionStore = cliStore
+		if len(materializers) > 0 && materializers[0] != nil {
+			transactions = materializingIngestTransactions{
+				IngestTransactionStore: cliStore,
+				materializer:           materializers[0],
+			}
+		}
 		return cli.StoreInitialization{
 			InitializationID: transaction.ID(),
-			Transactions:     cliStore,
+			Transactions:     transactions,
 			CanonicalRoot:    canonicalRoot,
 			Rollback:         transaction.Rollback,
 			Finalize:         transaction.Finalize,
@@ -88,6 +289,15 @@ func newCLI() *cli.CLI {
 		}
 		return boundStore, boundStore.RuntimeSecretResolver(), nil
 	})
+	runtimeWorktreeFactory := cli.NewRuntimeWorktreeFactory(provider, provider, provider)
+	worktreeAuthority := newCompositionWorktree(storeRoot, cliStore, provider, runtimeWorktreeFactory, storeErr)
 
-	return cli.NewWithStoreInitializer(provider, commandStore, emitter, storeInitializerFor(cliStore, storeRoot, storeErr))
+	return cli.NewWithStoreInitializerAndWorktree(
+		provider,
+		commandStore,
+		emitter,
+		storeInitializerFor(cliStore, storeRoot, storeErr, worktreeAuthority),
+		worktreeAuthority,
+		worktreeAuthority,
+	)
 }

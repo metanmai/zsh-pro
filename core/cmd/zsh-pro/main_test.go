@@ -121,6 +121,76 @@ func TestCanonicalWorktreeAuthorityRepairsExactRevision(t *testing.T) {
 	}
 }
 
+func TestLiveSecretPolicyCompositionRejectsPostAttachSecretCanary(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		t.Skip("authenticated worktree state is unsupported on this platform")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	root := filepath.Join(t.TempDir(), "profiles.git")
+	provider := zsh.Provider{}
+	repository, err := store.New(root, provider, store.NewOSKeychainDriver(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := repository.Init(ctx); err != nil {
+		t.Fatal(err)
+	}
+	base := gitRef(t, root, "refs/heads/main")
+	result, err := repository.CommitWorktree(ctx, "main", base, model.NewCommittedWorktree(model.Profile{}, model.LiveProjection{}), "policy fixture")
+	if err != nil || !result.Committed {
+		t.Fatalf("CommitWorktree = %#v, %v", result, err)
+	}
+	authority := newCompositionWorktree(
+		root,
+		repository,
+		provider,
+		cli.NewRuntimeWorktreeFactory(provider, provider, provider),
+		nil,
+	)
+	if err := authority.MaterializeCommittedWorktree(ctx, "main", result.OID); err != nil {
+		t.Fatal(err)
+	}
+	service, stateStore, err := authority.bind()
+	if err != nil {
+		t.Fatal(err)
+	}
+	capability, err := model.NewShellCapability(bytes.Repeat([]byte{0x4a}, model.ShellCapabilityBytes))
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential := model.ShellCredential{ShellID: "composition-policy-shell", Capability: capability}
+	attached, err := service.Attach(ctx, model.AttachRequest{OperationID: "composition-policy-attach", Credential: credential})
+	if err != nil || !attached.Attached || attached.Revision != 1 {
+		t.Fatalf("Attach = %#v, %v", attached, err)
+	}
+	secretIdentity := model.Identity{Kind: model.LiveEnv, Name: "CREATED_API_TOKEN"}
+	published, err := service.Publish(ctx, model.PublishRequest{
+		OperationID:          "composition-policy-publish",
+		Credential:           credential,
+		AcknowledgedRevision: attached.Revision,
+		Delta: []model.LiveChange{{
+			Kind:     model.LiveAdd,
+			Identity: secretIdentity,
+			Value:    model.ScalarLiveValue("composition-secret-canary"),
+		}},
+	})
+	if err != nil || published.SharedRevision != 1 || len(published.Accepted) != 0 {
+		t.Fatalf("secret-like publish = %#v, %v; want value-free rejection", published, err)
+	}
+	state, err := stateStore.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, live := range state.Shared {
+		if live.Identity == secretIdentity {
+			t.Fatalf("real zsh secret policy admitted post-attach identity: %#v", live)
+		}
+	}
+}
+
 func TestRuntimeCaptureUsesCompositionStoreAndVaultForEveryLocation(t *testing.T) {
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
 		t.Skip("descriptor-bound runtime capture is unsupported on this platform")

@@ -380,14 +380,15 @@ func (c *CLI) runIngestWithSeams(
 		return fail(ingestFailureFinalizeFailed)
 	}
 	materializer, ok := initialization.Transactions.(WorktreeMaterializer)
-	if !ok || isNilLike(materializer) {
-		result.RecoveryRequired = true
-		return fail(ingestFailureRecoveryRequired)
-	}
-	seams.event("worktree:materialize")
-	if err := materializer.MaterializeCommittedWorktree(ctx, "main", *commit.PublishedRevision); err != nil {
-		result.RecoveryRequired = true
-		return fail(ingestFailureRecoveryRequired)
+	// WorktreeMaterializer is an additive production seam. Older embedders that
+	// construct CLI directly retain their source-compatible ingest behavior;
+	// the production composition root always supplies the materializing wrapper.
+	if ok && !isNilLike(materializer) {
+		seams.event("worktree:materialize")
+		if err := materializer.MaterializeCommittedWorktree(ctx, "main", *commit.PublishedRevision); err != nil {
+			result.RecoveryRequired = true
+			return fail(ingestFailureRecoveryRequired)
+		}
 	}
 	result.OK = true
 	result.ExitCode = int(model.ExitClean)

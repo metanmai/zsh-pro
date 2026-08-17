@@ -10,6 +10,7 @@ package store
 // external roundtrip_test.go where wiring zsh.Provider{} is sanctioned.
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -32,6 +33,10 @@ import (
 type stubRegen struct{}
 
 func (stubRegen) Regenerate(e model.Entry) string { return e.Text }
+
+func (stubRegen) RegenerateWorktree(document model.CommittedWorktree) ([]byte, error) {
+	return (zsh.Provider{}).RegenerateWorktree(document)
+}
 
 // newTestStore builds a Store over a fresh temp dir with a nil KeychainDriver,
 // skipping the whole test when git is absent (mirrors roundtrip_test.go).
@@ -550,7 +555,7 @@ func TestResolveWorktreeRevisionUsesValidatedDirectBranchAuthority(t *testing.T)
 
 	starts := 0
 	store.git.beforeStart = func([]string) { starts++ }
-	for _, branch := range []string{"", "-authority", "../main", "main^{commit}", "refs/heads/main"} {
+	for _, branch := range []string{"", "-authority", "../main", "main^{commit}", "main~1"} {
 		if _, err := resolver.ResolveWorktreeRevision(ctx, branch); err == nil {
 			t.Fatalf("ResolveWorktreeRevision accepted hostile branch %q", branch)
 		}
@@ -3095,6 +3100,30 @@ func TestCommitIngestPublishedRevisionIsExactAndReplaySafe(t *testing.T) {
 	if err != nil || *outcome.PublishedRevision != want {
 		t.Fatalf("published revision = %v, want exact ref %q, err=%v", outcome.PublishedRevision, want, err)
 	}
+	document, err := store.ReadWorktreeRevision(context.Background(), want)
+	if err != nil || !reflect.DeepEqual(document.Source, profile) || document.Schema != model.WorktreeSchemaV1 || document.Projection.Schema != model.WorktreeSchemaV1 {
+		t.Fatalf("exact published worktree = %#v, %v; want combined source %#v", document, err, profile)
+	}
+	payload, err := store.git.show(context.Background(), want+":profile.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := UnmarshalCommittedWorktree(payload)
+	if err != nil || !reflect.DeepEqual(decoded, document) {
+		t.Fatalf("published DTO round trip = %#v, %v; want %#v", decoded, err, document)
+	}
+	generated, err := store.git.show(context.Background(), want+":profile.zsh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantGenerated, err := store.worktreeRegen.RegenerateWorktree(document)
+	if err != nil || !bytes.Equal(generated, wantGenerated) {
+		t.Fatalf("published profile.zsh = %q, %v; want %q", generated, err, wantGenerated)
+	}
+	legacy, err := store.Read(context.Background(), "main")
+	if err != nil || !reflect.DeepEqual(legacy, profile) {
+		t.Fatalf("legacy source read = %#v, %v; want %#v", legacy, err, profile)
+	}
 
 	*outcome.PublishedRevision = strings.Repeat("f", len(want))
 	replayed, replayErr := store.CommitIngest(
@@ -3102,6 +3131,12 @@ func TestCommitIngestPublishedRevisionIsExactAndReplaySafe(t *testing.T) {
 	)
 	if replayErr != nil || replayed.PublishedRevision == nil || *replayed.PublishedRevision != want {
 		t.Fatalf("replayed published revision = %v, err=%v; want %q", replayed.PublishedRevision, replayErr, want)
+	}
+
+	repeat := beginPhase6Ingest(t, store, initialization)
+	repeated, repeatErr := commitPhase6Ingest(t, store, initialization, repeat, profile)
+	if repeatErr != nil || repeated.PublishedRevision == nil || *repeated.PublishedRevision != want {
+		t.Fatalf("exact repeat moved revision: outcome=%#v err=%v want=%q", repeated, repeatErr, want)
 	}
 }
 
