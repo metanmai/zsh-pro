@@ -3,13 +3,85 @@ package cli
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
 
 	"zsh-pro/core/activate"
+	"zsh-pro/core/model"
 	"zsh-pro/core/shell"
 )
+
+// RuntimePatchMetadata is the value-free public description of one pending
+// current-shell transition. The executable source remains in a private type.
+type RuntimePatchMetadata struct {
+	Revision    uint64
+	Token       uint64
+	ChangeCount uint64
+	Fingerprint [sha256.Size]byte
+}
+
+type runtimePatchPayload struct {
+	transition bool
+	source     []byte
+	metadata   RuntimePatchMetadata
+}
+
+type runtimeAttachCredential struct {
+	result     model.AttachResult
+	credential model.ShellCredential
+}
+
+// RuntimeTransitionEmitter is consumer-owned; concrete shells implement this
+// exact transport without importing the CLI package.
+type RuntimeTransitionEmitter interface {
+	EmitRuntimeTransition(forward, replacementReverse []activate.Op, applyName, reverseName string, revision, token uint64, fingerprint string) ([]byte, error)
+}
+
+// RuntimeWorktree is deliberately limited to the five credential-bearing
+// shell runtime operations.
+type RuntimeWorktree interface {
+	Attach(context.Context, model.ShellCredential, string, []byte) (runtimeAttachCredential, error)
+	Publish(context.Context, model.ShellCredential, string, uint64, model.LiveSnapshot, []byte) (model.PublishResult, error)
+	Prepare(context.Context, model.ShellCredential, string, uint64, []byte, string, string) (runtimePatchPayload, error)
+	Acknowledge(context.Context, model.ShellCredential, string, uint64, model.ResolutionToken, []byte) (model.AcknowledgeResult, error)
+	Resolve(context.Context, model.ShellCredential, string, model.Identity, model.ResolutionToken, []byte, string, string) (runtimePatchPayload, error)
+}
+
+type runtimeWorktreeService interface {
+	Attach(context.Context, model.AttachRequest) (model.AttachResult, error)
+	Publish(context.Context, model.PublishRequest) (model.PublishResult, error)
+	PreparePull(context.Context, model.PreparePullRequest) (model.PreparePullResult, error)
+	Acknowledge(context.Context, model.AcknowledgeRequest) (model.AcknowledgeResult, error)
+	ResolveShared(context.Context, model.ResolveSharedRequest) (model.ResolveSharedResult, error)
+}
+
+type runtimeWorktreeAdapter struct {
+	service runtimeWorktreeService
+	decoder shell.LiveSnapshotDecoder
+	emitter RuntimeTransitionEmitter
+}
+
+func (*runtimeWorktreeAdapter) Attach(_ context.Context, credential model.ShellCredential, _ string, _ []byte) (runtimeAttachCredential, error) {
+	return runtimeAttachCredential{result: model.AttachResult{}, credential: credential}, errors.New("runtime worktree attach is not implemented")
+}
+
+func (*runtimeWorktreeAdapter) Publish(context.Context, model.ShellCredential, string, uint64, model.LiveSnapshot, []byte) (model.PublishResult, error) {
+	return model.PublishResult{}, errors.New("runtime worktree publish is not implemented")
+}
+
+func (*runtimeWorktreeAdapter) Prepare(context.Context, model.ShellCredential, string, uint64, []byte, string, string) (runtimePatchPayload, error) {
+	return runtimePatchPayload{}, errors.New("runtime worktree prepare is not implemented")
+}
+
+func (*runtimeWorktreeAdapter) Acknowledge(context.Context, model.ShellCredential, string, uint64, model.ResolutionToken, []byte) (model.AcknowledgeResult, error) {
+	return model.AcknowledgeResult{}, errors.New("runtime worktree acknowledge is not implemented")
+}
+
+func (*runtimeWorktreeAdapter) Resolve(context.Context, model.ShellCredential, string, model.Identity, model.ResolutionToken, []byte, string, string) (runtimePatchPayload, error) {
+	return runtimePatchPayload{}, errors.New("runtime worktree resolve is not implemented")
+}
 
 // Emitter is the CLI-to-runtime-code seam. It returns a single emitted shell
 // block for either apply or deactivate, never a concrete zsh implementation.

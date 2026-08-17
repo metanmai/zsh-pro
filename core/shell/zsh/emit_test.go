@@ -58,7 +58,7 @@ func TestLivePatchListOccurrenceRemovalAndReplacementReverse(t *testing.T) {
 	if reflect.DeepEqual(wantBefore, wantAfter) {
 		t.Fatal("invalid list fixture")
 	}
-	for _, test := range []struct {
+	tests := []struct {
 		name     string
 		identity model.Identity
 		array    string
@@ -66,7 +66,8 @@ func TestLivePatchListOccurrenceRemovalAndReplacementReverse(t *testing.T) {
 	}{
 		{name: "PATH", identity: model.Identity{Kind: model.LivePath, Name: "PATH"}, array: "path", scalar: "PATH"},
 		{name: "FPATH", identity: model.Identity{Kind: model.LiveFPath, Name: "FPATH"}, array: "fpath", scalar: "FPATH"},
-	} {
+	}
+	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			forward := activate.TransitionLiveList{
 				Identity:      test.identity,
@@ -102,6 +103,120 @@ func TestLivePatchListOccurrenceRemovalAndReplacementReverse(t *testing.T) {
 			}, "\n")
 			if output, err := exec.Command("zsh", "-f", "-c", script).CombinedOutput(); err != nil {
 				t.Fatalf("list transition did not preserve exact occurrence/tied reverse: %v\n%s\n%s", err, output, script)
+			}
+		})
+	}
+}
+
+func TestEmitLivePatchOwnsExactApplyAndReplacementReverse(t *testing.T) {
+	before := []model.LiveIdentityState{
+		{Identity: model.Identity{Kind: model.LiveEnv, Name: "ZP08_VALUE"}, Value: model.ScalarLiveValue("before")},
+		{Identity: model.Identity{Kind: model.LiveAlias, Name: "zp08_alias"}, Value: model.ScalarLiveValue("print -r -- before")},
+		{Identity: model.Identity{Kind: model.LiveFunction, Name: "zp08_fn"}, Value: model.ScalarLiveValue("print -r -- before")},
+		{Identity: model.Identity{Kind: model.LivePath, Name: "PATH"}, Value: model.ListLiveValue([]string{"/before", "", "/dup", "/dup"})},
+		{Identity: model.Identity{Kind: model.LiveFPath, Name: "FPATH"}, Value: model.ListLiveValue([]string{"/functions-before"})},
+		{Identity: model.Identity{Kind: model.LiveOption, Name: "AUTO_CD"}, Value: model.OptionLiveValue(false)},
+	}
+	after := []model.LiveIdentityState{
+		{Identity: model.Identity{Kind: model.LiveEnv, Name: "ZP08_VALUE"}, Value: model.ScalarLiveValue("after\nexact")},
+		{Identity: model.Identity{Kind: model.LiveAlias, Name: "zp08_alias"}, Value: model.ScalarLiveValue("print -r -- after")},
+		{Identity: model.Identity{Kind: model.LiveFunction, Name: "zp08_fn"}, Value: model.ScalarLiveValue("print -r -- after")},
+		{Identity: model.Identity{Kind: model.LivePath, Name: "PATH"}, Value: model.ListLiveValue([]string{"/after", "", "/dup"})},
+		{Identity: model.Identity{Kind: model.LiveFPath, Name: "FPATH"}, Value: model.ListLiveValue([]string{})},
+		{Identity: model.Identity{Kind: model.LiveOption, Name: "AUTO_CD"}, Value: model.OptionLiveValue(true)},
+	}
+	patch, err := activate.BuildLivePatch(before, after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := (Provider{}).EmitLivePatch(patch.Forward, patch.ReplacementReverse, "__zp08_apply", "__zp08_reverse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := exec.Command("zsh", "-n")
+	check.Stdin = strings.NewReader(string(source))
+	if output, err := check.CombinedOutput(); err != nil {
+		t.Fatalf("live patch is not valid zsh: %v\n%s\n%s", err, output, source)
+	}
+	script := strings.Join([]string{
+		"ZP08_VALUE=before",
+		"alias zp08_alias='print -r -- before'",
+		"zp08_fn() { print -r -- before; }",
+		"path=('/before' '' '/dup' '/dup')",
+		"fpath=('/functions-before')",
+		"unsetopt autocd",
+		string(source),
+		"__zp08_apply",
+		"[[ $ZP08_VALUE == $'after\\nexact' ]] || exit 31",
+		"[[ ${aliases[zp08_alias]} == 'print -r -- after' ]] || exit 32",
+		"[[ ${functions[zp08_fn]} == *'print -r -- after'* ]] || exit 33",
+		"[[ ${(j:|:)path} == '/after||/dup' ]] || exit 34",
+		"[[ ${#fpath} == 0 ]] || exit 35",
+		"[[ -o autocd ]] || exit 36",
+		"__zp08_reverse",
+		"[[ $ZP08_VALUE == before ]] || exit 41",
+		"[[ ${aliases[zp08_alias]} == 'print -r -- before' ]] || exit 42",
+		"[[ ${functions[zp08_fn]} == *'print -r -- before'* ]] || exit 43",
+		"[[ ${(j:|:)path} == '/before||/dup|/dup' ]] || exit 44",
+		"[[ ${(j:|:)fpath} == '/functions-before' ]] || exit 45",
+		"[[ ! -o autocd ]] || exit 46",
+	}, "\n")
+	if output, err := exec.Command("zsh", "-f", "-c", script).CombinedOutput(); err != nil {
+		t.Fatalf("live patch did not apply and reverse exactly: %v\n%s\n%s", err, output, script)
+	}
+}
+
+func TestEmitRuntimeTransitionOwnsFinalAcknowledgementEnvelope(t *testing.T) {
+	fingerprint := strings.Repeat("ab", 32)
+	source, err := (Provider{}).EmitRuntimeTransition(nil, nil, "__zp08_apply", "__zp08_reverse", 17, 29, fingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := strings.Join([]string{
+		"typeset -g ZP_WORKTREE_REPLY_PROTOCOL='1'",
+		"typeset -g ZP_WORKTREE_REPLY_REVISION='17'",
+		"typeset -g ZP_WORKTREE_REPLY_TOKEN='29'",
+		"typeset -g ZP_WORKTREE_REPLY_FINGERPRINT='" + fingerprint + "'",
+		"typeset -g ZP_WORKTREE_REPLY_COMPLETE='1'",
+		"",
+	}, "\n")
+	if string(source) != want {
+		t.Fatalf("metadata-only transition mismatch\nwant:\n%s\ngot:\n%s", want, source)
+	}
+	if strings.Contains(string(source), "__zp08_apply") || strings.Contains(string(source), "__zp08_reverse") {
+		t.Fatalf("zero-mutation transition emitted patch functions: %s", source)
+	}
+	if output, err := exec.Command("zsh", "-f", "-c", string(source)+"\n[[ $ZP_WORKTREE_REPLY_PROTOCOL == 1 && $ZP_WORKTREE_REPLY_REVISION == 17 && $ZP_WORKTREE_REPLY_TOKEN == 29 && $ZP_WORKTREE_REPLY_FINGERPRINT == '"+fingerprint+"' && $ZP_WORKTREE_REPLY_COMPLETE == 1 ]]").CombinedOutput(); err != nil {
+		t.Fatalf("acknowledgement envelope is not exact executable zsh: %v\n%s", err, output)
+	}
+}
+
+func TestEmitLivePatchRejectsMalformedOrReservedInputWithoutSource(t *testing.T) {
+	reserved := activate.SetLiveScalar{Identity: model.Identity{Kind: model.LiveEnv, Name: "ZP_WORKTREE_REPLY_TOKEN"}, Value: "attacker"}
+	malformed := activate.TransitionLiveList{Identity: model.Identity{Kind: model.LivePath, Name: "PATH"}, BeforePresent: false, Before: []string{"carried"}}
+	tests := []struct {
+		name        string
+		forward     []activate.Op
+		apply       string
+		reverse     string
+		revision    uint64
+		token       uint64
+		fingerprint string
+	}{
+		{name: "reserved identity", forward: []activate.Op{reserved}, apply: "__zp08_apply", reverse: "__zp08_reverse", revision: 1, token: 1, fingerprint: strings.Repeat("a", 64)},
+		{name: "malformed list", forward: []activate.Op{malformed}, apply: "__zp08_apply", reverse: "__zp08_reverse", revision: 1, token: 1, fingerprint: strings.Repeat("a", 64)},
+		{name: "unsafe apply", apply: "bad; print owned", reverse: "__zp08_reverse", revision: 1, token: 1, fingerprint: strings.Repeat("a", 64)},
+		{name: "duplicate names", apply: "__zp08_same", reverse: "__zp08_same", revision: 1, token: 1, fingerprint: strings.Repeat("a", 64)},
+		{name: "zero revision", apply: "__zp08_apply", reverse: "__zp08_reverse", token: 1, fingerprint: strings.Repeat("a", 64)},
+		{name: "zero token", apply: "__zp08_apply", reverse: "__zp08_reverse", revision: 1, fingerprint: strings.Repeat("a", 64)},
+		{name: "short fingerprint", apply: "__zp08_apply", reverse: "__zp08_reverse", revision: 1, token: 1, fingerprint: strings.Repeat("a", 63)},
+		{name: "uppercase fingerprint", apply: "__zp08_apply", reverse: "__zp08_reverse", revision: 1, token: 1, fingerprint: strings.Repeat("A", 64)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			source, err := (Provider{}).EmitRuntimeTransition(test.forward, nil, test.apply, test.reverse, test.revision, test.token, test.fingerprint)
+			if err == nil || len(source) != 0 {
+				t.Fatalf("malformed transition escaped: source=%q err=%v", source, err)
 			}
 		})
 	}

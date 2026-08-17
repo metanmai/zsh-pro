@@ -2,6 +2,7 @@ package zsh
 
 import (
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -147,6 +148,17 @@ func emitLiveOperation(operation activate.Op) ([]byte, error) {
 	default:
 		return nil, fmt.Errorf("live patch: unsupported operation %T", operation)
 	}
+}
+
+// EmitLivePatch is the concrete-shell boundary for a caller-named live patch.
+func (Provider) EmitLivePatch(_, _ []activate.Op, _, _ string) ([]byte, error) {
+	return nil, errors.New("live patch emission is not implemented")
+}
+
+// EmitRuntimeTransition is the concrete-shell boundary for one private patch
+// and its acknowledgement envelope.
+func (Provider) EmitRuntimeTransition(_, _ []activate.Op, _, _ string, _, _ uint64, _ string) ([]byte, error) {
+	return nil, errors.New("runtime transition emission is not implemented")
 }
 
 func validateLiveListSide(kind model.LiveKind, present bool, elements []string) error {

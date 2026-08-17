@@ -1,20 +1,232 @@
 package cli
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
 
+	"zsh-pro/core/activate"
 	"zsh-pro/core/ir"
 	"zsh-pro/core/model"
 	"zsh-pro/core/shell/zsh"
 	"zsh-pro/core/store"
 )
+
+type runtimeServiceSpy struct {
+	credentials map[string]model.ShellCredential
+	prepare     model.PreparePullResult
+	resolve     model.ResolveSharedResult
+}
+
+func (s *runtimeServiceSpy) remember(name string, credential model.ShellCredential) {
+	if s.credentials == nil {
+		s.credentials = make(map[string]model.ShellCredential)
+	}
+	s.credentials[name] = credential
+}
+
+func (s *runtimeServiceSpy) Attach(_ context.Context, request model.AttachRequest) (model.AttachResult, error) {
+	s.remember("Attach", request.Credential)
+	return model.AttachResult{Revision: 1, Attached: true}, nil
+}
+
+func (s *runtimeServiceSpy) Publish(_ context.Context, request model.PublishRequest) (model.PublishResult, error) {
+	s.remember("Publish", request.Credential)
+	return model.PublishResult{SharedRevision: 2}, nil
+}
+
+func (s *runtimeServiceSpy) PreparePull(_ context.Context, request model.PreparePullRequest) (model.PreparePullResult, error) {
+	s.remember("Prepare", request.Credential)
+	return s.prepare, nil
+}
+
+func (s *runtimeServiceSpy) Acknowledge(_ context.Context, request model.AcknowledgeRequest) (model.AcknowledgeResult, error) {
+	s.remember("Acknowledge", request.Credential)
+	return model.AcknowledgeResult{AppliedRevision: request.Revision, Acknowledged: true}, nil
+}
+
+func (s *runtimeServiceSpy) ResolveShared(_ context.Context, request model.ResolveSharedRequest) (model.ResolveSharedResult, error) {
+	s.remember("Resolve", request.Credential)
+	return s.resolve, nil
+}
+
+type runtimeDecoderStub struct {
+	snapshots map[string]model.LiveSnapshot
+}
+
+func (d runtimeDecoderStub) DecodeLiveSnapshot(frame []byte) (model.LiveSnapshot, error) {
+	snapshot, ok := d.snapshots[string(frame)]
+	if !ok {
+		return model.LiveSnapshot{}, errors.New("unexpected bounded frame")
+	}
+	return snapshot, nil
+}
+
+type runtimeTransitionSpy struct {
+	calls       int
+	revision    uint64
+	token       uint64
+	fingerprint string
+	source      []byte
+}
+
+func (e *runtimeTransitionSpy) EmitRuntimeTransition(_ []activate.Op, _ []activate.Op, _, _ string, revision, token uint64, fingerprint string) ([]byte, error) {
+	e.calls++
+	e.revision = revision
+	e.token = token
+	e.fingerprint = fingerprint
+	return append([]byte(nil), e.source...), nil
+}
+
+func runtimeTestCredential(t *testing.T) model.ShellCredential {
+	t.Helper()
+	capability, err := model.NewShellCapability(bytes.Repeat([]byte{0x5a}, model.ShellCapabilityBytes))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return model.ShellCredential{ShellID: "shell-08", Capability: capability}
+}
+
+func TestRuntimeWorktreeContractHasExactlyFiveCredentialForwardingOperations(t *testing.T) {
+	typeOfRuntime := reflect.TypeOf((*RuntimeWorktree)(nil)).Elem()
+	want := map[string]bool{"Attach": true, "Publish": true, "Prepare": true, "Acknowledge": true, "Resolve": true}
+	if typeOfRuntime.NumMethod() != len(want) {
+		t.Fatalf("RuntimeWorktree has %d methods, want exactly five", typeOfRuntime.NumMethod())
+	}
+	credentialType := reflect.TypeOf(model.ShellCredential{})
+	for index := 0; index < typeOfRuntime.NumMethod(); index++ {
+		method := typeOfRuntime.Method(index)
+		if !want[method.Name] {
+			t.Fatalf("unexpected runtime method %q", method.Name)
+		}
+		if method.Type.NumIn() < 2 || method.Type.In(1) != credentialType {
+			t.Fatalf("runtime method %s does not accept ShellCredential immediately after context", method.Name)
+		}
+		delete(want, method.Name)
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing runtime methods: %v", want)
+	}
+}
+
+func TestRuntimePatchMetadataIsFixedSizeAndValueFree(t *testing.T) {
+	metadataType := reflect.TypeOf(RuntimePatchMetadata{})
+	for index := 0; index < metadataType.NumField(); index++ {
+		field := metadataType.Field(index)
+		switch field.Type.Kind() {
+		case reflect.Uint64:
+		case reflect.Array:
+			if field.Type.Len() != sha256.Size || field.Type.Elem().Kind() != reflect.Uint8 {
+				t.Fatalf("metadata field %s is not a SHA-256-sized byte array: %s", field.Name, field.Type)
+			}
+		default:
+			t.Fatalf("metadata field %s can carry arbitrary values: %s", field.Name, field.Type)
+		}
+	}
+	canary := "private-runtime-source-canary"
+	payload := runtimePatchPayload{transition: true, source: []byte(canary)}
+	encodedMetadata, err := json.Marshal(payload.metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(encodedMetadata, []byte(canary)) {
+		t.Fatalf("private source escaped through public metadata: %s", encodedMetadata)
+	}
+	payloadType := reflect.TypeOf(payload)
+	for index := 0; index < payloadType.NumField(); index++ {
+		if payloadType.Field(index).PkgPath == "" {
+			t.Fatalf("private runtime payload field became exported: %s", payloadType.Field(index).Name)
+		}
+	}
+}
+
+func TestRuntimeWorktreeForwardsCredentialUnchangedAndKeepsSourcePrivate(t *testing.T) {
+	credential := runtimeTestCredential(t)
+	before := model.LiveSnapshot{States: []model.LiveIdentityState{{
+		Identity: model.Identity{Kind: model.LiveEnv, Name: "ZP08_RUNTIME"},
+		Value:    model.ScalarLiveValue("before"),
+	}}}
+	after := model.LiveSnapshot{States: []model.LiveIdentityState{{
+		Identity: model.Identity{Kind: model.LiveEnv, Name: "ZP08_RUNTIME"},
+		Value:    model.ScalarLiveValue("after"),
+	}}}
+	change := model.LiveChange{Kind: model.LiveUpdate, Identity: after.States[0].Identity, Value: model.CloneLiveValue(after.States[0].Value)}
+	service := &runtimeServiceSpy{
+		prepare: model.PreparePullResult{PendingRevision: 7, Token: model.ResolutionToken("pull:0123456789abcdef0123456789abcdef"), Changes: []model.LiveChange{change}},
+		resolve: model.ResolveSharedResult{PendingRevision: 8, Token: model.ResolutionToken("resolve:fedcba9876543210fedcba9876543210"), Changes: []model.LiveChange{change}},
+	}
+	emitter := &runtimeTransitionSpy{source: []byte("private-runtime-source-canary")}
+	runtime := &runtimeWorktreeAdapter{
+		service: service,
+		decoder: runtimeDecoderStub{snapshots: map[string]model.LiveSnapshot{
+			"before": before,
+			"after":  after,
+		}},
+		emitter: emitter,
+	}
+	ctx := context.Background()
+	attachResponse, err := runtime.Attach(ctx, credential, "attach-08", []byte("before"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !attachResponse.result.Attached || !reflect.DeepEqual(attachResponse.credential, credential) {
+		t.Fatalf("private attach response mismatch: %#v", attachResponse)
+	}
+	if _, err := runtime.Publish(ctx, credential, "publish-08", 1, before, []byte("after")); err != nil {
+		t.Fatal(err)
+	}
+	preparePayload, err := runtime.Prepare(ctx, credential, "prepare-08", 1, []byte("before"), "__zp08_apply", "__zp08_reverse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !preparePayload.transition || string(preparePayload.source) != string(emitter.source) || preparePayload.metadata.Revision != 7 || preparePayload.metadata.ChangeCount != 1 {
+		t.Fatalf("private prepare payload mismatch: %#v", preparePayload)
+	}
+	if _, err := runtime.Acknowledge(ctx, credential, "ack-08", 7, service.prepare.Token, []byte("after")); err != nil {
+		t.Fatal(err)
+	}
+	resolvePayload, err := runtime.Resolve(ctx, credential, "resolve-08", before.States[0].Identity, service.resolve.Token, []byte("before"), "__zp08_apply_2", "__zp08_reverse_2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resolvePayload.transition || resolvePayload.metadata.Revision != 8 {
+		t.Fatalf("private resolve payload mismatch: %#v", resolvePayload)
+	}
+	for _, name := range []string{"Attach", "Publish", "Prepare", "Acknowledge", "Resolve"} {
+		if got := service.credentials[name]; !reflect.DeepEqual(got, credential) {
+			t.Fatalf("%s credential changed across adapter boundary: got %#v want %#v", name, got, credential)
+		}
+	}
+	if emitter.token == 0 || !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(emitter.fingerprint) {
+		t.Fatalf("invalid value-free transition metadata: token=%d fingerprint=%q", emitter.token, emitter.fingerprint)
+	}
+}
+
+func TestRuntimePrepareAtHeadIsExactNoOp(t *testing.T) {
+	service := &runtimeServiceSpy{}
+	emitter := &runtimeTransitionSpy{source: []byte("must-not-emit")}
+	runtime := &runtimeWorktreeAdapter{
+		service: service,
+		decoder: runtimeDecoderStub{snapshots: map[string]model.LiveSnapshot{"empty": {}}},
+		emitter: emitter,
+	}
+	payload, err := runtime.Prepare(context.Background(), runtimeTestCredential(t), "at-head-08", 4, []byte("empty"), "__zp08_apply", "__zp08_reverse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.transition || len(payload.source) != 0 || payload.metadata != (RuntimePatchMetadata{}) || emitter.calls != 0 {
+		t.Fatalf("at-head prepare was not an exact no-op: payload=%#v calls=%d", payload, emitter.calls)
+	}
+}
 
 const transitionProfileA = `
 export ZP_A_ONLY=from-a
