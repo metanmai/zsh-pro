@@ -590,6 +590,7 @@ func (s *Store) claimIngestCommit(
 	if terminal, terminalOK := s.ingestCommitOutcomes[transactionID]; terminalOK &&
 		record.lifecycle == model.IngestLifecycleTerminal {
 		copy := terminal
+		copy.outcome = terminal.outcome.Clone()
 		return claimedIngestCommit{}, &copy, nil
 	}
 	if initialization.closing || initialization.terminal || record.lifecycle != model.IngestLifecycleActive ||
@@ -665,12 +666,12 @@ func (s *Store) terminalizeIngestCommit(
 	record.recoveryRequired = outcome.RecoveryRequired
 	initialization := s.installInitializations[record.initializationID]
 	outcome.InitializerRollbackSafe = initialization != nil && s.initializerRollbackSafeLocked(initialization)
-	terminal := ingestCommitTerminal{outcome: outcome, err: commitErr}
+	terminal := ingestCommitTerminal{outcome: outcome.Clone(), err: commitErr}
 	if s.ingestCommitOutcomes == nil {
 		s.ingestCommitOutcomes = make(map[model.IngestTransactionID]ingestCommitTerminal)
 	}
 	s.ingestCommitOutcomes[record.transactionID] = terminal
-	return outcome, commitErr
+	return outcome.Clone(), commitErr
 }
 
 func (s *Store) emitCommitEvent(event string) {
@@ -1046,6 +1047,15 @@ func recoveryRequiredError(cause error) error {
 	return ErrIngestRecoveryRequired
 }
 
+func assignPublishedRevision(outcome *model.IngestCommitOutcome, candidateOID string) error {
+	revision, err := model.NewPublishedRevision(candidateOID)
+	if err != nil {
+		return ErrIngestRecoveryRequired
+	}
+	outcome.PublishedRevision = revision
+	return nil
+}
+
 // CommitIngest publishes one Store-issued main transaction. The caller supplies
 // no branch, ref, path, Git verb, or cleanup locator: all authority is claimed
 // atomically from the Store registry before any candidate/backend/ref effect.
@@ -1170,6 +1180,14 @@ func (s *Store) CommitIngest(
 				commitSessionErr = session.Commit()
 			}
 			if commitSessionErr == nil {
+				if revisionErr := assignPublishedRevision(&outcome, candidateOID); revisionErr != nil {
+					outcome.Status = model.IngestCommitRecoveryRequired
+					outcome.RefState = model.IngestRefUnknown
+					outcome.FailureCode = model.IngestFailureRefCommit
+					outcome.RecoveryRequired = true
+					commitErr = revisionErr
+					return nil
+				}
 				outcome.Status = model.IngestCommitCommitted
 				outcome.RefState = model.IngestRefCandidate
 				outcome.FailureCode = model.IngestFailureNone
@@ -1183,6 +1201,14 @@ func (s *Store) CommitIngest(
 			observed, present, observeErr := s.git.observeDirectRef(ctx, claim.ref)
 			switch {
 			case observeErr == nil && present && observed == candidateOID:
+				if revisionErr := assignPublishedRevision(&outcome, candidateOID); revisionErr != nil {
+					outcome.Status = model.IngestCommitRecoveryRequired
+					outcome.RefState = model.IngestRefUnknown
+					outcome.FailureCode = model.IngestFailureRefCommit
+					outcome.RecoveryRequired = true
+					commitErr = revisionErr
+					return nil
+				}
 				outcome.Status = model.IngestCommitCommitted
 				outcome.RefState = model.IngestRefCandidate
 				outcome.FailureCode = model.IngestFailureNone

@@ -368,7 +368,6 @@ func (store *controllerStore) MaterializeCommittedWorktree(_ context.Context, br
 	store.materializeCalls++
 	store.materializeBranch = branch
 	store.materializeOID = oid
-	store.record("worktree:materialize")
 	return store.materializeError
 }
 

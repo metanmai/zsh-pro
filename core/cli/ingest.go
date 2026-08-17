@@ -379,6 +379,16 @@ func (c *CLI) runIngestWithSeams(
 		result.RecoveryRequired = true
 		return fail(ingestFailureFinalizeFailed)
 	}
+	materializer, ok := initialization.Transactions.(WorktreeMaterializer)
+	if !ok || isNilLike(materializer) {
+		result.RecoveryRequired = true
+		return fail(ingestFailureRecoveryRequired)
+	}
+	seams.event("worktree:materialize")
+	if err := materializer.MaterializeCommittedWorktree(ctx, "main", *commit.PublishedRevision); err != nil {
+		result.RecoveryRequired = true
+		return fail(ingestFailureRecoveryRequired)
+	}
 	result.OK = true
 	result.ExitCode = int(model.ExitClean)
 	return renderIngestResult(result, ingestFailureNone, arguments.asJSON, stdout, stderr)
@@ -424,6 +434,9 @@ func validIngestCommit(
 	outcome model.IngestCommitOutcome,
 ) bool {
 	if outcome.InitializationID != initializationID || outcome.TransactionID != transactionID {
+		return false
+	}
+	if outcome.ValidatePublishedRevision() != nil {
 		return false
 	}
 	switch outcome.Status {

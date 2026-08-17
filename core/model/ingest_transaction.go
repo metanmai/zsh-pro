@@ -55,6 +55,12 @@ func NewExpectedRevision(value string) (*string, error) {
 	return &copy, nil
 }
 
+// NewPublishedRevision validates and defensively copies one exact revision
+// whose publication was authoritatively established by the ingest transaction.
+func NewPublishedRevision(value string) (*string, error) {
+	return NewExpectedRevision(value)
+}
+
 // IngestBaseline is the exact main revision and Profile observed by Begin.
 type IngestBaseline struct {
 	InitializationID     InstallInitializationID
@@ -240,6 +246,44 @@ type IngestCommitOutcome struct {
 	RecoveryRequired        bool
 	InitializerRollbackSafe bool
 	Withheld                WithheldReport
+}
+
+// ValidatePublishedRevision binds exact revision evidence to authoritative
+// publication truth. A clean commit must always carry it; non-authoritative
+// outcomes must not. Recovery may carry it only when candidate publication is
+// still proven and the recovery flag is explicit.
+func (outcome IngestCommitOutcome) ValidatePublishedRevision() error {
+	if outcome.PublishedRevision == nil {
+		if outcome.Status == IngestCommitCommitted {
+			return errInvalidIngestEvidence
+		}
+		return nil
+	}
+	if !validGitObjectID(*outcome.PublishedRevision) || outcome.RefState != IngestRefCandidate ||
+		outcome.Objects != IngestObjectsPublished {
+		return errInvalidIngestEvidence
+	}
+	switch outcome.Status {
+	case IngestCommitCommitted:
+		return nil
+	case IngestCommitRecoveryRequired:
+		if outcome.RecoveryRequired {
+			return nil
+		}
+	}
+	return errInvalidIngestEvidence
+}
+
+// Clone returns value evidence with caller-mutable slices and optional
+// revision storage copied away from the Store's immutable terminal record.
+func (outcome IngestCommitOutcome) Clone() IngestCommitOutcome {
+	clone := outcome
+	if outcome.PublishedRevision != nil {
+		revision := *outcome.PublishedRevision
+		clone.PublishedRevision = &revision
+	}
+	clone.Withheld = append(WithheldReport(nil), outcome.Withheld...)
+	return clone
 }
 
 // IngestAbortOutcome is the immutable result of one cleanup attempt.
