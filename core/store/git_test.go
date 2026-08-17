@@ -442,3 +442,55 @@ func createGitCommitForTest(t *testing.T, runner gitRunner, message string) stri
 	}
 	return strings.TrimSpace(string(commitOutput))
 }
+
+func TestGitArgsWorktreeExactReadAllowlist(t *testing.T) {
+	oid := strings.Repeat("a", 40)
+	for _, args := range [][]string{
+		{"cat-file", "-t", oid},
+		{"cat-file", "blob", oid},
+		{"ls-tree", "-z", oid},
+	} {
+		if err := validateGitArgv(args); err != nil {
+			t.Fatalf("worktree read argv %q rejected: %v", args, err)
+		}
+	}
+	for _, args := range [][]string{
+		{"cat-file", "-p", oid},
+		{"cat-file", "blob", oid + ":profile.json"},
+		{"ls-tree", "-r", oid},
+		{"ls-tree", "-z", "--name-only", oid},
+	} {
+		if err := validateGitArgv(args); !errors.Is(err, ErrGitCommand) {
+			t.Fatalf("hostile or over-broad argv %q accepted: %v", args, err)
+		}
+	}
+}
+
+func TestReadWorktreeRevisionStrictTreeRecords(t *testing.T) {
+	a := strings.Repeat("a", 40)
+	b := strings.Repeat("b", 40)
+	valid := []byte("100644 blob " + a + "\tprofile.json\x00" +
+		"100644 blob " + b + "\tprofile.zsh\x00")
+	got, err := parseWorktreeTreeEntries(valid, 40)
+	if err != nil || got.profileJSON != a || got.profileZSH != b {
+		t.Fatalf("valid fixed tree = %#v, %v", got, err)
+	}
+
+	cases := map[string][]byte{
+		"missing":         []byte("100644 blob " + a + "\tprofile.json\x00"),
+		"duplicate":       append(append([]byte(nil), valid...), []byte("100644 blob "+a+"\tprofile.json\x00")...),
+		"unexpected path": append(append([]byte(nil), valid...), []byte("100644 blob "+a+"\tother\x00")...),
+		"wrong mode":      []byte("100755 blob " + a + "\tprofile.json\x00100644 blob " + b + "\tprofile.zsh\x00"),
+		"wrong type":      []byte("100644 tree " + a + "\tprofile.json\x00100644 blob " + b + "\tprofile.zsh\x00"),
+		"invalid oid":     []byte("100644 blob nope\tprofile.json\x00100644 blob " + b + "\tprofile.zsh\x00"),
+		"malformed":       []byte("100644 blob " + a + " profile.json\x00100644 blob " + b + "\tprofile.zsh\x00"),
+		"unterminated":    valid[:len(valid)-1],
+	}
+	for name, payload := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := parseWorktreeTreeEntries(payload, 40); !errors.Is(err, ErrGitCommand) {
+				t.Fatalf("malformed tree accepted: %v", err)
+			}
+		})
+	}
+}

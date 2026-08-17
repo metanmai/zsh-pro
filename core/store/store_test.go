@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"zsh-pro/core/model"
+	"zsh-pro/core/shell/zsh"
 )
 
 // stubRegen is a no-op shell.Regenerator: Task 1 exercises Init/Branches/Current/
@@ -427,6 +428,218 @@ func TestValidBranchName(t *testing.T) {
 		if err := validBranchName(name); err != nil {
 			t.Errorf("validBranchName(%q) = %v, want nil", name, err)
 		}
+	}
+}
+
+func newWorktreeStore(t *testing.T, keychain KeychainDriver) *Store {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed; skipping committed worktree Store test")
+	}
+	store, err := New(t.TempDir(), zsh.Provider{}, keychain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Init(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	return store
+}
+
+func exactWorktreeDocument() model.CommittedWorktree {
+	empty := ""
+	return model.NewCommittedWorktree(model.Profile{Entries: []model.Entry{
+		{Text: "export EXPORTED=source", Kind: model.KindAssignment, Category: model.CatEnvironment, Names: []string{"EXPORTED"}, Exported: true, Managed: true, StructuralFidelityKnown: true, ValueMode: model.ValueModeLiteral, RuntimeValue: &empty},
+		{Text: "PLAIN=source", Kind: model.KindAssignment, Category: model.CatEnvironment, Names: []string{"PLAIN"}, Managed: true, StructuralFidelityKnown: true, ValueMode: model.ValueModeLiteral, RuntimeValue: &empty},
+	}}, model.LiveProjection{
+		States: []model.LiveIdentityState{
+			{Identity: model.Identity{Kind: model.LiveEnv, Name: "EXPORTED"}, Value: model.ScalarLiveValue("it's\nexact")},
+			{Identity: model.Identity{Kind: model.LiveEnv, Name: "PLAIN"}, Value: model.ScalarLiveValue("")},
+			{Identity: model.Identity{Kind: model.LiveAlias, Name: "empty_alias"}, Value: model.ScalarLiveValue("")},
+			{Identity: model.Identity{Kind: model.LiveFunction, Name: "multi_fn"}, Value: model.ScalarLiveValue("print -r -- one\nprint -r -- two")},
+			{Identity: model.Identity{Kind: model.LivePath, Name: "PATH"}, Value: model.ListLiveValue([]string{"/base", "", "/dup", "/dup"})},
+			{Identity: model.Identity{Kind: model.LiveFPath, Name: "FPATH"}, Value: model.ListLiveValue([]string{})},
+			{Identity: model.Identity{Kind: model.LiveOption, Name: "AUTO_CD"}, Value: model.OptionLiveValue(false)},
+		},
+		Tombstones: []model.Identity{
+			{Kind: model.LiveEnv, Name: "REMOVED"},
+			{Kind: model.LiveAlias, Name: "old_alias"},
+			{Kind: model.LiveFunction, Name: "old_fn"},
+			{Kind: model.LiveOption, Name: "BEEP"},
+		},
+	})
+}
+
+func TestCommitWorktreeReadWorktreeRevisionExactRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	store := newWorktreeStore(t, nil)
+	base, err := store.git.revParse(ctx, "refs/heads/main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	document := exactWorktreeDocument()
+	result, err := store.CommitWorktree(ctx, "main", base, document, "exact worktree")
+	if err != nil || !result.Committed || result.Conflict || result.RecoveryRequired || !validGitObjectID(result.OID) {
+		t.Fatalf("CommitWorktree = %#v, %v", result, err)
+	}
+	parent, err := store.git.revParse(ctx, result.OID+"^")
+	if err != nil || parent != base {
+		t.Fatalf("published parent = %q, %v; want %q", parent, err, base)
+	}
+	got, err := store.ReadWorktreeRevision(ctx, result.OID)
+	if err != nil || !reflect.DeepEqual(got, document) {
+		t.Fatalf("ReadWorktreeRevision = %#v, %v; want %#v", got, err, document)
+	}
+	wantZSH, err := (zsh.Provider{}).RegenerateWorktree(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotZSH, err := store.git.show(ctx, result.OID+":profile.zsh")
+	if err != nil || !reflect.DeepEqual(gotZSH, wantZSH) {
+		t.Fatalf("profile.zsh = %q, %v; want %q", gotZSH, err, wantZSH)
+	}
+}
+
+func TestCreateFromUsesExactCurrentBaseAndNeverOverwrites(t *testing.T) {
+	ctx := context.Background()
+	store := newWorktreeStore(t, nil)
+	initial, err := store.git.revParse(ctx, "refs/heads/main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.CommitWorktree(ctx, "main", initial, exactWorktreeDocument(), "first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.CommitWorktree(ctx, "main", first.OID, model.NewCommittedWorktree(model.Profile{}, model.LiveProjection{}), "second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateFrom(ctx, "work", first.OID); err != nil {
+		t.Fatal(err)
+	}
+	tip, err := store.git.revParse(ctx, "refs/heads/work")
+	if err != nil || tip != first.OID || tip == second.OID {
+		t.Fatalf("work tip = %q, %v; want exact current base %q", tip, err, first.OID)
+	}
+	if err := store.CreateFrom(ctx, "work", second.OID); !errors.Is(err, ErrProfileExists) {
+		t.Fatalf("duplicate CreateFrom = %v, want ErrProfileExists", err)
+	}
+}
+
+func TestCommitWorktreeExpectedBaseRaceIsVisibleConflict(t *testing.T) {
+	ctx := context.Background()
+	store := newWorktreeStore(t, nil)
+	base, err := store.git.revParse(ctx, "refs/heads/main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	winner, err := store.CommitWorktree(ctx, "main", base, exactWorktreeDocument(), "winner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	loser, err := store.CommitWorktree(ctx, "main", base, model.NewCommittedWorktree(model.Profile{}, model.LiveProjection{}), "loser")
+	if !errors.Is(err, ErrSecretRefConflict) || loser.Committed || !loser.Conflict || loser.RecoveryRequired {
+		t.Fatalf("losing CommitWorktree = %#v, %v", loser, err)
+	}
+	tip, err := store.git.revParse(ctx, "refs/heads/main")
+	if err != nil || tip != winner.OID {
+		t.Fatalf("race changed winner: tip=%q err=%v winner=%q", tip, err, winner.OID)
+	}
+}
+
+func TestCommitWorktreeSecretCanariesAreRedactedOrRejected(t *testing.T) {
+	ctx := context.Background()
+	keychain := &transactionKeychain{values: map[string]string{}}
+	store := newWorktreeStore(t, keychain)
+	base, err := store.git.revParse(ctx, "refs/heads/main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const canary = "pinned-runtime-secret-canary"
+	document := model.NewCommittedWorktree(buildSecretProfile(t, "export API_KEY="+canary+"\n"), model.LiveProjection{})
+	result, err := store.CommitWorktree(ctx, "main", base, document, "redact secret")
+	if err != nil || !result.Committed {
+		t.Fatalf("secret CommitWorktree = %#v, %v", result, err)
+	}
+	for _, path := range []string{"profile.json", "profile.zsh"} {
+		blob, err := store.git.show(ctx, result.OID+":"+path)
+		if err != nil || strings.Contains(string(blob), canary) {
+			t.Fatalf("%s retained secret canary, err=%v", path, err)
+		}
+	}
+	if got, err := keychain.Retrieve("API_KEY"); err != nil || got != canary {
+		t.Fatalf("backend secret = %q, %v", got, err)
+	}
+
+	base = result.OID
+	pinned := model.NewCommittedWorktree(buildSecretProfile(t, "export TOKEN=second-secret-canary\n"), model.LiveProjection{
+		States: []model.LiveIdentityState{{Identity: model.Identity{Kind: model.LiveEnv, Name: "TOKEN"}, Value: model.ScalarLiveValue("second-secret-canary")}},
+	})
+	rejected, err := store.CommitWorktree(ctx, "main", base, pinned, "reject pinned")
+	if err == nil || rejected.Committed || len(keychain.stores) != 1 {
+		t.Fatalf("pinned projection = %#v, %v; stores=%v", rejected, err, keychain.stores)
+	}
+}
+
+func TestReadWorktreeRevisionRejectsBlobTreeTagAndSHAshapedInputs(t *testing.T) {
+	ctx := context.Background()
+	store := newWorktreeStore(t, nil)
+	blob, err := store.git.hashObject(ctx, []byte("not a commit"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	index := filepath.Join(t.TempDir(), "index")
+	if _, err := store.git.runCommit(ctx, index, commitTS, "read-tree", "--empty"); err != nil {
+		t.Fatal(err)
+	}
+	treeOut, err := store.git.runCommit(ctx, index, commitTS, "write-tree")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree := strings.TrimSpace(string(treeOut))
+	base, err := store.git.revParse(ctx, "refs/heads/main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tagInput := fmt.Sprintf("object %s\ntype commit\ntag exact\ntagger zsh-pro <zsh-pro@local> 1700000000 +0000\n\nexact\n", base)
+	cmd := exec.Command("git", "hash-object", "-t", "tag", "-w", "--stdin")
+	cmd.Env = store.git.ownedEnvironment()
+	cmd.Stdin = strings.NewReader(tagInput)
+	tagOut, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, revision := range map[string]string{
+		"blob":           blob,
+		"tree":           tree,
+		"tag":            strings.TrimSpace(string(tagOut)),
+		"missing sha1":   strings.Repeat("f", 40),
+		"missing sha256": strings.Repeat("e", 64),
+		"not shaped":     "main",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := store.ReadWorktreeRevision(ctx, revision); err == nil {
+				t.Fatal("non-commit exact revision was accepted")
+			}
+		})
+	}
+}
+
+func TestLegacyStoreAdaptersRemainIsolatedFromExactWorktreeAuthority(t *testing.T) {
+	ctx := context.Background()
+	store := newWorktreeStore(t, nil)
+	base, err := store.git.revParse(ctx, "refs/heads/main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ZSHPRO_PROFILE", "process-local-only")
+	if err := store.CreateFrom(ctx, "work", base); err != nil {
+		t.Fatal(err)
+	}
+	tip, err := store.git.revParse(ctx, "refs/heads/work")
+	if err != nil || tip != base || store.Current() != "process-local-only" {
+		t.Fatalf("legacy process input affected exact authority: tip=%q current=%q err=%v", tip, store.Current(), err)
 	}
 }
 

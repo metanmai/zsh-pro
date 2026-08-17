@@ -58,6 +58,15 @@ type gitRunner struct {
 	refEvent func(string)
 }
 
+type worktreeBlobOIDs struct {
+	profileJSON string
+	profileZSH  string
+}
+
+func parseWorktreeTreeEntries([]byte, int) (worktreeBlobOIDs, error) {
+	return worktreeBlobOIDs{}, ErrGitCommand
+}
+
 // validatedHeadRef is the only value accepted by direct-ref reads and staged
 // mutations. Its field is intentionally private: public ingest can obtain only
 // mainHeadRef, while the legacy adapter must validate a branch before calling

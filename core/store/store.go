@@ -110,10 +110,11 @@ type WithheldReport = model.WithheldReport
 // FINAL: Plan 03 fills in the keychain backend behind the existing field, it does
 // NOT add or remove a field here.
 type Store struct {
-	dir      string            // path to the bare git repo ($ZSHPRO_HOME / XDG default)
-	git      gitRunner         // git-binary subprocess driver (Plan 01)
-	regen    shell.Regenerator // injected per-entry zsh emitter (D-03; never the concrete zsh provider)
-	keychain KeychainDriver    // secret backend seam (concrete impls land in Plan 03)
+	dir           string                    // path to the bare git repo ($ZSHPRO_HOME / XDG default)
+	git           gitRunner                 // git-binary subprocess driver (Plan 01)
+	regen         shell.Regenerator         // injected per-entry zsh emitter (D-03; never the concrete zsh provider)
+	worktreeRegen shell.WorktreeRegenerator // injected complete-worktree emitter (Phase 7)
+	keychain      KeychainDriver            // secret backend seam (concrete impls land in Plan 03)
 
 	transactionMu          sync.Mutex
 	storeNonce             model.InstallInitializationID
@@ -165,10 +166,12 @@ func New(dir string, regen shell.Regenerator, kc KeychainDriver) (*Store, error)
 	if err != nil {
 		return nil, err
 	}
+	worktreeRegen, _ := regen.(shell.WorktreeRegenerator)
 	return &Store{
 		dir:                    dir,
 		git:                    g,
 		regen:                  regen,
+		worktreeRegen:          worktreeRegen,
 		keychain:               kc,
 		storeNonce:             nonce,
 		installInitializations: make(map[model.InstallInitializationID]*installInitializationRecord),
@@ -190,14 +193,29 @@ func NewRuntime(root, vaultParent *os.File, regen shell.Regenerator) (*Store, er
 	if err != nil {
 		return nil, err
 	}
+	worktreeRegen, _ := regen.(shell.WorktreeRegenerator)
 	return &Store{
 		git:                    g,
 		regen:                  regen,
+		worktreeRegen:          worktreeRegen,
 		keychain:               newRuntimeKeychain(vaultParent),
 		storeNonce:             nonce,
 		installInitializations: make(map[model.InstallInitializationID]*installInitializationRecord),
 		ingestTransactions:     make(map[model.IngestTransactionID]*ingestTransactionRecord),
 	}, nil
+}
+
+// ReadWorktreeRevision reconstructs one exact committed worktree revision.
+func (s *Store) ReadWorktreeRevision(context.Context, string) (model.CommittedWorktree, error) {
+	return model.CommittedWorktree{}, ErrGitCommand
+}
+
+// CreateFrom creates branch from one exact current base commit.
+func (s *Store) CreateFrom(context.Context, string, string) error { return ErrGitCommand }
+
+// CommitWorktree publishes a complete worktree document by expected-base CAS.
+func (s *Store) CommitWorktree(context.Context, string, string, model.CommittedWorktree, string) (model.WorktreeCommitResult, error) {
+	return model.WorktreeCommitResult{}, ErrGitCommand
 }
 
 // RuntimeSecretResolver exposes the already-bound runtime resolver to the
