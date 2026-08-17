@@ -633,3 +633,23 @@ func TestStateStoreNoopTransactionPreservesCanonicalBytes(t *testing.T) {
 		t.Fatal("no-op transaction rewrote canonical state")
 	}
 }
+
+func TestStateStoreDescriptorOwnership(t *testing.T) {
+	t.Run("path and descriptor share generation", TestStateStorePathAndAuthenticatedDescriptorUseSameCanonicalGeneration)
+	t.Run("constructor owns only duplicate", TestStateStoreFromAuthenticatedRootOwnsOnlyDuplicate)
+	t.Run("constructor failure preserves input", TestStateStoreConstructorFailureDoesNotLeakOrCloseInput)
+	t.Run("path replacement cannot redirect descriptor", TestStateStoreRemainsBoundToAuthenticatedDescriptorAfterPathReplacement)
+}
+
+func TestWorktreeSecurityFaultMatrix(t *testing.T) {
+	t.Run("owner mode and symlink boundary", TestSymlinkAndOwnershipBoundaries)
+	t.Run("canonical old or complete new", TestAtomicFaultsLeaveOldOrCompleteNewGeneration)
+	t.Run("short writes complete", TestAtomicFullWriteHandlesShortWrites)
+	t.Run("contention observes deadline", TestLockContentionHonorsCancellationAndDeadline)
+	t.Run("cross-process generation serialization", TestStateStoreTwoProcessCounterRaceSerializes)
+	t.Run("lost response receipt recovery", TestInterruptedResponseReopenSurfacesStoredReceipt)
+	t.Run("forensic failure cannot reverse truth", TestFaultForensicAppendDoesNotReverseCanonicalAndRecordsRecovery)
+	t.Run("readers ignore abandoned temporary state", TestAtomicReadersSeeOldOrCompleteNewAndIgnoreTemps)
+	t.Run("malformed canonical and state symlink", TestStateStoreRejectsMalformedCanonicalAndStateSymlink)
+	t.Run("callback failure writes nothing", TestStateStoreTransactionCallbackErrorDoesNotWrite)
+}

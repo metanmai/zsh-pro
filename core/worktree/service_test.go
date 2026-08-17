@@ -909,6 +909,48 @@ func TestWorktreeWorkflowRealGitBoundary(t *testing.T) {
 	})
 }
 
+func TestWorktreeEdgeContract(t *testing.T) {
+	probes := []struct {
+		requirement string
+		category    string
+		assert      func(*testing.T)
+	}{
+		{"WORK-01", "idempotency", TestMaterializeIsExactIdempotentAndMismatchRequiresRecovery},
+		{"WORK-01", "concurrency", TestAtomicFaultsLeaveOldOrCompleteNewGeneration},
+		{"WORK-02", "boundary", TestValidateSnapshotUsesModelBoundsAndRejectsMalformedValues},
+		{"WORK-02", "adjacency", TestDiffSnapshotFinalOccurrenceSemanticEqualityAndOrdering},
+		{"WORK-02", "empty", TestAttachRequiredBeforePublishAndExactReplayPublishesNoDelta},
+		{"WORK-02", "encoding", TestStateRoundTripIsStableBoundedAndDefensivelyCopied},
+		{"WORK-02", "ordering", TestFingerprintSnapshotCanonicalIdentityOrder},
+		{"WORK-02", "precision", TestStateRevisionTransitionReceiptAndGarbageCollectionValidation},
+		{"WORK-03", "adjacency", TestBranchUsesCurrentBaseAndCheckoutRejectsDirtyBeforeRepositoryAccess},
+		{"WORK-03", "empty", TestCheckoutAndResetHardPublishExactRevisionEvents},
+		{"WORK-03", "ordering", TestStatusAndDiffRemainValueFreeAndUseDurableAuthority},
+		{"WORK-03", "idempotency", TestStateStoreNoopTransactionPreservesCanonicalBytes},
+		{"WORK-03", "concurrency", TestWorktreeCommitConflictPreservesExactDirtyGeneration},
+		{"SYNC-01", "boundary", TestAutoApplyDefaultPreservesExplicitFalseOverrideAndDurableIdentity},
+		{"SYNC-01", "adjacency", TestPreparePullAndAcknowledgeRequireExactFreshTarget},
+		{"SYNC-01", "empty", TestPreparePullUsesCurrentCaptureForPublishedThenResetTarget},
+		{"SYNC-01", "ordering", TestResolveSharedCanonicalizesFreshIdentityRecordOrderOnly},
+		{"SYNC-01", "precision", TestResolveSharedRetainsConflictUntilExactAcknowledgement},
+		{"SYNC-01", "idempotency", TestCrashReplayPublishResolveAndAcknowledgeIsIdempotent},
+		{"SYNC-01", "concurrency", TestAcknowledgePreparedRevisionPreservesConcurrentLaterHead},
+		{"SYNC-02", "unclassified-reviewed", TestPrivateCredentialSpoofCrossShellReplayAndReceiptGuessAreValueFree},
+	}
+	if len(probes) != 21 {
+		t.Fatalf("edge probe count = %d, want exactly 21", len(probes))
+	}
+	seen := make(map[string]bool, len(probes))
+	for _, probe := range probes {
+		name := probe.requirement + "/" + probe.category
+		if seen[name] {
+			t.Fatalf("duplicate edge probe %q", name)
+		}
+		seen[name] = true
+		t.Run(name, probe.assert)
+	}
+}
+
 type serviceHarness struct {
 	root    string
 	store   *StateStore

@@ -256,6 +256,17 @@ func TestWorktreeCommandsNeverUseLegacyStoreAuthority(t *testing.T) {
 	}
 }
 
+func TestWorktreePublicSurfaceAggregate(t *testing.T) {
+	t.Run("scoped status", TestWorktreeStatusRendersSharedAndSourcedShellTruth)
+	t.Run("malformed shell ID", TestSourcedShellIDRejectsMalformedBeforeWorktreeAccess)
+	t.Run("value-free categorized diff", TestWorktreeDiffUsesStableValueFreeCategoryOrder)
+	t.Run("exact positive arities", TestCommitBranchCheckoutResetAndAutoApplyDelegateExactRequests)
+	t.Run("truthful commit outcomes", TestCommitOutcomesRemainTruthfulAndValueSafe)
+	t.Run("forbidden and malformed zero calls", TestUnsupportedGitAndMalformedWorktreeCommandsNeverReachDependencies)
+	t.Run("value-safe failures", TestWorktreeErrorsAreValueSafe)
+	t.Run("legacy authority prohibited", TestWorktreeCommandsNeverUseLegacyStoreAuthority)
+}
+
 func equalStrings(left, right []string) bool {
 	if len(left) != len(right) {
 		return false
