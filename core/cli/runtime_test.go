@@ -132,7 +132,61 @@ func TestRuntimeWorktreeFrameRejectsMalformedBeforeService(t *testing.T) {
 			if strings.Contains(stderr, capability) || authority.runtime.(*runtimeTestWorktree).serviceCalls() != 0 {
 				t.Fatalf("malformed frame disclosed a capability or called Service: %q", stderr)
 			}
+			if authority.bindCount != 0 || authority.closeCount != 0 {
+				t.Fatalf("malformed frame reached binding: bind %d close %d", authority.bindCount, authority.closeCount)
+			}
 		})
+	}
+}
+
+func TestRuntimeWorktreeFrameExactByteAndRecordBounds(t *testing.T) {
+	root := runtimeWorktreeTestRoot(t)
+	credential := []runtimeTestRecord{
+		{tag: 1, payload: []byte("attach")},
+		{tag: 2, payload: []byte("commit")},
+		{tag: 3, payload: []byte(strings.Repeat("b", 64))},
+		{tag: 4, payload: []byte(strings.Repeat("a", 64))},
+		{tag: 5, payload: []byte("attach-bounds")},
+	}
+
+	payloadSize := MaxRuntimeWorktreeFrameBytes
+	var exact []byte
+	for range 8 {
+		records := append(append([]runtimeTestRecord(nil), credential...), runtimeTestRecord{tag: 32, payload: bytes.Repeat([]byte{'x'}, payloadSize)})
+		exact = runtimeTestFrame(t, records...)
+		payloadSize += MaxRuntimeWorktreeFrameBytes - len(exact)
+		if len(exact) == MaxRuntimeWorktreeFrameBytes {
+			break
+		}
+	}
+	if len(exact) != MaxRuntimeWorktreeFrameBytes {
+		t.Fatalf("could not construct exact byte-bound frame: %d", len(exact))
+	}
+	authority := &runtimeTestAuthority{runtime: &runtimeTestWorktree{}}
+	program := NewWithWorktree(nil, nil, NotReadyEmitter(), authority, nil)
+	if code, stdout, stderr := runRuntimeWorktreeWithStdin(t, program, root, exact, "attach"); code != 0 || stdout != "" || stderr != "" {
+		t.Fatalf("exact byte-bound frame = (%d, %q, %q)", code, stdout, stderr)
+	}
+
+	records := append([]runtimeTestRecord(nil), credential...)
+	records = append(records, runtimeTestRecord{tag: 32, payload: []byte("x")})
+	for len(records)+1 < MaxRuntimeWorktreeFrameRecords {
+		records = append(records, runtimeTestRecord{tag: 32})
+	}
+	if got := len(records) + 1; got != MaxRuntimeWorktreeFrameRecords {
+		t.Fatalf("record construction = %d", got)
+	}
+	authority = &runtimeTestAuthority{runtime: &runtimeTestWorktree{}}
+	program = NewWithWorktree(nil, nil, NotReadyEmitter(), authority, nil)
+	if code, stdout, stderr := runRuntimeWorktreeWithStdin(t, program, root, runtimeTestFrame(t, records...), "attach"); code != 0 || stdout != "" || stderr != "" {
+		t.Fatalf("exact record-bound frame = (%d, %q, %q)", code, stdout, stderr)
+	}
+
+	overRecords := bytes.Replace(runtimeTestFrame(t, records...), []byte("ZPWT 1 10016\n"), []byte("ZPWT 1 10017\n"), 1)
+	authority = &runtimeTestAuthority{runtime: &runtimeTestWorktree{}}
+	program = NewWithWorktree(nil, nil, NotReadyEmitter(), authority, nil)
+	if code, stdout, stderr := runRuntimeWorktreeWithStdin(t, program, root, overRecords, "attach"); code == 0 || stdout != "" || stderr == "" || authority.bindCount != 0 {
+		t.Fatalf("over-record frame = (%d, %q, %q), bind %d", code, stdout, stderr, authority.bindCount)
 	}
 }
 
@@ -151,13 +205,17 @@ func TestRuntimeWorktreeReplyOutputIsWholeAndNoOpIsEmpty(t *testing.T) {
 		{tag: 11, payload: []byte("__zp09_reverse")},
 		{tag: 32, payload: []byte("ZP_LIVE_SNAPSHOT\x001\x00E\x00")},
 	}
-	want := "typeset -g ZP_WORKTREE_REPLY_PROTOCOL=1\n" +
-		"typeset -g ZP_WORKTREE_REPLY_REVISION=2\n" +
-		"typeset -g ZP_WORKTREE_REPLY_TOKEN=3\n" +
+	want := "typeset -g ZP_WORKTREE_REPLY_PROTOCOL='1'\n" +
+		"typeset -g ZP_WORKTREE_REPLY_REVISION='2'\n" +
+		"typeset -g ZP_WORKTREE_REPLY_TOKEN='3'\n" +
 		"typeset -g ZP_WORKTREE_REPLY_FINGERPRINT='" + strings.Repeat("0", 64) + "'\n" +
-		"typeset -g ZP_WORKTREE_REPLY_COMPLETE=1\n"
+		"typeset -g ZP_WORKTREE_REPLY_COMPLETE='1'\n"
 
-	runtime := &runtimeTestWorktree{preparePayload: runtimePatchPayload{transition: true, source: []byte(want)}}
+	runtime := &runtimeTestWorktree{preparePayload: runtimePatchPayload{
+		transition: true,
+		source:     []byte(want),
+		metadata:   RuntimePatchMetadata{Revision: 2, Token: 3},
+	}}
 	authority := &runtimeTestAuthority{runtime: runtime}
 	program := NewWithWorktree(nil, nil, NotReadyEmitter(), authority, nil)
 	code, stdout, stderr := runRuntimeWorktreeWithStdin(t, program, root, runtimeTestFrame(t, credentialRecords...), "prepare")
@@ -190,6 +248,116 @@ func TestRuntimeWorktreeBudgetSeamIsSealedAndCumulative(t *testing.T) {
 		}
 	}
 }
+
+func TestWorktreeFakeClockCumulative249And251Milliseconds(t *testing.T) {
+	clock := &runtimeFakeClock{now: time.Unix(1, 0)}
+	budget := newTransitionBudget(clock)
+	for _, increment := range []time.Duration{25, 40, 54, 70, 60} {
+		clock.now = clock.now.Add(increment * time.Millisecond)
+		if err := budget.check(); err != nil {
+			t.Fatalf("cumulative 249ms rejected after %s: %v", clock.now.Sub(budget.started), err)
+		}
+	}
+	clock.now = clock.now.Add(2 * time.Millisecond)
+	if err := budget.check(); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("cumulative 251ms = %v, want deadline", err)
+	}
+
+	lateClock := &runtimeFakeClock{now: time.Unix(2, 0)}
+	late := newTransitionBudget(lateClock)
+	lateClock.now = lateClock.now.Add(249 * time.Millisecond)
+	if err := late.check(); err != nil {
+		t.Fatalf("late output at 249ms rejected: %v", err)
+	}
+	lateClock.now = lateClock.now.Add(2 * time.Millisecond)
+	if err := late.check(); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("late output at 251ms = %v, want deadline", err)
+	}
+}
+
+func TestWorktreeDeadlineRealStageMarginsFailOpen(t *testing.T) {
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("zsh not installed")
+	}
+	originalStage := runtimeWorktreeStage
+	t.Cleanup(func() { runtimeWorktreeStage = originalStage })
+	root := runtimeWorktreeTestRoot(t)
+
+	prepareSource := "typeset -g ZP_WORKTREE_REPLY_PROTOCOL='1'\n" +
+		"typeset -g ZP_WORKTREE_REPLY_REVISION='2'\n" +
+		"typeset -g ZP_WORKTREE_REPLY_TOKEN='3'\n" +
+		"typeset -g ZP_WORKTREE_REPLY_FINGERPRINT='" + strings.Repeat("0", 64) + "'\n" +
+		"typeset -g ZP_WORKTREE_REPLY_COMPLETE='1'\n"
+	prepareRecords := []runtimeTestRecord{
+		{tag: 1, payload: []byte("prepare")},
+		{tag: 3, payload: []byte(strings.Repeat("b", 64))},
+		{tag: 4, payload: []byte(strings.Repeat("a", 64))},
+		{tag: 5, payload: []byte("prepare-deadline")},
+		{tag: 6, payload: []byte("1")},
+		{tag: 10, payload: []byte("__zp09_apply")},
+		{tag: 11, payload: []byte("__zp09_reverse")},
+		{tag: 32, payload: []byte("ZP_LIVE_SNAPSHOT\x001\x00E\x00")},
+	}
+	allocate := runtimeTestFrame(t,
+		runtimeTestRecord{tag: 1, payload: []byte("attach")},
+		runtimeTestRecord{tag: 2, payload: []byte("allocate")},
+	)
+
+	for _, stage := range []string{"authentication", "input", "binding", "service", "validation", "output"} {
+		stage := stage
+		for _, stall := range []time.Duration{25 * time.Millisecond, 500 * time.Millisecond} {
+			stall := stall
+			t.Run(stage+"/"+stall.String(), func(t *testing.T) {
+				runtimeWorktreeStage = func(ctx context.Context, current string) error {
+					if current != stage {
+						return nil
+					}
+					timer := time.NewTimer(stall)
+					defer timer.Stop()
+					select {
+					case <-timer.C:
+						return nil
+					case <-ctx.Done():
+						return ctx.Err()
+					}
+				}
+				runtime := &runtimeTestWorktree{}
+				operation := "attach"
+				frame := allocate
+				if stage == "validation" {
+					operation = "prepare"
+					frame = runtimeTestFrame(t, prepareRecords...)
+					runtime.preparePayload = runtimePatchPayload{
+						transition: true,
+						source:     []byte(prepareSource),
+						metadata:   RuntimePatchMetadata{Revision: 2, Token: 3},
+					}
+				}
+				authority := &runtimeTestAuthority{runtime: runtime}
+				program := NewWithWorktree(nil, nil, NotReadyEmitter(), authority, nil)
+				started := time.Now()
+				code, stdout, stderr := runRuntimeWorktreeWithStdin(t, program, root, frame, operation)
+				elapsed := time.Since(started)
+				if stall == 25*time.Millisecond {
+					if code != 0 || stderr != "" || elapsed >= DefaultWorktreeTransitionBudget {
+						t.Fatalf("25ms stage = (%d, %q, %q) after %s", code, stdout, stderr, elapsed)
+					}
+					return
+				}
+				if code != 124 || stdout != "" || !strings.Contains(stderr, "timed out") {
+					t.Fatalf("500ms stage = (%d, %q, %q) after %s", code, stdout, stderr, elapsed)
+				}
+				if elapsed >= 450*time.Millisecond {
+					t.Fatalf("500ms stage did not actively cancel: %s", elapsed)
+				}
+			})
+		}
+	}
+}
+
+type runtimeFakeClock struct{ now time.Time }
+
+func (clock *runtimeFakeClock) Now() time.Time { return clock.now }
 
 type runtimeTestRecord struct {
 	tag     int
