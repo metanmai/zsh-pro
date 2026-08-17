@@ -23,9 +23,10 @@ import (
 )
 
 type runtimeServiceSpy struct {
-	credentials map[string]model.ShellCredential
-	prepare     model.PreparePullResult
-	resolve     model.ResolveSharedResult
+	credentials      map[string]model.ShellCredential
+	prepare          model.PreparePullResult
+	resolve          model.ResolveSharedResult
+	acknowledgeToken model.ResolutionToken
 }
 
 func (s *runtimeServiceSpy) remember(name string, credential model.ShellCredential) {
@@ -52,6 +53,7 @@ func (s *runtimeServiceSpy) PreparePull(_ context.Context, request model.Prepare
 
 func (s *runtimeServiceSpy) Acknowledge(_ context.Context, request model.AcknowledgeRequest) (model.AcknowledgeResult, error) {
 	s.remember("Acknowledge", request.Credential)
+	s.acknowledgeToken = request.Token
 	return model.AcknowledgeResult{AppliedRevision: request.Revision, Acknowledged: true}, nil
 }
 
@@ -78,6 +80,19 @@ type runtimeTransitionSpy struct {
 	token       uint64
 	fingerprint string
 	source      []byte
+}
+
+type runtimeTokenSourceStub struct {
+	token         model.ResolutionToken
+	wantRevision  uint64
+	wantTransport uint64
+}
+
+func (source runtimeTokenSourceStub) resolveRuntimeToken(_ context.Context, _ string, revision, transport uint64) (model.ResolutionToken, error) {
+	if revision != source.wantRevision || transport != source.wantTransport {
+		return "", errors.New("unexpected runtime token handle")
+	}
+	return source.token, nil
 }
 
 func (e *runtimeTransitionSpy) EmitRuntimeTransition(_ []activate.Op, _ []activate.Op, _, _ string, revision, token uint64, fingerprint string) ([]byte, error) {
@@ -173,6 +188,11 @@ func TestRuntimeWorktreeForwardsCredentialUnchangedAndKeepsSourcePrivate(t *test
 			"after":  after,
 		}},
 		emitter: emitter,
+		tokenSource: runtimeTokenSourceStub{
+			token:         service.prepare.Token,
+			wantRevision:  7,
+			wantTransport: runtimeTransitionToken(service.prepare.Token),
+		},
 	}
 	ctx := context.Background()
 	attachResponse, err := runtime.Attach(ctx, credential, "attach-08", []byte("before"))
@@ -192,8 +212,11 @@ func TestRuntimeWorktreeForwardsCredentialUnchangedAndKeepsSourcePrivate(t *test
 	if !preparePayload.transition || string(preparePayload.source) != string(emitter.source) || preparePayload.metadata.Revision != 7 || preparePayload.metadata.ChangeCount != 1 {
 		t.Fatalf("private prepare payload mismatch: %#v", preparePayload)
 	}
-	if _, err := runtime.Acknowledge(ctx, credential, "ack-08", 7, service.prepare.Token, []byte("after")); err != nil {
+	if _, err := runtime.Acknowledge(ctx, credential, "ack-08", 7, runtimeTransitionToken(service.prepare.Token), []byte("after")); err != nil {
 		t.Fatal(err)
+	}
+	if service.acknowledgeToken != service.prepare.Token {
+		t.Fatalf("durable transport handle did not recover the opaque Service token: got %q want %q", service.acknowledgeToken, service.prepare.Token)
 	}
 	resolvePayload, err := runtime.Resolve(ctx, credential, "resolve-08", before.States[0].Identity, service.resolve.Token, []byte("before"), "__zp08_apply_2", "__zp08_reverse_2")
 	if err != nil {
@@ -300,6 +323,21 @@ func TestRuntimeWorktreeFactoryBindsCanonicalDescriptorAndOwnsOnlyDuplicate(t *t
 	if !response.result.Attached {
 		t.Fatalf("canonical descriptor state was not observed: %#v", response.result)
 	}
+	afterFrame := []byte("ZP_LIVE_SNAPSHOT\x001\x00R\x00env\x00ZP08_BOUND\x00exported\x001\x00after\x00E\x00")
+	published, err := bound.Publish(context.Background(), response.credential, "descriptor-publish-08", response.result.Revision, model.LiveSnapshot{}, afterFrame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if published.SharedRevision != 2 {
+		t.Fatalf("descriptor-bound publish revision = %d, want 2", published.SharedRevision)
+	}
+	pending, err := bound.Prepare(context.Background(), response.credential, "descriptor-prepare-08", response.result.Revision, afterFrame, "__zp08_apply", "__zp08_reverse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pending.transition || pending.metadata.Revision != 2 || pending.metadata.Token == 0 {
+		t.Fatalf("descriptor-bound prepare did not create a durable token handle: %#v", pending)
+	}
 	if err := closer.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -308,6 +346,20 @@ func TestRuntimeWorktreeFactoryBindsCanonicalDescriptorAndOwnsOnlyDuplicate(t *t
 	}
 	if err := closer.Close(); err != nil {
 		t.Fatalf("bound closer is not exactly-once/idempotent: %v", err)
+	}
+	rebound, reboundCloser, err := factory.Bind(runtimeRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acknowledged, err := rebound.Acknowledge(context.Background(), response.credential, "descriptor-ack-08", pending.metadata.Revision, pending.metadata.Token, afterFrame)
+	if err != nil {
+		t.Fatalf("newly bound operation could not reverse the durable uint64 token handle: %v", err)
+	}
+	if !acknowledged.Acknowledged || acknowledged.AppliedRevision != pending.metadata.Revision {
+		t.Fatalf("rebound acknowledgement mismatch: %#v", acknowledged)
+	}
+	if err := reboundCloser.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
 

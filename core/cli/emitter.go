@@ -49,7 +49,7 @@ type RuntimeWorktree interface {
 	Attach(context.Context, model.ShellCredential, string, []byte) (runtimeAttachCredential, error)
 	Publish(context.Context, model.ShellCredential, string, uint64, model.LiveSnapshot, []byte) (model.PublishResult, error)
 	Prepare(context.Context, model.ShellCredential, string, uint64, []byte, string, string) (runtimePatchPayload, error)
-	Acknowledge(context.Context, model.ShellCredential, string, uint64, model.ResolutionToken, []byte) (model.AcknowledgeResult, error)
+	Acknowledge(context.Context, model.ShellCredential, string, uint64, uint64, []byte) (model.AcknowledgeResult, error)
 	Resolve(context.Context, model.ShellCredential, string, model.Identity, model.ResolutionToken, []byte, string, string) (runtimePatchPayload, error)
 }
 
@@ -62,9 +62,18 @@ type runtimeWorktreeService interface {
 }
 
 type runtimeWorktreeAdapter struct {
-	service runtimeWorktreeService
-	decoder shell.LiveSnapshotDecoder
-	emitter RuntimeTransitionEmitter
+	service     runtimeWorktreeService
+	decoder     shell.LiveSnapshotDecoder
+	emitter     RuntimeTransitionEmitter
+	tokenSource runtimeResolutionTokenSource
+}
+
+type runtimeResolutionTokenSource interface {
+	resolveRuntimeToken(context.Context, string, uint64, uint64) (model.ResolutionToken, error)
+}
+
+type runtimeStateResolutionTokenSource struct {
+	state *worktree.StateStore
 }
 
 type runtimeStateStoreConstructor func(*os.File) (*worktree.StateStore, error)
@@ -114,7 +123,12 @@ func (factory RuntimeWorktreeFactory) Bind(root *RuntimeRoot) (RuntimeWorktree, 
 		_ = state.Close()
 		return nil, nil, err
 	}
-	return &runtimeWorktreeAdapter{service: service, decoder: factory.decoder, emitter: factory.emitter}, state, nil
+	return &runtimeWorktreeAdapter{
+		service:     service,
+		decoder:     factory.decoder,
+		emitter:     factory.emitter,
+		tokenSource: runtimeStateResolutionTokenSource{state: state},
+	}, state, nil
 }
 
 func (runtime *runtimeWorktreeAdapter) Attach(ctx context.Context, credential model.ShellCredential, operationID string, frame []byte) (runtimeAttachCredential, error) {
@@ -181,11 +195,18 @@ func (runtime *runtimeWorktreeAdapter) Prepare(ctx context.Context, credential m
 	return runtime.buildTransition(current, result.PendingRevision, result.Token, result.Changes, applyName, reverseName)
 }
 
-func (runtime *runtimeWorktreeAdapter) Acknowledge(ctx context.Context, credential model.ShellCredential, operationID string, revision uint64, token model.ResolutionToken, frame []byte) (model.AcknowledgeResult, error) {
+func (runtime *runtimeWorktreeAdapter) Acknowledge(ctx context.Context, credential model.ShellCredential, operationID string, revision, transportToken uint64, frame []byte) (model.AcknowledgeResult, error) {
 	if err := runtime.ready(); err != nil {
 		return model.AcknowledgeResult{}, err
 	}
+	if isNilLike(runtime.tokenSource) {
+		return model.AcknowledgeResult{}, errors.New("runtime acknowledgement token source is unavailable")
+	}
 	snapshot, err := runtime.decoder.DecodeLiveSnapshot(frame)
+	if err != nil {
+		return model.AcknowledgeResult{}, err
+	}
+	serviceToken, err := runtime.tokenSource.resolveRuntimeToken(ctx, credential.ShellID, revision, transportToken)
 	if err != nil {
 		return model.AcknowledgeResult{}, err
 	}
@@ -193,7 +214,7 @@ func (runtime *runtimeWorktreeAdapter) Acknowledge(ctx context.Context, credenti
 		OperationID: operationID,
 		Credential:  credential,
 		Revision:    revision,
-		Token:       token,
+		Token:       serviceToken,
 		Snapshot:    snapshot,
 	})
 }
@@ -288,6 +309,25 @@ func (runtime *runtimeWorktreeAdapter) buildTransition(current model.LiveSnapsho
 func runtimeTransitionToken(token model.ResolutionToken) uint64 {
 	digest := sha256.Sum256([]byte(token))
 	return binary.BigEndian.Uint64(digest[:8])
+}
+
+// resolveRuntimeToken reverses the fixed-size parent-shell handle through the
+// descriptor-bound durable pending transition. It does not inspect a receipt,
+// compare a capability, or authorize the shell; Service.Acknowledge still
+// performs credential and opaque-token verification under its transaction.
+func (source runtimeStateResolutionTokenSource) resolveRuntimeToken(ctx context.Context, shellID string, revision, transportToken uint64) (model.ResolutionToken, error) {
+	if source.state == nil || shellID == "" || revision == 0 || transportToken == 0 {
+		return "", errors.New("runtime acknowledgement token is invalid")
+	}
+	state, err := source.state.Read(ctx)
+	if err != nil {
+		return "", errors.New("runtime acknowledgement token is unavailable")
+	}
+	shellState, ok := state.Shells[shellID]
+	if !ok || shellState.Pending.Kind == worktree.PendingNone || shellState.Pending.Revision != revision || shellState.Pending.Token.Validate() != nil || runtimeTransitionToken(shellState.Pending.Token) != transportToken {
+		return "", errors.New("runtime acknowledgement token is invalid")
+	}
+	return shellState.Pending.Token, nil
 }
 
 // Emitter is the CLI-to-runtime-code seam. It returns a single emitted shell
