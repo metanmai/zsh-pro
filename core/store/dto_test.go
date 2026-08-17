@@ -544,21 +544,21 @@ func TestListValueDTOOmissionAndMalformedDynamicFailClosed(t *testing.T) {
 
 func TestCommittedWorktreeDTORoundTripExactProjection(t *testing.T) {
 	empty := ""
-	document := model.NewCommittedWorktree(model.Profile{Entries: []model.Entry{
+	document := model.CommittedWorktree{Schema: model.WorktreeSchemaV1, Source: model.Profile{Entries: []model.Entry{
 		{
 			Text: "export EDITOR='nvim'", StartLine: 3, Category: model.CatEnvironment,
 			Kind: model.KindAssignment, CmdName: "export", Names: []string{"EDITOR"},
 			Value: "'nvim'", Exported: true, Managed: true, StructuralFidelityKnown: true,
-			ValueMode: model.ValueModeLiteral, RuntimeValue: stringPointerStore("nvim"),
+			DeclarationFlags: []string{}, ValueMode: model.ValueModeLiteral, RuntimeValue: stringPointerStore("nvim"),
 		},
 		{
 			Text: "export TOKEN='<zsh-pro secret file:TOKEN>'", StartLine: 4,
 			Category: model.CatSecrets, Kind: model.KindAssignment, CmdName: "export",
 			Names: []string{"TOKEN"}, Value: "'<zsh-pro secret file:TOKEN>'", Exported: true,
-			Managed: true, StructuralFidelityKnown: true, ValueMode: model.ValueModeUnsupported,
+			Managed: true, StructuralFidelityKnown: true, DeclarationFlags: []string{}, ValueMode: model.ValueModeUnsupported,
 			Secret: &model.SecretRef{Kind: model.SecretRefFile, Key: "TOKEN"},
 		},
-	}}, model.LiveProjection{
+	}}, Projection: model.LiveProjection{Schema: model.WorktreeSchemaV1,
 		States: []model.LiveIdentityState{
 			{Identity: model.Identity{Kind: model.LiveEnv, Name: "EDITOR"}, Value: model.ScalarLiveValue("nvim\nnightly")},
 			{Identity: model.Identity{Kind: model.LiveAlias, Name: "empty"}, Value: model.LiveValue{Present: true, Scalar: &empty}},
@@ -571,7 +571,7 @@ func TestCommittedWorktreeDTORoundTripExactProjection(t *testing.T) {
 			{Kind: model.LiveEnv, Name: "REMOVED"},
 			{Kind: model.LiveAlias, Name: "old_alias"},
 		},
-	})
+	}}
 
 	payload, err := MarshalCommittedWorktree(document)
 	if err != nil {
@@ -698,7 +698,7 @@ func TestCommittedWorktreeDTORejectsPinnedSecretCanaries(t *testing.T) {
 		Text: "export TOKEN='<zsh-pro secret file:TOKEN>'", Category: model.CatSecrets,
 		Kind: model.KindAssignment, CmdName: "export", Names: []string{"TOKEN"},
 		Value: "'<zsh-pro secret file:TOKEN>'", Exported: true, Managed: true,
-		StructuralFidelityKnown: true, ValueMode: model.ValueModeUnsupported,
+		StructuralFidelityKnown: true, DeclarationFlags: []string{}, ValueMode: model.ValueModeUnsupported,
 		Secret: &model.SecretRef{Kind: model.SecretRefFile, Key: "TOKEN"},
 	}
 	valid := model.NewCommittedWorktree(model.Profile{Entries: []model.Entry{secret}}, model.LiveProjection{})

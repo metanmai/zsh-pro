@@ -7,13 +7,14 @@
 package store
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 
 	"zsh-pro/core/model"
 )
-
-var errCommittedWorktreeDTONotImplemented = errors.New("committed worktree DTO is not implemented")
 
 // Serialization design (resolves critical decision #1, option b): a store-local
 // DTO maps model.Profile<->JSON rather than tagging the Phase 2 model.Entry
@@ -86,7 +87,46 @@ type listSegmentDTO struct {
 
 // profileDTO is the top-level wire shape of a serialized profile.
 type profileDTO struct {
-	Entries []entryDTO `json:"entries"`
+	Entries  []entryDTO            `json:"entries"`
+	Worktree *committedWorktreeDTO `json:"worktree,omitempty"`
+}
+
+type committedWorktreeDTO struct {
+	Schema     string             `json:"schema"`
+	Projection *liveProjectionDTO `json:"projection"`
+}
+
+type liveProjectionDTO struct {
+	Schema     string                 `json:"schema"`
+	States     *liveIdentityStatesDTO `json:"states"`
+	Tombstones *liveIdentitiesDTO     `json:"tombstones"`
+}
+
+// The wrappers distinguish an absent mandatory field from present-null,
+// present-empty, and populated ordered slices.
+type liveIdentityStatesDTO struct {
+	Values []liveIdentityStateDTO `json:"values"`
+}
+
+type liveIdentitiesDTO struct {
+	Values []liveIdentityDTO `json:"values"`
+}
+
+type liveIdentityStateDTO struct {
+	Identity liveIdentityDTO `json:"identity"`
+	Value    liveValueDTO    `json:"value"`
+}
+
+type liveIdentityDTO struct {
+	Kind model.LiveKind `json:"kind"`
+	Name string         `json:"name"`
+}
+
+type liveValueDTO struct {
+	Present *bool           `json:"present"`
+	Scalar  *string         `json:"scalar,omitempty"`
+	List    *stringSliceDTO `json:"list,omitempty"`
+	Option  *bool           `json:"option,omitempty"`
 }
 
 // MarshalProfile serializes a model.Profile to deterministic profile.json bytes
@@ -127,16 +167,256 @@ func UnmarshalProfile(b []byte) (model.Profile, error) {
 	return p, nil
 }
 
-// MarshalCommittedWorktree is introduced by Phase 07. Its RED implementation
-// exists only so the behavior-first contract can compile through normal hooks.
-func MarshalCommittedWorktree(model.CommittedWorktree) ([]byte, error) {
-	return nil, errCommittedWorktreeDTONotImplemented
+// MarshalCommittedWorktree stores the complete historical source under the
+// legacy-compatible entries field and adds one versioned final projection.
+// Shared branch/revision/shell coordination deliberately stays out of Git.
+func MarshalCommittedWorktree(document model.CommittedWorktree) ([]byte, error) {
+	if err := validateCommittedWorktreeDTO(document); err != nil {
+		return nil, err
+	}
+	dto := profileDTO{
+		Entries: make([]entryDTO, len(document.Source.Entries)),
+		Worktree: &committedWorktreeDTO{
+			Schema: document.Schema,
+			Projection: &liveProjectionDTO{
+				Schema:     document.Projection.Schema,
+				States:     &liveIdentityStatesDTO{Values: toLiveIdentityStatesDTO(document.Projection.States)},
+				Tombstones: &liveIdentitiesDTO{Values: toLiveIdentitiesDTO(document.Projection.Tombstones)},
+			},
+		},
+	}
+	if document.Source.Entries == nil {
+		dto.Entries = nil
+	}
+	for i := range document.Source.Entries {
+		dto.Entries[i] = toEntryDTO(document.Source.Entries[i])
+	}
+	payload, err := json.MarshalIndent(dto, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(payload, '\n'), nil
 }
 
-// UnmarshalCommittedWorktree is introduced by Phase 07. Its RED implementation
-// exists only so the behavior-first contract can compile through normal hooks.
-func UnmarshalCommittedWorktree([]byte) (model.CommittedWorktree, error) {
-	return model.CommittedWorktree{}, errCommittedWorktreeDTONotImplemented
+// UnmarshalCommittedWorktree accepts only the complete current committed
+// schema. Source-only legacy objects remain available through UnmarshalProfile;
+// this method never invents final projection state for them.
+func UnmarshalCommittedWorktree(payload []byte) (model.CommittedWorktree, error) {
+	var dto profileDTO
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&dto); err != nil {
+		return model.CommittedWorktree{}, err
+	}
+	if err := requireJSONEOF(decoder); err != nil {
+		return model.CommittedWorktree{}, err
+	}
+	if dto.Worktree == nil || dto.Worktree.Projection == nil || dto.Worktree.Projection.States == nil || dto.Worktree.Projection.Tombstones == nil {
+		return model.CommittedWorktree{}, errors.New("committed worktree projection is incomplete")
+	}
+	document := model.CommittedWorktree{
+		Schema: dto.Worktree.Schema,
+		Source: profileFromDTOExact(dto.Entries),
+		Projection: model.LiveProjection{
+			Schema:     dto.Worktree.Projection.Schema,
+			States:     fromLiveIdentityStatesDTO(dto.Worktree.Projection.States.Values),
+			Tombstones: fromLiveIdentitiesDTO(dto.Worktree.Projection.Tombstones.Values),
+		},
+	}
+	if err := validateCommittedWorktreeDTO(document); err != nil {
+		return model.CommittedWorktree{}, err
+	}
+	return document, nil
+}
+
+func requireJSONEOF(decoder *json.Decoder) error {
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return errors.New("committed worktree has trailing JSON data")
+		}
+		return err
+	}
+	return nil
+}
+
+func profileFromDTOExact(entries []entryDTO) model.Profile {
+	profile := model.Profile{Entries: make([]model.Entry, len(entries))}
+	if entries == nil {
+		profile.Entries = nil
+	}
+	for index := range entries {
+		profile.Entries[index] = fromEntryDTO(entries[index])
+	}
+	return profile
+}
+
+func toLiveIdentityStatesDTO(states []model.LiveIdentityState) []liveIdentityStateDTO {
+	if states == nil {
+		return nil
+	}
+	out := make([]liveIdentityStateDTO, len(states))
+	for index, state := range states {
+		out[index] = liveIdentityStateDTO{
+			Identity: toLiveIdentityDTO(state.Identity),
+			Value:    toLiveValueDTO(state.Value),
+		}
+	}
+	return out
+}
+
+func fromLiveIdentityStatesDTO(states []liveIdentityStateDTO) []model.LiveIdentityState {
+	if states == nil {
+		return nil
+	}
+	out := make([]model.LiveIdentityState, len(states))
+	for index, state := range states {
+		out[index] = model.LiveIdentityState{
+			Identity: fromLiveIdentityDTO(state.Identity),
+			Value:    fromLiveValueDTO(state.Value),
+		}
+	}
+	return out
+}
+
+func toLiveIdentitiesDTO(identities []model.Identity) []liveIdentityDTO {
+	if identities == nil {
+		return nil
+	}
+	out := make([]liveIdentityDTO, len(identities))
+	for index, identity := range identities {
+		out[index] = toLiveIdentityDTO(identity)
+	}
+	return out
+}
+
+func fromLiveIdentitiesDTO(identities []liveIdentityDTO) []model.Identity {
+	if identities == nil {
+		return nil
+	}
+	out := make([]model.Identity, len(identities))
+	for index, identity := range identities {
+		out[index] = fromLiveIdentityDTO(identity)
+	}
+	return out
+}
+
+func toLiveIdentityDTO(identity model.Identity) liveIdentityDTO {
+	return liveIdentityDTO{Kind: identity.Kind, Name: identity.Name}
+}
+
+func fromLiveIdentityDTO(identity liveIdentityDTO) model.Identity {
+	return model.Identity{Kind: identity.Kind, Name: identity.Name}
+}
+
+func toLiveValueDTO(value model.LiveValue) liveValueDTO {
+	present := value.Present
+	out := liveValueDTO{
+		Present: &present,
+		Scalar:  cloneStringPointer(value.Scalar),
+		Option:  cloneBoolPointer(value.Option),
+	}
+	if value.List != nil {
+		out.List = &stringSliceDTO{Values: cloneStrings(value.List)}
+	}
+	return out
+}
+
+func fromLiveValueDTO(value liveValueDTO) model.LiveValue {
+	out := model.LiveValue{
+		Scalar: cloneStringPointer(value.Scalar),
+		Option: cloneBoolPointer(value.Option),
+	}
+	if value.Present != nil {
+		out.Present = *value.Present
+	}
+	if value.List != nil {
+		out.List = cloneStrings(value.List.Values)
+	}
+	return out
+}
+
+func cloneBoolPointer(in *bool) *bool {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	return &out
+}
+
+func validateCommittedWorktreeDTO(document model.CommittedWorktree) error {
+	if document.Schema != model.WorktreeSchemaV1 || document.Projection.Schema != model.WorktreeSchemaV1 {
+		return errors.New("committed worktree schema is unsupported")
+	}
+	if len(document.Projection.States)+len(document.Projection.Tombstones) > model.MaxSnapshotRecords {
+		return errors.New("committed worktree projection exceeds the record limit")
+	}
+	if err := validateCommittedSourceSecrets(document.Source); err != nil {
+		return err
+	}
+	pinned := committedSourceSecretIdentities(document.Source)
+	normalized, err := model.NormalizeLiveStates(document.Projection.States)
+	if err != nil {
+		return fmt.Errorf("validate committed projection: %w", err)
+	}
+	if len(normalized) != len(document.Projection.States) {
+		return errors.New("committed worktree projection has duplicate states")
+	}
+	seen := make(map[model.Identity]bool, len(normalized)+len(document.Projection.Tombstones))
+	for _, state := range normalized {
+		if !state.Value.Present {
+			return errors.New("committed worktree projection contains an absent state")
+		}
+		if pinned[state.Identity] {
+			return errors.New("committed worktree projection contains a pinned identity")
+		}
+		seen[state.Identity] = true
+	}
+	for _, identity := range document.Projection.Tombstones {
+		if err := model.ValidateIdentity(identity); err != nil {
+			return fmt.Errorf("validate committed tombstone: %w", err)
+		}
+		if seen[identity] {
+			return errors.New("committed worktree projection has a duplicate or overlapping tombstone")
+		}
+		if pinned[identity] {
+			return errors.New("committed worktree projection contains a pinned identity")
+		}
+		seen[identity] = true
+	}
+	return nil
+}
+
+func validateCommittedSourceSecrets(profile model.Profile) error {
+	for _, entry := range profile.Entries {
+		if entry.Secret == nil {
+			continue
+		}
+		ref := entry.Secret
+		if entry.Category != model.CatSecrets || entry.Kind != model.KindAssignment || len(entry.Names) != 1 || entry.Names[0] == "" || ref.Key == "" || ref.Key != entry.Names[0] ||
+			(ref.Kind != model.SecretRefKeychain && ref.Kind != model.SecretRefFile) || entry.Append || entry.Array || entry.Indexed || entry.Dynamic || entry.RuntimeValue != nil || entry.ValueMode != model.ValueModeUnsupported {
+			return errors.New("committed worktree source contains an invalid SecretRef")
+		}
+		placeholder := secretRefValue(*ref)
+		wantText := ref.Key + "=" + placeholder
+		if entry.Exported {
+			wantText = "export " + wantText
+		}
+		if entry.Text != wantText || entry.Value != placeholder {
+			return errors.New("committed worktree source SecretRef is not redacted")
+		}
+	}
+	return nil
+}
+
+func committedSourceSecretIdentities(profile model.Profile) map[model.Identity]bool {
+	pinned := make(map[model.Identity]bool)
+	for _, entry := range profile.Entries {
+		if entry.Secret != nil && len(entry.Names) == 1 {
+			pinned[model.Identity{Kind: model.LiveEnv, Name: entry.Names[0]}] = true
+		}
+	}
+	return pinned
 }
 
 // toEntryDTO maps a domain Entry to its wire DTO, defensively copying Names so the
