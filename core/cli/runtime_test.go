@@ -4,9 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -14,7 +18,298 @@ import (
 	"zsh-pro/core/model"
 	"zsh-pro/core/shell/zsh"
 	"zsh-pro/core/store"
+	"zsh-pro/core/worktree"
 )
+
+func TestRuntimeWorktreeContractConstantsAndPrivateSurface(t *testing.T) {
+	source, err := os.ReadFile("runtime.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	for _, want := range []string{
+		"const DefaultWorktreeTransitionBudget = 250 * time.Millisecond",
+		"WorktreeRuntimeFrameVersion = 1",
+		"MaxRuntimeWorktreeFrameBytes = model.MaxSnapshotBytes + 4096",
+		"MaxRuntimeWorktreeFrameRecords = model.MaxSnapshotRecords + 16",
+		`case "attach", "publish", "prepare", "acknowledge", "resolve":`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("runtime worktree contract is missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		"ZSHPRO_SHELL_CAPABILITY", "os.Getenv(\"ZSHPRO_SHELL", "runtime worktree <pull", "runtime worktree <query",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Errorf("runtime worktree source contains forbidden alternate surface %q", forbidden)
+		}
+	}
+}
+
+func TestRuntimeWorktreeAttachAllocationAndCredentialForwarding(t *testing.T) {
+	root := runtimeWorktreeTestRoot(t)
+	authority := &runtimeTestAuthority{runtime: &runtimeTestWorktree{}}
+	program := NewWithWorktree(nil, nil, NotReadyEmitter(), authority, nil)
+
+	allocation := runtimeTestFrame(t,
+		runtimeTestRecord{tag: 1, payload: []byte("attach")},
+		runtimeTestRecord{tag: 2, payload: []byte("allocate")},
+	)
+	code, stdout, stderr := runRuntimeWorktreeWithStdin(t, program, root, allocation, "attach")
+	if code != 0 || stderr != "" {
+		t.Fatalf("attach allocation = (%d, %q, %q)", code, stdout, stderr)
+	}
+	lines := strings.Split(strings.TrimSuffix(stdout, "\n"), "\n")
+	if len(lines) != 3 || lines[0] != "ZPWC 1" {
+		t.Fatalf("credential response = %q", stdout)
+	}
+	hex64 := regexp.MustCompile(`^[0-9a-f]{64}$`)
+	if !hex64.MatchString(lines[1]) || !hex64.MatchString(lines[2]) || lines[1] == lines[2] {
+		t.Fatalf("allocated credential is not two independent 256-bit values: %q", stdout)
+	}
+	if authority.bindCount != 1 || authority.closeCount != 1 {
+		t.Fatalf("allocation binding lifecycle = bind %d close %d", authority.bindCount, authority.closeCount)
+	}
+	if authority.runtime.(*runtimeTestWorktree).attachCalls != 0 {
+		t.Fatal("credential allocation mutated Service through Attach")
+	}
+
+	snapshot := []byte("ZP_LIVE_SNAPSHOT\x001\x00E\x00")
+	commit := runtimeTestFrame(t,
+		runtimeTestRecord{tag: 1, payload: []byte("attach")},
+		runtimeTestRecord{tag: 2, payload: []byte("commit")},
+		runtimeTestRecord{tag: 3, payload: []byte(lines[1])},
+		runtimeTestRecord{tag: 4, payload: []byte(lines[2])},
+		runtimeTestRecord{tag: 5, payload: []byte("attach-commit-1")},
+		runtimeTestRecord{tag: 32, payload: snapshot},
+	)
+	code, stdout, stderr = runRuntimeWorktreeWithStdin(t, program, root, commit, "attach")
+	if code != 0 || stdout != "" || stderr != "" {
+		t.Fatalf("attach commit = (%d, %q, %q)", code, stdout, stderr)
+	}
+	called := authority.runtime.(*runtimeTestWorktree)
+	if called.attachCalls != 1 || called.operationID != "attach-commit-1" || !bytes.Equal(called.frame, snapshot) {
+		t.Fatalf("Attach forwarding = calls %d operation %q frame %q", called.attachCalls, called.operationID, called.frame)
+	}
+	capability, ok := called.credential.Capability.Bytes()
+	if !ok || fmt.Sprintf("%x", capability) != lines[2] || called.credential.ShellID != lines[1] {
+		t.Fatal("runtime changed the stdin credential before forwarding")
+	}
+}
+
+func TestRuntimeWorktreeFrameRejectsMalformedBeforeService(t *testing.T) {
+	root := runtimeWorktreeTestRoot(t)
+	capability := strings.Repeat("a", 64)
+	valid := []runtimeTestRecord{
+		{tag: 1, payload: []byte("attach")},
+		{tag: 2, payload: []byte("commit")},
+		{tag: 3, payload: []byte(strings.Repeat("b", 64))},
+		{tag: 4, payload: []byte(capability)},
+		{tag: 5, payload: []byte("attach-commit")},
+		{tag: 32, payload: []byte("ZP_LIVE_SNAPSHOT\x001\x00E\x00")},
+	}
+	tests := map[string][]byte{
+		"operation mismatch": runtimeTestFrame(t, append([]runtimeTestRecord(nil), valid...)...),
+		"duplicate control":  runtimeTestFrame(t, append(append([]runtimeTestRecord(nil), valid[:3]...), append([]runtimeTestRecord{{tag: 3, payload: []byte(strings.Repeat("c", 64))}}, valid[3:]...)...)...),
+		"unknown control":    runtimeTestFrame(t, append(append([]runtimeTestRecord(nil), valid[:5]...), runtimeTestRecord{tag: 30, payload: []byte("unknown")}, valid[5])...),
+		"trailing bytes":     append(runtimeTestFrame(t, valid...), []byte("trailing")...),
+		"partial payload":    runtimeTestFrame(t, valid...)[:len(runtimeTestFrame(t, valid...))-3],
+		"oversized":          bytes.Repeat([]byte{'x'}, 2_101_249),
+	}
+	for name, frame := range tests {
+		t.Run(name, func(t *testing.T) {
+			authority := &runtimeTestAuthority{runtime: &runtimeTestWorktree{}}
+			program := NewWithWorktree(nil, nil, NotReadyEmitter(), authority, nil)
+			op := "attach"
+			if name == "operation mismatch" {
+				op = "publish"
+			}
+			code, stdout, stderr := runRuntimeWorktreeWithStdin(t, program, root, frame, op)
+			if code == 0 || stdout != "" || stderr == "" {
+				t.Fatalf("malformed frame = (%d, %q, %q)", code, stdout, stderr)
+			}
+			if strings.Contains(stderr, capability) || authority.runtime.(*runtimeTestWorktree).serviceCalls() != 0 {
+				t.Fatalf("malformed frame disclosed a capability or called Service: %q", stderr)
+			}
+		})
+	}
+}
+
+func TestRuntimeWorktreeReplyOutputIsWholeAndNoOpIsEmpty(t *testing.T) {
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("zsh not installed")
+	}
+	root := runtimeWorktreeTestRoot(t)
+	credentialRecords := []runtimeTestRecord{
+		{tag: 1, payload: []byte("prepare")},
+		{tag: 3, payload: []byte(strings.Repeat("b", 64))},
+		{tag: 4, payload: []byte(strings.Repeat("a", 64))},
+		{tag: 5, payload: []byte("prepare-1")},
+		{tag: 6, payload: []byte("1")},
+		{tag: 10, payload: []byte("__zp09_apply")},
+		{tag: 11, payload: []byte("__zp09_reverse")},
+		{tag: 32, payload: []byte("ZP_LIVE_SNAPSHOT\x001\x00E\x00")},
+	}
+	want := "typeset -g ZP_WORKTREE_REPLY_PROTOCOL=1\n" +
+		"typeset -g ZP_WORKTREE_REPLY_REVISION=2\n" +
+		"typeset -g ZP_WORKTREE_REPLY_TOKEN=3\n" +
+		"typeset -g ZP_WORKTREE_REPLY_FINGERPRINT='" + strings.Repeat("0", 64) + "'\n" +
+		"typeset -g ZP_WORKTREE_REPLY_COMPLETE=1\n"
+
+	runtime := &runtimeTestWorktree{preparePayload: runtimePatchPayload{transition: true, source: []byte(want)}}
+	authority := &runtimeTestAuthority{runtime: runtime}
+	program := NewWithWorktree(nil, nil, NotReadyEmitter(), authority, nil)
+	code, stdout, stderr := runRuntimeWorktreeWithStdin(t, program, root, runtimeTestFrame(t, credentialRecords...), "prepare")
+	if code != 0 || stdout != want || stderr != "" || runtime.prepareCalls != 1 {
+		t.Fatalf("prepare transition = (%d, %q, %q), calls %d", code, stdout, stderr, runtime.prepareCalls)
+	}
+
+	runtime.preparePayload = runtimePatchPayload{}
+	credentialRecords[3].payload = []byte("prepare-2")
+	code, stdout, stderr = runRuntimeWorktreeWithStdin(t, program, root, runtimeTestFrame(t, credentialRecords...), "prepare")
+	if code != 0 || stdout != "" || stderr != "" {
+		t.Fatalf("prepare at-head no-op = (%d, %q, %q)", code, stdout, stderr)
+	}
+}
+
+func TestRuntimeWorktreeBudgetSeamIsSealedAndCumulative(t *testing.T) {
+	source, err := os.ReadFile("runtime.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	for _, want := range []string{"type transitionClock interface", "type transitionBudget struct", "newTransitionBudget", "budget.check"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("runtime budget seam is missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{"ZSHPRO_WORKTREE_TIMEOUT", "WORKTREE_TRANSITION_BUDGET", "DefaultWorktreeTransitionBudget = 0"} {
+		if strings.Contains(text, forbidden) {
+			t.Errorf("runtime exposes forbidden budget override %q", forbidden)
+		}
+	}
+}
+
+type runtimeTestRecord struct {
+	tag     int
+	payload []byte
+}
+
+func runtimeTestFrame(t *testing.T, records ...runtimeTestRecord) []byte {
+	t.Helper()
+	var frame bytes.Buffer
+	_, _ = fmt.Fprintf(&frame, "ZPWT 1 %d\n", len(records)+1)
+	for _, record := range records {
+		_, _ = fmt.Fprintf(&frame, "%d %d\n", record.tag, len(record.payload))
+		_, _ = frame.Write(record.payload)
+		_ = frame.WriteByte('\n')
+	}
+	_, _ = fmt.Fprint(&frame, "255 0\n\n")
+	return frame.Bytes()
+}
+
+func runtimeWorktreeTestRoot(t *testing.T) string {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), "runtime")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+func runRuntimeWorktreeWithStdin(t *testing.T, program *CLI, root string, frame []byte, operation string) (int, string, string) {
+	t.Helper()
+	t.Setenv("ZSHPRO_HOME", root)
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	written := make(chan error, 1)
+	go func() {
+		_, writeErr := writer.Write(frame)
+		if closeErr := writer.Close(); writeErr == nil {
+			writeErr = closeErr
+		}
+		written <- writeErr
+	}()
+	previous := os.Stdin
+	os.Stdin = reader
+	t.Cleanup(func() {
+		os.Stdin = previous
+		_ = reader.Close()
+	})
+	var stdout, stderr bytes.Buffer
+	code := program.Run([]string{"runtime", "worktree", operation, "5"}, &stdout, &stderr)
+	os.Stdin = previous
+	if err := reader.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
+		t.Fatal(err)
+	}
+	<-written // A pre-read rejection may close the pipe before all bytes arrive.
+	return code, stdout.String(), stderr.String()
+}
+
+type runtimeTestAuthority struct {
+	runtime    RuntimeWorktree
+	bindCount  int
+	closeCount int
+}
+
+func (*runtimeTestAuthority) WorkflowStatus(context.Context, string) (worktree.WorkflowStatus, error) {
+	return worktree.WorkflowStatus{}, nil
+}
+func (*runtimeTestAuthority) Diff(context.Context) (model.CategorizedDiff, error) {
+	return model.CategorizedDiff{}, nil
+}
+func (*runtimeTestAuthority) Branches(context.Context) ([]string, error) { return nil, nil }
+func (authority *runtimeTestAuthority) BindRuntimeWorktree(*RuntimeRoot) (RuntimeWorktree, io.Closer, error) {
+	authority.bindCount++
+	return authority.runtime, runtimeTestCloser{close: func() { authority.closeCount++ }}, nil
+}
+
+type runtimeTestCloser struct{ close func() }
+
+func (closer runtimeTestCloser) Close() error {
+	closer.close()
+	return nil
+}
+
+type runtimeTestWorktree struct {
+	attachCalls    int
+	publishCalls   int
+	prepareCalls   int
+	ackCalls       int
+	resolveCalls   int
+	credential     model.ShellCredential
+	operationID    string
+	frame          []byte
+	preparePayload runtimePatchPayload
+}
+
+func (runtime *runtimeTestWorktree) Attach(_ context.Context, credential model.ShellCredential, operationID string, frame []byte) (runtimeAttachCredential, error) {
+	runtime.attachCalls++
+	runtime.credential, runtime.operationID, runtime.frame = credential, operationID, append([]byte(nil), frame...)
+	return runtimeAttachCredential{}, nil
+}
+func (runtime *runtimeTestWorktree) Publish(context.Context, model.ShellCredential, string, uint64, model.LiveSnapshot, []byte) (model.PublishResult, error) {
+	runtime.publishCalls++
+	return model.PublishResult{}, nil
+}
+func (runtime *runtimeTestWorktree) Prepare(context.Context, model.ShellCredential, string, uint64, []byte, string, string) (runtimePatchPayload, error) {
+	runtime.prepareCalls++
+	return runtime.preparePayload, nil
+}
+func (runtime *runtimeTestWorktree) Acknowledge(context.Context, model.ShellCredential, string, uint64, uint64, []byte) (model.AcknowledgeResult, error) {
+	runtime.ackCalls++
+	return model.AcknowledgeResult{}, nil
+}
+func (runtime *runtimeTestWorktree) Resolve(context.Context, model.ShellCredential, string, model.Identity, model.ResolutionToken, []byte, string, string) (runtimePatchPayload, error) {
+	runtime.resolveCalls++
+	return runtimePatchPayload{}, nil
+}
+func (runtime *runtimeTestWorktree) serviceCalls() int {
+	return runtime.attachCalls + runtime.publishCalls + runtime.prepareCalls + runtime.ackCalls + runtime.resolveCalls
+}
 
 func TestRuntimeCaptureUsesPrivatePipeAndRejectsUnsafeRoots(t *testing.T) {
 	emitter := NewRuntimeEmitterWithRuntimeStore(nil, zsh.Provider{}, nil, func(*RuntimeRoot) (Store, SecretResolver, error) {
