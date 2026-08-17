@@ -78,6 +78,33 @@ func (Provider) Classify(b model.Block) (model.Category, model.Confidence) {
 	}
 }
 
-// IsLiveSecretIdentity is introduced as a compile-safe RED scaffold. The
-// classifier-backed behavior is implemented after the contract tests fail.
-func (Provider) IsLiveSecretIdentity(model.Identity) bool { return false }
+// IsLiveSecretIdentity applies the existing classifier policy to one validated
+// live identity. In particular, environment names are represented as the same
+// assignment shape used during ingest, so secretRe remains the sole secret-name
+// authority. Other live kinds retain their ordinary classifier categories.
+func (p Provider) IsLiveSecretIdentity(identity model.Identity) bool {
+	if model.ValidateIdentity(identity) != nil {
+		return false
+	}
+
+	block := model.Block{Names: []string{identity.Name}}
+	switch identity.Kind {
+	case model.LiveEnv, model.LivePath, model.LiveFPath:
+		block.Kind = model.KindAssignment
+		block.Text = identity.Name + "="
+	case model.LiveAlias:
+		block.Kind = model.KindAlias
+		block.CmdName = "alias"
+	case model.LiveFunction:
+		block.Kind = model.KindFuncDecl
+	case model.LiveOption:
+		block.Kind = model.KindCommand
+		block.CmdName = "setopt"
+		block.Text = "setopt " + identity.Name
+	default:
+		return false
+	}
+
+	category, _ := p.Classify(block)
+	return category == model.CatSecrets
+}
