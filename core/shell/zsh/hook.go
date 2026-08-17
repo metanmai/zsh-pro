@@ -1056,6 +1056,19 @@ zsh-pro() {
 			status_output=''
 			return "$rc"
 			;;
+		config:4)
+			_zp_worktree_ensure_attached || :
+			if _zp_worktree_valid_hex64 "$ZP_WORKTREE_SHELL_ID"; then
+				ZSHPRO_SHELL_ID="$ZP_WORKTREE_SHELL_ID" command zsh-pro "$@"
+			else
+				command zsh-pro "$@"
+			fi
+			rc=$?
+			if (( rc == 0 )) && [[ "$2" == set && "$3" == auto-apply && ( "$4" == true || "$4" == false ) ]]; then
+				typeset -g ZP_WORKTREE_AUTO_APPLY_DEFAULT="$4"
+			fi
+			return "$rc"
+			;;
 		checkout:*|reset:*)
 			case "$verb:$#" in
 				checkout:2) [[ -n "$2" ]] || { _zp_worktree_error "usage: zsh-pro checkout [-b] <branch>"; return 2; } ;;

@@ -412,6 +412,61 @@ func TestWorktreeHookBoundariesAndAutoApplyContract(t *testing.T) {
 	}
 }
 
+func TestWorktreeConfigDispatcherRefreshesOnlyExactSuccessfulAutoApplyDefault(t *testing.T) {
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("zsh not installed")
+	}
+	dir := t.TempDir()
+	loader := filepath.Join(dir, "loader.zsh")
+	if err := os.WriteFile(loader, []byte((Provider{}).HookScript()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	shim := filepath.Join(dir, "zsh-pro")
+	shimSource := `#!/bin/sh
+printf '%s\n' "$*" >> "$ZP_CONFIG_CALLS"
+if test "${ZP_CONFIG_FAIL-}" = 1; then exit 9; fi
+exit 0
+`
+	if err := os.WriteFile(shim, []byte(shimSource), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	calls := filepath.Join(dir, "calls")
+	const body = `
+source "$1" || exit 10
+typeset -g ZP_WORKTREE_ATTACHED=1
+typeset -g ZP_WORKTREE_SHELL_ID=${(l:64::a:)}
+typeset -g ZP_WORKTREE_CAPABILITY=${(l:64::b:)}
+typeset -g ZP_WORKTREE_AUTO_APPLY_DEFAULT=true
+zsh-pro config set auto-apply false >/dev/null || exit 11
+[[ $ZP_WORKTREE_AUTO_APPLY_DEFAULT == false ]] || exit 12
+ZSHPRO_AUTO_APPLY=true
+_zp_worktree_effective_auto_apply || exit 13
+[[ $ZP_WORKTREE_AUTO_APPLY_EFFECTIVE == true ]] || exit 14
+unset ZSHPRO_AUTO_APPLY
+ZP_CONFIG_FAIL=1 zsh-pro config set auto-apply true >/dev/null 2>&1 && exit 15
+[[ $ZP_WORKTREE_AUTO_APPLY_DEFAULT == false ]] || exit 16
+zsh-pro config set auto-apply TRUE >/dev/null || exit 17
+zsh-pro config set auto-apply false extra >/dev/null || exit 18
+zsh-pro config set auto-apply >/dev/null || exit 19
+[[ $ZP_WORKTREE_AUTO_APPLY_DEFAULT == false ]] || exit 20
+zsh-pro config set auto-apply true >/dev/null || exit 21
+[[ $ZP_WORKTREE_AUTO_APPLY_DEFAULT == true ]] || exit 22
+`
+	cmd := exec.Command("zsh", "-f", "-c", body, "zsh-pro-config-refresh", loader)
+	cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "ZP_CONFIG_CALLS="+calls)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("config dispatcher: %v\n%s", err, output)
+	}
+	payload, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "config set auto-apply false\nconfig set auto-apply true\nconfig set auto-apply TRUE\nconfig set auto-apply false extra\nconfig set auto-apply\nconfig set auto-apply true\n"
+	if string(payload) != want {
+		t.Fatalf("delegated config calls = %q", payload)
+	}
+}
+
 func TestWorktreeDeactivateConsumesReverseAndDisablesReattach(t *testing.T) {
 	if _, err := exec.LookPath("zsh"); err != nil {
 		t.Skip("zsh not installed")
