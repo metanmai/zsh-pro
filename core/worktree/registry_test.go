@@ -15,6 +15,10 @@ func (policy fakeLiveSecretPolicy) IsLiveSecretIdentity(identity model.Identity)
 	return policy[identity]
 }
 
+type pointerLiveSecretPolicy struct{}
+
+func (*pointerLiveSecretPolicy) IsLiveSecretIdentity(model.Identity) bool { return false }
+
 func TestRegistrySeedOwnsOnlyFinalManagedRepresentable(t *testing.T) {
 	pinned := materializedSecretEntry("PINNED_TOKEN")
 	profile := model.Profile{Entries: []model.Entry{
@@ -61,6 +65,12 @@ func TestRegistrySeedOwnsOnlyFinalManagedRepresentable(t *testing.T) {
 	pinnedIdentity := model.Identity{Kind: model.LiveEnv, Name: "PINNED_TOKEN"}
 	if !registry.IsPinnedSecret(pinnedIdentity) {
 		t.Fatalf("SecretRef identity %#v is not pinned", pinnedIdentity)
+	}
+	if registry.AllowsLiveValue(pinnedIdentity) {
+		t.Fatalf("pinned identity %#v is eligible for a live value", pinnedIdentity)
+	}
+	if editor := (model.Identity{Kind: model.LiveEnv, Name: "EDITOR"}); !registry.AllowsLiveValue(editor) {
+		t.Fatalf("ordinary managed identity %#v is not eligible for a live value", editor)
 	}
 }
 
@@ -223,6 +233,32 @@ func TestRegistryRejectsInvalidSeedAndSnapshotWithoutPartialResults(t *testing.T
 	}
 	if attachment.Baseline() != nil || attachment.Exclusions() != nil {
 		t.Fatalf("failed Attach() returned partial data: %#v", attachment)
+	}
+}
+
+func TestAdmissionFailsClosedWithoutAttachmentOrSecretPolicy(t *testing.T) {
+	var typedNilPolicy *pointerLiveSecretPolicy
+	registry := NewRegistry(typedNilPolicy)
+	identity := model.Identity{Kind: model.LiveEnv, Name: "CREATED_AFTER_ATTACH"}
+	if got := registry.Admit(AttachmentResult{}, identity); got.Admitted || got.Reason != AdmissionNotAttached {
+		t.Fatalf("Admit() without attachment = %#v", got)
+	}
+
+	attachment, err := registry.Attach(model.LiveSnapshot{States: []model.LiveIdentityState{
+		liveScalar(model.LiveEnv, "INHERITED", "policy-missing-canary"),
+	}})
+	if err != nil {
+		t.Fatalf("Attach() error = %v", err)
+	}
+	want := []model.Exclusion{{
+		Identity: model.Identity{Kind: model.LiveEnv, Name: "INHERITED"},
+		Reason:   string(AdmissionPolicyMissing),
+	}}
+	if got := attachment.Exclusions(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("Exclusions() = %#v, want %#v", got, want)
+	}
+	if got := registry.Admit(attachment, identity); got.Admitted || got.Reason != AdmissionPolicyMissing {
+		t.Fatalf("Admit() without policy = %#v", got)
 	}
 }
 
