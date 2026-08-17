@@ -5,8 +5,8 @@ milestone_name: Branchable Shell Environments
 current_phase: 07
 current_phase_name: Git-Like Shared Working Environment
 status: executing
-stopped_at: Completed 07-01-PLAN.md
-last_updated: "2026-08-17T10:59:30.681Z"
+stopped_at: Completed 07-02-PLAN.md
+last_updated: "2026-08-17T11:17:59.759Z"
 last_activity: 2026-08-17
 last_activity_desc: Phase 07 execution started
 progress:
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-06-25)
 ## Current Position
 
 Phase: 07 (Git-Like Shared Working Environment) — EXECUTING
-Plan: 2 of 10
+Plan: 3 of 10
 Status: Ready to execute
 Last activity: 2026-08-17 — Phase 07 execution started
 
@@ -97,6 +97,7 @@ Progress: [██████████] 100%
 | Phase 06 P04 | 27m | 3 tasks | 6 files |
 | Phase 06 P05 | — | 3 tasks | — |
 | Phase 07-git-like-shared-working-environment P01 | 13min | 2 tasks | 4 files |
+| Phase 07-git-like-shared-working-environment P02 | 13min | 2 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -178,6 +179,10 @@ Recent decisions affecting current work:
 - [Phase ?]: [06-04]: One concrete Store pointer owns initialization IDs and every ingest transaction operation.
 - [Phase ?]: Live values use explicit presence plus a kind-selected payload so present-empty remains distinct from removal.
 - [Phase ?]: Model normalization and equality are the sole live-state semantic authority; diff and activation consumers must delegate to them.
+- [Phase 07]: Live secret identity decisions delegate to zsh.Provider.Classify so secretRe remains the sole classifier authority. — The same ingest and runtime identity policy cannot drift.
+- [Phase 07]: Registry ownership uses final EffectiveManaged and Representable source occurrences while SecretRefs remain metadata-owned but live-value-ineligible. — Source shadowing and resolved secret literals must not enter shared state.
+- [Phase 07]: Admission requires exact absence from an attachment issued by the same registry and returns value-free stable exclusions. — Ambient inherited state must never become managed implicitly.
+- [Phase 07]: Missing or typed-nil LiveSecretPolicy injection fails closed with policy-missing. — No captured value may cross the boundary without a production secret verdict.
 
 ### Pending Todos
 
@@ -206,6 +211,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-08-17T10:59:30.674Z
-Stopped at: Completed 07-01-PLAN.md
+Last session: 2026-08-17T11:17:59.752Z
+Stopped at: Completed 07-02-PLAN.md
 Resume file: None
