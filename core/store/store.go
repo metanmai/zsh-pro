@@ -14,6 +14,7 @@
 package store
 
 import (
+	"bytes"
 	"compress/zlib"
 	"context"
 	"crypto/sha1"
@@ -104,11 +105,9 @@ type WithheldSecret = model.WithheldSecret
 // Plan 03 changes neither it nor Commit's signature, only the body that fills it.
 type WithheldReport = model.WithheldReport
 
-// Store is the git-backed profile store. It holds exactly four injected
-// dependencies and no global state, mirroring the project's injected-driver
-// constructor pattern (core/cli.CLI, core/analyze.Analyzer). The field set is
-// FINAL: Plan 03 fills in the keychain backend behind the existing field, it does
-// NOT add or remove a field here.
+// Store is the git-backed profile store. It holds injected shell and secret
+// boundaries and no global state, mirroring the project's injected-driver
+// constructor pattern (core/cli.CLI, core/analyze.Analyzer).
 type Store struct {
 	dir           string                    // path to the bare git repo ($ZSHPRO_HOME / XDG default)
 	git           gitRunner                 // git-binary subprocess driver (Plan 01)
@@ -205,17 +204,251 @@ func NewRuntime(root, vaultParent *os.File, regen shell.Regenerator) (*Store, er
 	}, nil
 }
 
-// ReadWorktreeRevision reconstructs one exact committed worktree revision.
-func (s *Store) ReadWorktreeRevision(context.Context, string) (model.CommittedWorktree, error) {
-	return model.CommittedWorktree{}, ErrGitCommand
+// ReadWorktreeRevision reconstructs one exact committed worktree revision only
+// after authenticating the direct object type and complete two-blob root tree.
+func (s *Store) ReadWorktreeRevision(ctx context.Context, revision string) (model.CommittedWorktree, error) {
+	if s == nil || s.worktreeRegen == nil || !validGitObjectID(revision) {
+		return model.CommittedWorktree{}, ErrGitCommand
+	}
+	blobs, err := s.git.worktreeBlobsAtRevision(ctx, revision)
+	if err != nil {
+		return model.CommittedWorktree{}, err
+	}
+	payload, err := s.git.readBlob(ctx, blobs.profileJSON)
+	if err != nil {
+		return model.CommittedWorktree{}, err
+	}
+	generated, err := s.git.readBlob(ctx, blobs.profileZSH)
+	if err != nil {
+		return model.CommittedWorktree{}, err
+	}
+	document, err := UnmarshalCommittedWorktree(payload)
+	if err != nil {
+		return model.CommittedWorktree{}, err
+	}
+	wantGenerated, err := s.worktreeRegen.RegenerateWorktree(document)
+	if err != nil || !bytes.Equal(generated, wantGenerated) {
+		return model.CommittedWorktree{}, ErrGitCommand
+	}
+	return document, nil
 }
 
 // CreateFrom creates branch from one exact current base commit.
-func (s *Store) CreateFrom(context.Context, string, string) error { return ErrGitCommand }
+func (s *Store) CreateFrom(ctx context.Context, branch, currentBaseOID string) error {
+	if s == nil {
+		return ErrGitCommand
+	}
+	ref, err := validatedHeadRefForBranch(branch)
+	if err != nil {
+		return err
+	}
+	if !validGitObjectID(currentBaseOID) {
+		return ErrGitCommand
+	}
+	objectType, err := s.git.objectType(ctx, currentBaseOID)
+	if err != nil || objectType != "commit" {
+		return ErrGitCommand
+	}
+	_, present, err := s.git.observeDirectRef(ctx, ref)
+	if err != nil {
+		return err
+	}
+	if present {
+		return ErrProfileExists
+	}
+	if err := s.git.updateRefCAS(ctx, ref.name, currentBaseOID, strings.Repeat("0", len(currentBaseOID))); err != nil {
+		_, nowPresent, observeErr := s.git.observeDirectRef(ctx, ref)
+		if observeErr == nil && nowPresent {
+			return ErrProfileExists
+		}
+		return err
+	}
+	return nil
+}
 
 // CommitWorktree publishes a complete worktree document by expected-base CAS.
-func (s *Store) CommitWorktree(context.Context, string, string, model.CommittedWorktree, string) (model.WorktreeCommitResult, error) {
-	return model.WorktreeCommitResult{}, ErrGitCommand
+func (s *Store) CommitWorktree(
+	ctx context.Context,
+	branch string,
+	expectedBaseOID string,
+	document model.CommittedWorktree,
+	message string,
+) (model.WorktreeCommitResult, error) {
+	if s == nil || s.worktreeRegen == nil {
+		return model.WorktreeCommitResult{}, ErrGitCommand
+	}
+	ref, err := validatedHeadRefForBranch(branch)
+	if err != nil {
+		return model.WorktreeCommitResult{}, err
+	}
+	if !validGitObjectID(expectedBaseOID) || !validCommitMessage(message) {
+		return model.WorktreeCommitResult{}, ErrGitCommand
+	}
+	objectType, err := s.git.objectType(ctx, expectedBaseOID)
+	if err != nil || objectType != "commit" {
+		return model.WorktreeCommitResult{}, ErrGitCommand
+	}
+	observed, present, err := s.git.observeDirectRef(ctx, ref)
+	if err != nil {
+		return model.WorktreeCommitResult{}, err
+	}
+	if !present || observed != expectedBaseOID {
+		return model.WorktreeCommitResult{Conflict: true}, ErrSecretRefConflict
+	}
+
+	prepared, err := prepareSecrets(document.Source, s.keychain)
+	if err != nil {
+		return model.WorktreeCommitResult{}, err
+	}
+	document.Source = prepared.profile
+	jsonBytes, err := MarshalCommittedWorktree(document)
+	if err != nil {
+		return model.WorktreeCommitResult{}, err
+	}
+	zshBytes, err := s.worktreeRegen.RegenerateWorktree(document)
+	if err != nil {
+		return model.WorktreeCommitResult{}, err
+	}
+	candidateOID, err := s.prepareWorktreeCandidate(ctx, expectedBaseOID, jsonBytes, zshBytes, message)
+	if err != nil {
+		return model.WorktreeCommitResult{}, err
+	}
+	mutation, err := encodeRefMutation(ref, candidateOID, true, &expectedBaseOID)
+	if err != nil {
+		return model.WorktreeCommitResult{}, err
+	}
+	if err := s.git.validateDirectRef(ref); err != nil {
+		return model.WorktreeCommitResult{}, err
+	}
+	session, err := s.git.startUpdateRefSession(ctx)
+	if err != nil {
+		return model.WorktreeCommitResult{}, err
+	}
+	if err := session.Prepare(mutation); err != nil {
+		if errors.Is(err, ErrSecretRefConflict) {
+			return model.WorktreeCommitResult{Conflict: true}, ErrSecretRefConflict
+		}
+		return model.WorktreeCommitResult{}, err
+	}
+	priors, err := applyPreparedSecrets(prepared, s.keychain)
+	if err != nil {
+		recovery := errors.Is(err, ErrSecretRollback)
+		if abortErr := session.Abort(); abortErr != nil {
+			recovery = true
+		}
+		return model.WorktreeCommitResult{RecoveryRequired: recovery}, err
+	}
+	commitErr := error(nil)
+	if s.commitRefSession != nil {
+		commitErr = s.commitRefSession(session)
+	} else {
+		commitErr = session.Commit()
+	}
+	if commitErr == nil {
+		return model.WorktreeCommitResult{Committed: true, OID: candidateOID}, nil
+	}
+	return s.reconcileWorktreeCommit(ctx, ref, expectedBaseOID, candidateOID, priors)
+}
+
+func validCommitMessage(message string) bool {
+	return message != "" && !strings.ContainsRune(message, '\x00')
+}
+
+func (s *Store) prepareWorktreeCandidate(
+	ctx context.Context,
+	expectedBaseOID string,
+	jsonBytes, zshBytes []byte,
+	message string,
+) (string, error) {
+	indexFile, err := os.CreateTemp("", "zsh-pro-worktree-index-*")
+	if err != nil {
+		return "", ErrGitCommand
+	}
+	indexPath := indexFile.Name()
+	if closeErr := indexFile.Close(); closeErr != nil {
+		_ = os.Remove(indexPath)
+		return "", ErrGitCommand
+	}
+	if removeErr := os.Remove(indexPath); removeErr != nil {
+		return "", ErrGitCommand
+	}
+	defer func() { _ = os.Remove(indexPath) }()
+
+	jsonOID, err := s.git.hashObject(ctx, jsonBytes)
+	if err != nil {
+		return "", err
+	}
+	zshOID, err := s.git.hashObject(ctx, zshBytes)
+	if err != nil {
+		return "", err
+	}
+	if !validGitObjectID(jsonOID) || !validGitObjectID(zshOID) || len(jsonOID) != len(expectedBaseOID) || len(zshOID) != len(expectedBaseOID) {
+		return "", ErrGitCommand
+	}
+	if _, err := s.git.runCommit(ctx, indexPath, commitTS, "read-tree", "--empty"); err != nil {
+		return "", err
+	}
+	for _, entry := range []string{
+		"100644," + jsonOID + ",profile.json",
+		"100644," + zshOID + ",profile.zsh",
+	} {
+		if _, err := s.git.runCommit(ctx, indexPath, commitTS, "update-index", "--add", "--cacheinfo", entry); err != nil {
+			return "", err
+		}
+	}
+	treeOut, err := s.git.runCommit(ctx, indexPath, commitTS, "write-tree")
+	if err != nil {
+		return "", err
+	}
+	treeOID := strings.TrimSpace(string(treeOut))
+	if !validGitObjectID(treeOID) || len(treeOID) != len(expectedBaseOID) {
+		return "", ErrGitCommand
+	}
+	commitOut, err := s.git.runCommit(ctx, indexPath, commitTS,
+		"commit-tree", treeOID, "-p", expectedBaseOID, "-m", message)
+	if err != nil {
+		return "", err
+	}
+	commitOID := strings.TrimSpace(string(commitOut))
+	if !validGitObjectID(commitOID) || len(commitOID) != len(expectedBaseOID) {
+		return "", ErrGitCommand
+	}
+	return commitOID, nil
+}
+
+func (s *Store) reconcileWorktreeCommit(
+	ctx context.Context,
+	ref validatedHeadRef,
+	expectedBaseOID, candidateOID string,
+	priors []secretPrior,
+) (model.WorktreeCommitResult, error) {
+	observed, present, observeErr := s.git.observeDirectRef(ctx, ref)
+	if observeErr == nil && present && observed == candidateOID {
+		return model.WorktreeCommitResult{Committed: true, OID: candidateOID, RecoveryRequired: true},
+			ingestRecoveryError{committed: true}
+	}
+	if observeErr != nil || !present || observed != expectedBaseOID {
+		return model.WorktreeCommitResult{RecoveryRequired: true}, ErrIngestRecoveryRequired
+	}
+	guard, err := encodeRefGuard(ref, &expectedBaseOID, len(candidateOID))
+	if err != nil {
+		return model.WorktreeCommitResult{RecoveryRequired: true}, ErrIngestRecoveryRequired
+	}
+	session, err := s.git.startUpdateRefSession(ctx)
+	if err != nil {
+		return model.WorktreeCommitResult{RecoveryRequired: true}, ErrIngestRecoveryRequired
+	}
+	if err := session.Prepare(guard); err != nil {
+		return model.WorktreeCommitResult{RecoveryRequired: true}, ErrIngestRecoveryRequired
+	}
+	if err := restoreSecretPriors(s.keychain, priors); err != nil {
+		_ = session.Abort()
+		return model.WorktreeCommitResult{RecoveryRequired: true}, ErrIngestRecoveryRequired
+	}
+	if err := session.Abort(); err != nil {
+		return model.WorktreeCommitResult{RecoveryRequired: true}, ErrIngestRecoveryRequired
+	}
+	return model.WorktreeCommitResult{}, ErrIngestNotCommitted
 }
 
 // RuntimeSecretResolver exposes the already-bound runtime resolver to the
@@ -286,6 +519,9 @@ func (s *Store) Branches(ctx context.Context) ([]string, error) {
 // ZSHPRO_PROFILE env var carrying the profile name only (D-13). An unset (or empty)
 // var means the `main` baseline implicitly. The env var EXPORT on switch is Phase 5
 // (the sourced loader); this plan only reads it.
+//
+// Deprecated: process-local profile selection is a legacy adapter and must not
+// be used as shared worktree authority.
 func (s *Store) Current() string {
 	if name := os.Getenv("ZSHPRO_PROFILE"); name != "" {
 		return name
@@ -298,6 +534,9 @@ func (s *Store) Current() string {
 // ZSHPRO_PROFILE — the env-var export on switch is Phase 5 (the sourced loader
 // honors the per-terminal contract); Checkout only validates the target is a real,
 // switchable branch from the object DB (no checkout, no working tree).
+//
+// Deprecated: use exact worktree service reads; this compatibility adapter has
+// no authority to select a shared worktree.
 func (s *Store) Checkout(ctx context.Context, name string) error {
 	if err := validBranchName(name); err != nil {
 		return err
@@ -312,6 +551,8 @@ func (s *Store) Checkout(ctx context.Context, name string) error {
 // shares the clean common ancestor. It validates the name, fails with
 // ErrProfileExists if the branch already exists, then points refs/heads/<name> at
 // main's current tip via update-ref (PROF-02 create). No checkout.
+//
+// Deprecated: use CreateFrom with the service's explicit current base OID.
 func (s *Store) Create(ctx context.Context, name string) error {
 	if err := validBranchName(name); err != nil {
 		return err
@@ -1106,6 +1347,9 @@ func adaptLegacyCommitOutcome(outcome model.IngestCommitOutcome, cause error) (W
 // public main-only ingest. The adapter returns a report only when publication is
 // known committed and maps conflict, clean non-commit, and recovery-required
 // outcomes to stable sentinel-compatible errors.
+//
+// Deprecated: use CommitWorktree with an explicit expected base OID; this
+// source-compatible adapter is not a shared-worktree mutation path.
 func (s *Store) Commit(ctx context.Context, branch string, p model.Profile, msg string) (WithheldReport, error) {
 	headRef, err := validatedHeadRefForBranch(branch)
 	if err != nil {

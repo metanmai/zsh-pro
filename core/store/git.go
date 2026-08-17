@@ -63,8 +63,44 @@ type worktreeBlobOIDs struct {
 	profileZSH  string
 }
 
-func parseWorktreeTreeEntries([]byte, int) (worktreeBlobOIDs, error) {
-	return worktreeBlobOIDs{}, ErrGitCommand
+func parseWorktreeTreeEntries(tree []byte, objectIDLength int) (worktreeBlobOIDs, error) {
+	if (objectIDLength != 40 && objectIDLength != 64) || len(tree) == 0 || tree[len(tree)-1] != 0 {
+		return worktreeBlobOIDs{}, ErrGitCommand
+	}
+	records := bytes.Split(tree[:len(tree)-1], []byte{0})
+	if len(records) != 2 {
+		return worktreeBlobOIDs{}, ErrGitCommand
+	}
+	var result worktreeBlobOIDs
+	seen := make(map[string]bool, 2)
+	for _, record := range records {
+		header, pathBytes, ok := bytes.Cut(record, []byte{'\t'})
+		if !ok || bytes.Contains(pathBytes, []byte{'\t'}) {
+			return worktreeBlobOIDs{}, ErrGitCommand
+		}
+		fields := bytes.Split(header, []byte{' '})
+		if len(fields) != 3 || string(fields[0]) != "100644" || string(fields[1]) != "blob" {
+			return worktreeBlobOIDs{}, ErrGitCommand
+		}
+		objectID := string(fields[2])
+		path := string(pathBytes)
+		if len(objectID) != objectIDLength || !validGitObjectID(objectID) || seen[path] {
+			return worktreeBlobOIDs{}, ErrGitCommand
+		}
+		seen[path] = true
+		switch path {
+		case "profile.json":
+			result.profileJSON = objectID
+		case "profile.zsh":
+			result.profileZSH = objectID
+		default:
+			return worktreeBlobOIDs{}, ErrGitCommand
+		}
+	}
+	if result.profileJSON == "" || result.profileZSH == "" {
+		return worktreeBlobOIDs{}, ErrGitCommand
+	}
+	return result, nil
 }
 
 // validatedHeadRef is the only value accepted by direct-ref reads and staged
@@ -212,6 +248,9 @@ func validateGitArgv(args []string) error {
 		if len(args) == 3 && args[1] == "-e" && validAtom(args[2]) {
 			return nil
 		}
+		if len(args) == 3 && (args[1] == "-t" || args[1] == "blob") && validGitObjectID(args[2]) {
+			return nil
+		}
 	case "show":
 		if len(args) == 2 && validAtom(args[1]) {
 			return nil
@@ -268,6 +307,9 @@ func validateGitArgv(args []string) error {
 			return nil
 		}
 	case "ls-tree":
+		if len(args) == 3 && args[1] == "-z" && validGitObjectID(args[2]) {
+			return nil
+		}
 		if len(args) == 5 && args[1] == "-z" && validAtom(args[2]) && args[3] == "--" && args[4] == "profile.json" {
 			return nil
 		}
@@ -494,6 +536,45 @@ func (g gitRunner) catFileExists(ctx context.Context, ref string) bool {
 // `<branch>:profile.json`. Used for reads — never a working-tree checkout (D-12).
 func (g gitRunner) show(ctx context.Context, ref string) ([]byte, error) {
 	return g.run(ctx, "show", ref)
+}
+
+// objectType returns the direct type of one exact object ID. It never peels a
+// tag or resolves a symbolic caller expression.
+func (g gitRunner) objectType(ctx context.Context, objectID string) (string, error) {
+	if !validGitObjectID(objectID) {
+		return "", ErrGitCommand
+	}
+	out, err := g.run(ctx, "cat-file", "-t", objectID)
+	if err != nil {
+		return "", err
+	}
+	return string(bytes.TrimSpace(out)), nil
+}
+
+// readBlob reads one already-validated blob object without accepting a revision
+// expression or path selector.
+func (g gitRunner) readBlob(ctx context.Context, objectID string) ([]byte, error) {
+	if !validGitObjectID(objectID) {
+		return nil, ErrGitCommand
+	}
+	return g.run(ctx, "cat-file", "blob", objectID)
+}
+
+// worktreeBlobsAtRevision authenticates an exact commit and its complete root
+// tree shape before any payload is decoded.
+func (g gitRunner) worktreeBlobsAtRevision(ctx context.Context, revision string) (worktreeBlobOIDs, error) {
+	if !validGitObjectID(revision) {
+		return worktreeBlobOIDs{}, ErrGitCommand
+	}
+	typeName, err := g.objectType(ctx, revision)
+	if err != nil || typeName != "commit" {
+		return worktreeBlobOIDs{}, ErrGitCommand
+	}
+	tree, err := g.run(ctx, "ls-tree", "-z", revision)
+	if err != nil {
+		return worktreeBlobOIDs{}, err
+	}
+	return parseWorktreeTreeEntries(tree, len(revision))
 }
 
 // forEachRef lists refs matching pattern as short names, one per line

@@ -723,6 +723,30 @@ func TestCommittedWorktreeDTORejectsPinnedSecretCanaries(t *testing.T) {
 	if payload, err := MarshalCommittedWorktree(model.NewCommittedWorktree(malformed, model.LiveProjection{})); err == nil || len(payload) != 0 {
 		t.Fatalf("malformed SecretRef source crossed DTO boundary: payload=%q err=%v", payload, err)
 	}
+
+	literal := canary
+	unredacted := model.Entry{
+		Text: "export API_KEY=" + canary, Category: model.CatSecrets,
+		Kind: model.KindAssignment, CmdName: "export", Names: []string{"API_KEY"},
+		Value: canary, Exported: true, Managed: true, StructuralFidelityKnown: true,
+		DeclarationFlags: []string{}, ValueMode: model.ValueModeLiteral, RuntimeValue: &literal,
+	}
+	if payload, err := MarshalCommittedWorktree(model.NewCommittedWorktree(model.Profile{Entries: []model.Entry{unredacted}}, model.LiveProjection{})); err == nil || len(payload) != 0 {
+		t.Fatalf("unredacted literal secret crossed DTO boundary: payload=%q err=%v", payload, err)
+	}
+
+	dynamic := model.Entry{
+		Text: "export DYNAMIC_TOKEN=$(secret-source)", Category: model.CatSecrets,
+		Kind: model.KindAssignment, CmdName: "export", Names: []string{"DYNAMIC_TOKEN"},
+		Value: "$(secret-source)", Exported: true, Managed: true, Dynamic: true,
+		StructuralFidelityKnown: true, DeclarationFlags: []string{}, ValueMode: model.ValueModeDynamic,
+	}
+	dynamicPinned := model.NewCommittedWorktree(model.Profile{Entries: []model.Entry{dynamic}}, model.LiveProjection{States: []model.LiveIdentityState{
+		{Identity: model.Identity{Kind: model.LiveEnv, Name: "DYNAMIC_TOKEN"}, Value: model.ScalarLiveValue(canary)},
+	}})
+	if payload, err := MarshalCommittedWorktree(dynamicPinned); err == nil || len(payload) != 0 {
+		t.Fatalf("dynamic secret projection crossed DTO boundary: payload=%q err=%v", payload, err)
+	}
 }
 
 type frozenLegacyProfileDTO struct {

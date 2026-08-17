@@ -448,9 +448,9 @@ func newWorktreeStore(t *testing.T, keychain KeychainDriver) *Store {
 
 func exactWorktreeDocument() model.CommittedWorktree {
 	empty := ""
-	return model.NewCommittedWorktree(model.Profile{Entries: []model.Entry{
-		{Text: "export EXPORTED=source", Kind: model.KindAssignment, Category: model.CatEnvironment, Names: []string{"EXPORTED"}, Exported: true, Managed: true, StructuralFidelityKnown: true, ValueMode: model.ValueModeLiteral, RuntimeValue: &empty},
-		{Text: "PLAIN=source", Kind: model.KindAssignment, Category: model.CatEnvironment, Names: []string{"PLAIN"}, Managed: true, StructuralFidelityKnown: true, ValueMode: model.ValueModeLiteral, RuntimeValue: &empty},
+	document := model.NewCommittedWorktree(model.Profile{Entries: []model.Entry{
+		{Text: "export EXPORTED=source", Kind: model.KindAssignment, Category: model.CatEnvironment, Names: []string{"EXPORTED"}, Exported: true, Managed: true, ValueMode: model.ValueModeLiteral, RuntimeValue: &empty},
+		{Text: "PLAIN=source", Kind: model.KindAssignment, Category: model.CatEnvironment, Names: []string{"PLAIN"}, Managed: true, ValueMode: model.ValueModeLiteral, RuntimeValue: &empty},
 	}}, model.LiveProjection{
 		States: []model.LiveIdentityState{
 			{Identity: model.Identity{Kind: model.LiveEnv, Name: "EXPORTED"}, Value: model.ScalarLiveValue("it's\nexact")},
@@ -468,6 +468,11 @@ func exactWorktreeDocument() model.CommittedWorktree {
 			{Kind: model.LiveOption, Name: "BEEP"},
 		},
 	})
+	for index := range document.Source.Entries {
+		document.Source.Entries[index].StructuralFidelityKnown = true
+		document.Source.Entries[index].DeclarationFlags = []string{}
+	}
+	return document
 }
 
 func TestCommitWorktreeReadWorktreeRevisionExactRoundTrip(t *testing.T) {
@@ -498,6 +503,26 @@ func TestCommitWorktreeReadWorktreeRevisionExactRoundTrip(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(gotZSH, wantZSH) {
 		t.Fatalf("profile.zsh = %q, %v; want %q", gotZSH, err, wantZSH)
 	}
+	if _, err := exec.LookPath("zsh"); err == nil {
+		script := strings.Join([]string{
+			"export REMOVED=old",
+			"alias old_alias='old'",
+			"old_fn() { print old; }",
+			"setopt BEEP",
+			string(gotZSH),
+			"[[ $EXPORTED == $'it\\'s\\nexact' && ${parameters[EXPORTED]} == *export* ]] || exit 11",
+			"[[ ${+PLAIN} == 1 && $PLAIN == '' && ${parameters[PLAIN]} != *export* ]] || exit 12",
+			"[[ ${aliases[empty_alias]} == '' ]] || exit 13",
+			"[[ \"$(multi_fn)\" == $'one\\ntwo' ]] || exit 14",
+			"[[ ${#path} == 4 && $path[1] == /base && $path[2] == '' && $path[3] == /dup && $path[4] == /dup ]] || exit 15",
+			"[[ ${#fpath} == 0 && ! -o AUTO_CD ]] || exit 16",
+			"(( ${+REMOVED} == 0 && ${+aliases[old_alias]} == 0 && ${+functions[old_fn]} == 0 )) || exit 17",
+			"[[ ! -o BEEP ]] || exit 18",
+		}, "\n")
+		if output, err := exec.Command("zsh", "-f", "-c", script).CombinedOutput(); err != nil {
+			t.Fatalf("committed generated behavior mismatch: %v\n%s", err, output)
+		}
+	}
 }
 
 func TestCreateFromUsesExactCurrentBaseAndNeverOverwrites(t *testing.T) {
@@ -524,6 +549,16 @@ func TestCreateFromUsesExactCurrentBaseAndNeverOverwrites(t *testing.T) {
 	}
 	if err := store.CreateFrom(ctx, "work", second.OID); !errors.Is(err, ErrProfileExists) {
 		t.Fatalf("duplicate CreateFrom = %v, want ErrProfileExists", err)
+	}
+	blob, err := store.git.hashObject(ctx, []byte("valid-shaped non-commit"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateFrom(ctx, "blob-base", blob); !errors.Is(err, ErrGitCommand) {
+		t.Fatalf("CreateFrom blob base = %v, want safe Git rejection", err)
+	}
+	if store.git.catFileExists(ctx, "refs/heads/blob-base") {
+		t.Fatal("CreateFrom created a branch from a blob")
 	}
 }
 
@@ -640,6 +675,195 @@ func TestLegacyStoreAdaptersRemainIsolatedFromExactWorktreeAuthority(t *testing.
 	tip, err := store.git.revParse(ctx, "refs/heads/work")
 	if err != nil || tip != base || store.Current() != "process-local-only" {
 		t.Fatalf("legacy process input affected exact authority: tip=%q current=%q err=%v", tip, store.Current(), err)
+	}
+}
+
+func TestCommitWorktreeSHA256ObjectFormat(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	repository := filepath.Join(t.TempDir(), "sha256.git")
+	if output, err := exec.Command("git", "init", "--bare", "-b", "main", "--object-format=sha256", repository).CombinedOutput(); err != nil {
+		t.Skipf("installed Git does not support SHA-256 repositories: %v (%s)", err, output)
+	}
+	store, err := New(repository, zsh.Provider{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	index := filepath.Join(t.TempDir(), "index")
+	if _, err := store.git.runCommit(ctx, index, commitTS, "read-tree", "--empty"); err != nil {
+		t.Fatal(err)
+	}
+	treeOut, err := store.git.runCommit(ctx, index, commitTS, "write-tree")
+	if err != nil {
+		t.Fatal(err)
+	}
+	commitOut, err := store.git.runCommit(ctx, index, commitTS,
+		"commit-tree", strings.TrimSpace(string(treeOut)), "-m", "sha256 base")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := strings.TrimSpace(string(commitOut))
+	if len(base) != 64 {
+		t.Fatalf("SHA-256 base length = %d, want 64", len(base))
+	}
+	if err := store.git.updateRef(ctx, "refs/heads/main", base); err != nil {
+		t.Fatal(err)
+	}
+	result, err := store.CommitWorktree(ctx, "main", base, exactWorktreeDocument(), "sha256 exact")
+	if err != nil || !result.Committed || len(result.OID) != 64 {
+		t.Fatalf("SHA-256 CommitWorktree = %#v, %v", result, err)
+	}
+	if _, err := store.ReadWorktreeRevision(ctx, result.OID); err != nil {
+		t.Fatalf("SHA-256 ReadWorktreeRevision: %v", err)
+	}
+}
+
+func TestCommitWorktreeConcurrentRefRaceHasOneWinner(t *testing.T) {
+	ctx := context.Background()
+	store := newWorktreeStore(t, nil)
+	base, err := store.git.revParse(ctx, "refs/heads/main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	type outcome struct {
+		result model.WorktreeCommitResult
+		err    error
+	}
+	start := make(chan struct{})
+	results := make(chan outcome, 2)
+	for _, message := range []string{"concurrent-a", "concurrent-b"} {
+		message := message
+		go func() {
+			<-start
+			result, commitErr := store.CommitWorktree(ctx, "main", base, exactWorktreeDocument(), message)
+			results <- outcome{result: result, err: commitErr}
+		}()
+	}
+	close(start)
+	committed, conflicts := 0, 0
+	for index := 0; index < 2; index++ {
+		outcome := <-results
+		switch {
+		case outcome.err == nil && outcome.result.Committed:
+			committed++
+		case errors.Is(outcome.err, ErrSecretRefConflict) && outcome.result.Conflict:
+			conflicts++
+		default:
+			t.Fatalf("unexpected concurrent outcome: %#v, %v", outcome.result, outcome.err)
+		}
+	}
+	if committed != 1 || conflicts != 1 {
+		t.Fatalf("concurrent outcomes: committed=%d conflicts=%d", committed, conflicts)
+	}
+}
+
+func TestCommitWorktreePreservesPublicationAndRecoveryEvidence(t *testing.T) {
+	ctx := context.Background()
+	store := newWorktreeStore(t, nil)
+	base, err := store.git.revParse(ctx, "refs/heads/main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.commitRefSession = func(session *updateRefSession) error {
+		if err := session.Commit(); err != nil {
+			return err
+		}
+		return ErrGitCommand
+	}
+	result, err := store.CommitWorktree(ctx, "main", base, exactWorktreeDocument(), "lost response")
+	if !errors.Is(err, ErrIngestRecoveryRequired) || !result.Committed || !result.RecoveryRequired || !validGitObjectID(result.OID) {
+		t.Fatalf("lost response evidence = %#v, %v", result, err)
+	}
+	type committedError interface{ Committed() bool }
+	var evidence committedError
+	if !errors.As(err, &evidence) || !evidence.Committed() {
+		t.Fatalf("recovery error lost committed evidence: %T %v", err, err)
+	}
+	tip, err := store.git.revParse(ctx, "refs/heads/main")
+	if err != nil || tip != result.OID {
+		t.Fatalf("published evidence disagrees with ref: tip=%q result=%q err=%v", tip, result.OID, err)
+	}
+}
+
+func TestCommitWorktreeCompensatesSecretsWhenRefIsKnownUnchanged(t *testing.T) {
+	ctx := context.Background()
+	keychain := &transactionKeychain{values: map[string]string{"API_KEY": "prior"}}
+	store := newWorktreeStore(t, keychain)
+	base, err := store.git.revParse(ctx, "refs/heads/main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.commitRefSession = func(session *updateRefSession) error {
+		if err := session.Abort(); err != nil {
+			return err
+		}
+		return ErrGitCommand
+	}
+	document := model.NewCommittedWorktree(buildSecretProfile(t, "export API_KEY=next\n"), model.LiveProjection{})
+	result, err := store.CommitWorktree(ctx, "main", base, document, "known unchanged")
+	if !errors.Is(err, ErrIngestNotCommitted) || result.Committed || result.Conflict || result.RecoveryRequired {
+		t.Fatalf("known unchanged result = %#v, %v", result, err)
+	}
+	if got, err := keychain.Retrieve("API_KEY"); err != nil || got != "prior" {
+		t.Fatalf("secret compensation = %q, %v; want prior", got, err)
+	}
+	tip, err := store.git.revParse(ctx, "refs/heads/main")
+	if err != nil || tip != base {
+		t.Fatalf("known unchanged ref = %q, %v; want %q", tip, err, base)
+	}
+}
+
+func TestReadWorktreeRevisionRejectsMismatchedGeneratedBlob(t *testing.T) {
+	ctx := context.Background()
+	store := newWorktreeStore(t, nil)
+	base, err := store.git.revParse(ctx, "refs/heads/main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	document := exactWorktreeDocument()
+	payload, err := MarshalCommittedWorktree(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidate, err := store.prepareWorktreeCandidate(ctx, base, payload, []byte("export WRONG=value\n"), "mismatch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ReadWorktreeRevision(ctx, candidate); !errors.Is(err, ErrGitCommand) {
+		t.Fatalf("mismatched profile.zsh = %v, want safe Git error", err)
+	}
+}
+
+func TestCommitWorktreeValidatesGitInputsBeforeEffects(t *testing.T) {
+	ctx := context.Background()
+	store := newWorktreeStore(t, nil)
+	base, err := store.git.revParse(ctx, "refs/heads/main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	starts := 0
+	store.git.beforeStart = func([]string) { starts++ }
+	for _, test := range []struct {
+		branch  string
+		base    string
+		message string
+	}{
+		{branch: "-authority", base: base, message: "message"},
+		{branch: "main", base: "refs/heads/main", message: "message"},
+		{branch: "main", base: base, message: ""},
+		{branch: "main", base: base, message: "bad\x00message"},
+	} {
+		if _, err := store.CommitWorktree(ctx, test.branch, test.base, exactWorktreeDocument(), test.message); err == nil {
+			t.Fatalf("invalid typed input accepted: %#v", test)
+		}
+	}
+	if err := store.CreateFrom(ctx, "work", "main"); err == nil {
+		t.Fatal("CreateFrom accepted symbolic base")
+	}
+	if starts != 0 {
+		t.Fatalf("invalid typed inputs started %d Git processes", starts)
 	}
 }
 

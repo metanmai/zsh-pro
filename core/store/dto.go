@@ -390,6 +390,12 @@ func validateCommittedWorktreeDTO(document model.CommittedWorktree) error {
 func validateCommittedSourceSecrets(profile model.Profile) error {
 	for _, entry := range profile.Entries {
 		if entry.Secret == nil {
+			if entry.Category != model.CatSecrets {
+				continue
+			}
+			if !isExcludableSecretShape(entry) || entry.ValueMode != model.ValueModeDynamic || !entry.Dynamic || entry.RuntimeValue != nil {
+				return errors.New("committed worktree source contains an unredacted secret")
+			}
 			continue
 		}
 		ref := entry.Secret
@@ -412,7 +418,7 @@ func validateCommittedSourceSecrets(profile model.Profile) error {
 func committedSourceSecretIdentities(profile model.Profile) map[model.Identity]bool {
 	pinned := make(map[model.Identity]bool)
 	for _, entry := range profile.Entries {
-		if entry.Secret != nil && len(entry.Names) == 1 {
+		if entry.Category == model.CatSecrets && entry.Kind == model.KindAssignment && len(entry.Names) == 1 {
 			pinned[model.Identity{Kind: model.LiveEnv, Name: entry.Names[0]}] = true
 		}
 	}

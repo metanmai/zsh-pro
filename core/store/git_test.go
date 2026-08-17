@@ -483,6 +483,7 @@ func TestReadWorktreeRevisionStrictTreeRecords(t *testing.T) {
 		"wrong mode":      []byte("100755 blob " + a + "\tprofile.json\x00100644 blob " + b + "\tprofile.zsh\x00"),
 		"wrong type":      []byte("100644 tree " + a + "\tprofile.json\x00100644 blob " + b + "\tprofile.zsh\x00"),
 		"invalid oid":     []byte("100644 blob nope\tprofile.json\x00100644 blob " + b + "\tprofile.zsh\x00"),
+		"extra separator": []byte("100644  blob " + a + "\tprofile.json\x00100644 blob " + b + "\tprofile.zsh\x00"),
 		"malformed":       []byte("100644 blob " + a + " profile.json\x00100644 blob " + b + "\tprofile.zsh\x00"),
 		"unterminated":    valid[:len(valid)-1],
 	}
