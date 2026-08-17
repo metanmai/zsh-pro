@@ -285,6 +285,66 @@ func TestAcknowledgeCanonicalizesFreshIdentityRecordOrder(t *testing.T) {
 	}
 }
 
+func TestResolveSharedCanonicalizesFreshIdentityRecordOrderOnly(t *testing.T) {
+	t.Run("reordered identity records", func(t *testing.T) {
+		harness, credential, conflict, snapshot := canonicalResolveHarness(t)
+		result, err := harness.service.ResolveShared(context.Background(), model.ResolveSharedRequest{
+			OperationID: "resolve-reordered", Credential: credential, Conflict: conflict.Identity,
+			Token: conflict.Token, Snapshot: serviceSnapshot(snapshot...),
+		})
+		if err != nil || result.PendingRevision != 3 || result.Token != conflict.Token {
+			t.Fatalf("reordered resolve = %#v, %v", result, err)
+		}
+	})
+
+	tests := []struct {
+		name   string
+		mutate func([]model.LiveIdentityState) []model.LiveIdentityState
+	}{
+		{"scalar value", func(states []model.LiveIdentityState) []model.LiveIdentityState {
+			states[0].Value = model.ScalarLiveValue("changed-loser")
+			return states
+		}},
+		{"presence", func(states []model.LiveIdentityState) []model.LiveIdentityState {
+			states[0].Value = model.RemovedLiveValue()
+			return states
+		}},
+		{"identity kind", func(states []model.LiveIdentityState) []model.LiveIdentityState {
+			states[0].Identity.Kind = model.LiveAlias
+			return states
+		}},
+		{"identity name", func(states []model.LiveIdentityState) []model.LiveIdentityState {
+			states[0].Identity.Name = "OTHER_EDITOR"
+			return states
+		}},
+		{"PATH element order", func(states []model.LiveIdentityState) []model.LiveIdentityState {
+			states[1].Value = model.ListLiveValue([]string{"/two", "", "/one", "/one"})
+			return states
+		}},
+		{"FPATH element order", func(states []model.LiveIdentityState) []model.LiveIdentityState {
+			states[2].Value = model.ListLiveValue([]string{"/functions/two", "/functions/one", ""})
+			return states
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			harness, credential, conflict, snapshot := canonicalResolveHarness(t)
+			snapshot = test.mutate(model.CloneLiveStates(snapshot))
+			before := harness.bytes(t)
+			_, err := harness.service.ResolveShared(context.Background(), model.ResolveSharedRequest{
+				OperationID: "resolve-reject", Credential: credential, Conflict: conflict.Identity,
+				Token: conflict.Token, Snapshot: serviceSnapshot(snapshot...),
+			})
+			if !errors.Is(err, ErrConflictRequiresResolution) {
+				t.Fatalf("changed freshness resolve = %v", err)
+			}
+			if after := harness.bytes(t); !bytes.Equal(before, after) {
+				t.Fatal("rejected freshness snapshot changed durable state")
+			}
+		})
+	}
+}
+
 func TestAcknowledgePreparedRevisionPreservesConcurrentLaterHead(t *testing.T) {
 	harness := materializedServiceHarness(t, fakeLiveSecretPolicy{})
 	a := serviceCredential(t, "shell-a", 'A')
@@ -470,6 +530,74 @@ func TestStatusAndDiffRemainValueFreeAndUseDurableAuthority(t *testing.T) {
 	}
 	if strings.Contains(fmt.Sprintf("%#v %#v", status, diff), "sensitive-canary") {
 		t.Fatal("public status/diff exposed a captured value")
+	}
+}
+
+func TestStatusDerivesPassiveShellBehindFromCanonicalDurableState(t *testing.T) {
+	harness := materializedServiceHarness(t, fakeLiveSecretPolicy{})
+	a := serviceCredential(t, "shell-a", 'A')
+	b := serviceCredential(t, "shell-b", 'B')
+	harness.attach(t, a, "attach-a")
+	harness.attach(t, b, "attach-b")
+
+	converged, err := harness.service.WorkflowStatus(context.Background(), b.ShellID)
+	if err != nil || converged.Worktree.Shell == nil || converged.Worktree.Shell.Behind {
+		t.Fatalf("converged status = %#v, %v", converged, err)
+	}
+	aliasIdentity := model.Identity{Kind: model.LiveAlias, Name: "passive.receiver"}
+	harness.publish(t, a, "publish-passive", 1, model.LiveChange{
+		Kind: model.LiveAdd, Identity: aliasIdentity, Value: model.ScalarLiveValue("print -- passive"),
+	})
+	passive, err := harness.service.WorkflowStatus(context.Background(), b.ShellID)
+	if err != nil || passive.Worktree.Shell == nil || !passive.Worktree.Shell.Behind || passive.Worktree.Shell.AppliedRevision != 1 {
+		t.Fatalf("passive receiver status = %#v, %v", passive, err)
+	}
+	if passive.Worktree.Shell.AutoApply != passive.PersistedDefault {
+		t.Fatalf("passive status changed auto-apply authority: %#v", passive)
+	}
+	absent, err := harness.service.WorkflowStatus(context.Background(), "absent-shell")
+	if err != nil || absent.Worktree.Shell != nil {
+		t.Fatalf("absent shell status = %#v, %v", absent, err)
+	}
+	if _, err := harness.service.WorkflowStatus(context.Background(), "invalid shell id"); err == nil {
+		t.Fatal("invalid shell ID was accepted")
+	}
+
+	state := harness.state(t)
+	shell := state.Shells[b.ShellID]
+	shell.AppliedRevision = state.HeadRevision
+	shell.Behind = false
+	shell.AppliedBaseline = []model.LiveIdentityState{
+		{Identity: aliasIdentity, Value: model.ScalarLiveValue("print -- passive")},
+		serviceState("EDITOR", "shared"),
+	}
+	state.Shells[b.ShellID] = shell
+	reordered, err := workflowStatusFromState(state, b.ShellID)
+	if err != nil || reordered.Shell == nil || reordered.Shell.Behind {
+		t.Fatalf("canonical reordered baseline status = %#v, %v", reordered, err)
+	}
+
+	shell.AppliedBaseline[0].Value = model.ScalarLiveValue("print -- mismatch")
+	state.Shells[b.ShellID] = shell
+	mismatch, err := workflowStatusFromState(state, b.ShellID)
+	if err != nil || mismatch.Shell == nil || !mismatch.Shell.Behind {
+		t.Fatalf("at-head baseline mismatch status = %#v, %v", mismatch, err)
+	}
+
+	shell.AppliedBaseline = model.CloneLiveStates(state.Shared)
+	shell.Conflict = &model.Conflict{Kind: model.ConflictOverlap, Identity: aliasIdentity, BaseRevision: 1, SharedRevision: state.HeadRevision, Token: "conflict-token"}
+	state.Shells[b.ShellID] = shell
+	conflicted, err := workflowStatusFromState(state, b.ShellID)
+	if err != nil || conflicted.Shell == nil || !conflicted.Shell.Behind {
+		t.Fatalf("conflict truth status = %#v, %v", conflicted, err)
+	}
+
+	shell.Conflict = nil
+	shell.LastRecoveredError = RecoveredApply
+	state.Shells[b.ShellID] = shell
+	recovered, err := workflowStatusFromState(state, b.ShellID)
+	if err != nil || recovered.Shell == nil || !recovered.Shell.Behind {
+		t.Fatalf("recovery truth status = %#v, %v", recovered, err)
 	}
 }
 
@@ -1057,6 +1185,49 @@ func overlapHarness(t *testing.T) (serviceHarness, model.ShellCredential, model.
 		t.Fatalf("overlap did not conflict: %#v", loser)
 	}
 	return harness, b, loser.Conflicts[0]
+}
+
+func canonicalResolveHarness(t *testing.T) (serviceHarness, model.ShellCredential, model.Conflict, []model.LiveIdentityState) {
+	t.Helper()
+	harness := materializedServiceHarness(t, fakeLiveSecretPolicy{})
+	a := serviceCredential(t, "shell-a", 'A')
+	b := serviceCredential(t, "shell-b", 'B')
+	harness.attach(t, a, "attach-a")
+	harness.attach(t, b, "attach-b")
+	path := model.LiveIdentityState{
+		Identity: model.Identity{Kind: model.LivePath, Name: "PATH"},
+		Value:    model.ListLiveValue([]string{"", "/one", "/one", "/two"}),
+	}
+	fpath := model.LiveIdentityState{
+		Identity: model.Identity{Kind: model.LiveFPath, Name: "FPATH"},
+		Value:    model.ListLiveValue([]string{"/functions/one", "", "/functions/two"}),
+	}
+	harness.publish(t, a, "publish-lists", 1,
+		model.LiveChange{Kind: model.LiveAdd, Identity: path.Identity, Value: model.CloneLiveValue(path.Value)},
+		model.LiveChange{Kind: model.LiveAdd, Identity: fpath.Identity, Value: model.CloneLiveValue(fpath.Value)},
+	)
+	target := []model.LiveIdentityState{fpath, serviceState("EDITOR", "shared"), path}
+	for index, credential := range []model.ShellCredential{a, b} {
+		pending, err := harness.service.PreparePull(context.Background(), model.PreparePullRequest{
+			OperationID: fmt.Sprintf("prepare-lists-%d", index), Credential: credential, AppliedRevision: 1,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := harness.service.Acknowledge(context.Background(), model.AcknowledgeRequest{
+			OperationID: fmt.Sprintf("ack-lists-%d", index), Credential: credential,
+			Revision: pending.PendingRevision, Token: pending.Token, Snapshot: serviceSnapshot(target...),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	harness.publish(t, a, "winner", 2, serviceUpdate(serviceIdentity("EDITOR"), "winner"))
+	loser := harness.publish(t, b, "loser", 2, serviceUpdate(serviceIdentity("EDITOR"), "loser"))
+	if len(loser.Conflicts) != 1 {
+		t.Fatalf("overlap did not conflict: %#v", loser)
+	}
+	fresh := []model.LiveIdentityState{serviceState("EDITOR", "loser"), path, fpath}
+	return harness, b, loser.Conflicts[0], fresh
 }
 
 func serviceSnapshot(states ...model.LiveIdentityState) model.LiveSnapshot {

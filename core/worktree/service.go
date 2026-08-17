@@ -651,7 +651,12 @@ func (s *Service) ResolveShared(ctx context.Context, request model.ResolveShared
 		if shell.Conflict == nil || shell.Conflict.Identity != request.Conflict || shell.Conflict.Token != request.Token || !changesContainIdentity(shell.UnpublishedDelta, request.Conflict) || shell.Pending.Kind != PendingNone {
 			return ErrConflictRequiresResolution
 		}
-		if !equalLiveStates(observed, shell.CaptureBaseline) {
+		observedFingerprint, fingerprintErr := FingerprintSnapshot(model.LiveSnapshot{States: observed})
+		if fingerprintErr != nil {
+			return ErrConflictRequiresResolution
+		}
+		baselineFingerprint, fingerprintErr := FingerprintSnapshot(model.LiveSnapshot{States: shell.CaptureBaseline})
+		if fingerprintErr != nil || observedFingerprint != baselineFingerprint {
 			return ErrConflictRequiresResolution
 		}
 		changes, diffErr := DiffSnapshot(model.LiveSnapshot{States: observed}, model.LiveSnapshot{States: state.Shared})
@@ -826,7 +831,17 @@ func workflowStatusFromState(state State, shellID string) (model.WorktreeStatus,
 		if shell.AutoApplyOverride != nil {
 			autoApply = *shell.AutoApplyOverride
 		}
-		status.Shell = &model.ShellWorktreeStatus{Attached: true, AppliedRevision: shell.AppliedRevision, Behind: shell.Behind, AutoApply: autoApply}
+		appliedFingerprint, err := FingerprintSnapshot(model.LiveSnapshot{States: shell.AppliedBaseline})
+		if err != nil {
+			return model.WorktreeStatus{}, err
+		}
+		sharedFingerprint, err := FingerprintSnapshot(model.LiveSnapshot{States: state.Shared})
+		if err != nil {
+			return model.WorktreeStatus{}, err
+		}
+		behind := shell.Behind || shell.Conflict != nil || shell.LastRecoveredError != "" ||
+			shell.AppliedRevision < state.HeadRevision || appliedFingerprint != sharedFingerprint
+		status.Shell = &model.ShellWorktreeStatus{Attached: true, AppliedRevision: shell.AppliedRevision, Behind: behind, AutoApply: autoApply}
 		if shell.Conflict != nil {
 			status.Shell.ConflictCount = 1
 		}
