@@ -32,6 +32,7 @@ const (
 	worktreeStatus worktreeCommandKind = iota + 1
 	worktreeDiff
 	worktreeCommit
+	worktreeBranchList
 	worktreeBranch
 	worktreeCheckout
 	worktreeReset
@@ -102,6 +103,20 @@ func (c *CLI) runWorktree(args []string, stdout, stderr io.Writer) int {
 		}
 		result, err := c.worktreeWorkflow.Commit(ctx, command.message)
 		return renderWorktreeCommitResult(result, err, stdout, stderr)
+	case worktreeBranchList:
+		if isNilLike(c.worktreeReader) {
+			return c.fail(stdout, stderr, false, "worktree branches unavailable")
+		}
+		branches, err := c.worktreeReader.Branches(ctx)
+		if err != nil {
+			return c.fail(stdout, stderr, false, "worktree branches unavailable")
+		}
+		rendered, err := renderWorktreeBranches(branches)
+		if err != nil {
+			return c.fail(stdout, stderr, false, "worktree branches unavailable")
+		}
+		_, _ = io.WriteString(stdout, rendered)
+		return int(model.ExitClean)
 	case worktreeBranch:
 		if isNilLike(c.worktreeWorkflow) {
 			return c.fail(stdout, stderr, false, "worktree branch unavailable")
@@ -159,7 +174,10 @@ func parseWorktreeCommand(args []string) (worktreeCommand, string, bool) {
 		}
 		return worktreeCommand{kind: worktreeCommit, message: args[2]}, usage, true
 	case "branch":
-		usage := "usage: zsh-pro branch <name>"
+		usage := "usage: zsh-pro branch [name]"
+		if len(args) == 1 {
+			return worktreeCommand{kind: worktreeBranchList}, usage, true
+		}
 		if len(args) != 2 || !validWorktreeBranch(args[1]) {
 			return worktreeCommand{}, usage, false
 		}
@@ -279,6 +297,21 @@ func renderWorktreeDiff(diff model.CategorizedDiff) (string, error) {
 		for _, entry := range entries {
 			_, _ = fmt.Fprintf(&rendered, "  %s %s\n", entry.Kind, entry.Identity.Name)
 		}
+	}
+	return rendered.String(), nil
+}
+
+func renderWorktreeBranches(branches []string) (string, error) {
+	names := append([]string(nil), branches...)
+	for _, branch := range names {
+		if !validWorktreeBranch(branch) {
+			return "", errors.New("invalid worktree branch list")
+		}
+	}
+	sort.Strings(names)
+	var rendered bytes.Buffer
+	for _, branch := range names {
+		_, _ = fmt.Fprintln(&rendered, branch)
 	}
 	return rendered.String(), nil
 }

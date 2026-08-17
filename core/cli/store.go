@@ -21,6 +21,7 @@ type Store interface {
 type WorktreeReader interface {
 	WorkflowStatus(context.Context, string) (worktree.WorkflowStatus, error)
 	Diff(context.Context) (model.CategorizedDiff, error)
+	Branches(context.Context) ([]string, error)
 }
 
 // WorktreeWorkflow is the complete durable mutation boundary. Commit has no

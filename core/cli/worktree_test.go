@@ -31,6 +31,11 @@ func (service *recordingWorktree) Diff(context.Context) (model.CategorizedDiff, 
 	return service.diff, service.err
 }
 
+func (service *recordingWorktree) Branches(context.Context) ([]string, error) {
+	service.calls = append(service.calls, "branches")
+	return []string{"main", "feature"}, service.err
+}
+
 func (service *recordingWorktree) Commit(_ context.Context, message string) (model.WorktreeCommitResult, error) {
 	service.calls = append(service.calls, "commit:"+message)
 	return service.result, service.err
@@ -139,6 +144,7 @@ func TestCommitBranchCheckoutResetAndAutoApplyDelegateExactRequests(t *testing.T
 		out  string
 	}{
 		{name: "commit", args: []string{"commit", "-m", "message"}, call: "commit:message", out: "committed\n"},
+		{name: "branch list", args: []string{"branch"}, call: "branches", out: "feature\nmain\n"},
 		{name: "branch", args: []string{"branch", "feature"}, call: "branch:feature", out: "branch created\n"},
 		{name: "checkout", args: []string{"checkout", "feature"}, call: "checkout:feature:false", out: "checked out\n"},
 		{name: "checkout create", args: []string{"checkout", "-b", "new"}, call: "checkout:new:true", out: "checked out\n"},
@@ -194,7 +200,7 @@ func TestCommitOutcomesRemainTruthfulAndValueSafe(t *testing.T) {
 func TestUnsupportedGitAndMalformedWorktreeCommandsNeverReachDependencies(t *testing.T) {
 	invalid := [][]string{
 		{"status", "extra"}, {"diff", "--raw"}, {"commit"}, {"commit", "message"}, {"commit", "-m"}, {"commit", "-m", ""}, {"commit", "-m", "message", "extra"},
-		{"branch"}, {"branch", "one", "two"}, {"checkout"}, {"checkout", "-b"}, {"checkout", "--force", "main"}, {"reset"}, {"reset", "--soft"},
+		{"branch", "one", "two"}, {"checkout"}, {"checkout", "-b"}, {"checkout", "--force", "main"}, {"reset"}, {"reset", "--soft"},
 		{"config"}, {"config", "set", "auto-apply", "TRUE"}, {"config", "set", "auto-apply", "false", "extra"},
 		{"sync"}, {"sync", "--resolve", "shared"}, {"add", "."}, {"stage", "."}, {"merge", "main"}, {"rebase", "main"},
 		{"cherry-pick", "deadbeef"}, {"remote", "-v"}, {"push"}, {"pull"}, {"worktree", "add", "elsewhere"},
@@ -241,7 +247,7 @@ func TestWorktreeCommandsNeverUseLegacyStoreAuthority(t *testing.T) {
 	}
 	program := NewWithWorktree(nil, panicLegacyStore{}, nil, service, service)
 	for _, args := range [][]string{
-		{"status"}, {"diff"}, {"commit", "-m", "message"}, {"branch", "feature"},
+		{"status"}, {"diff"}, {"commit", "-m", "message"}, {"branch"}, {"branch", "feature"},
 		{"checkout", "feature"}, {"reset", "--hard"}, {"config", "set", "auto-apply", "true"},
 	} {
 		if code, _, stderr := runWorktreeCLI(t, program, args...); code != int(model.ExitClean) {
