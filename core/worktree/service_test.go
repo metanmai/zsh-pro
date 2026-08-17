@@ -254,6 +254,40 @@ func TestPreparePullAndAcknowledgeRequireExactFreshTarget(t *testing.T) {
 	}
 }
 
+func TestPreparePullUsesCurrentCaptureForPublishedThenResetTarget(t *testing.T) {
+	harness, _ := workflowServiceHarness(t)
+	credential := serviceCredential(t, "shell-a", 'A')
+	harness.attach(t, credential, "attach-a")
+	alias := model.Identity{Kind: model.LiveAlias, Name: "reset.me"}
+	harness.publish(t, credential, "publish-alias", 1, model.LiveChange{
+		Kind: model.LiveAdd, Identity: alias, Value: model.ScalarLiveValue("print -- dirty"),
+	})
+	if err := harness.service.ResetHard(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	pending, err := harness.service.PreparePull(context.Background(), model.PreparePullRequest{
+		OperationID: "prepare-reset", Credential: credential, AppliedRevision: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pending.PendingRevision != 3 || len(pending.Changes) != 1 || pending.Changes[0].Kind != model.LiveRemove || pending.Changes[0].Identity != alias {
+		t.Fatalf("reset transition = %#v", pending)
+	}
+	result, err := harness.service.Acknowledge(context.Background(), model.AcknowledgeRequest{
+		OperationID: "ack-reset", Credential: credential, Revision: pending.PendingRevision,
+		Token: pending.Token, Snapshot: serviceSnapshot(serviceState("EDITOR", "shared")),
+	})
+	if err != nil || !result.Acknowledged || result.AppliedRevision != 3 {
+		t.Fatalf("reset acknowledge = %#v, %v", result, err)
+	}
+	shell := harness.state(t).Shells[credential.ShellID]
+	if shell.Behind || shell.Pending.Kind != PendingNone || shell.AppliedRevision != 3 || !equalLiveStates(shell.CaptureBaseline, []model.LiveIdentityState{serviceState("EDITOR", "shared")}) {
+		t.Fatalf("reset-converged shell = %#v", shell)
+	}
+}
+
 func TestAcknowledgeCanonicalizesFreshIdentityRecordOrder(t *testing.T) {
 	harness := materializedServiceHarness(t, fakeLiveSecretPolicy{})
 	a := serviceCredential(t, "shell-a", 'A')

@@ -577,9 +577,8 @@ func (s *Service) PreparePull(ctx context.Context, request model.PreparePullRequ
 		if shell.Pending.Kind != PendingNone {
 			return ErrNeedsReconcile
 		}
-		base := shell.AppliedBaseline
+		base := shell.CaptureBaseline
 		if request.AppliedRevision != shell.AppliedRevision {
-			base = shell.CaptureBaseline
 			shell.AttachState = AttachStateCleanReconcile
 			shell.AppliedRevision = 0
 			shell.AppliedBaseline = nil
