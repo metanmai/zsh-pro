@@ -105,6 +105,51 @@ _zp_live_capture
 	}
 }
 
+func TestLiveCaptureSourceSkipsUnsupportedSymbolNamesBeforeBodies(t *testing.T) {
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("zsh not installed")
+	}
+	const unsupportedCanary = "unsupported-symbol-body-canary"
+	const validAliasBody = "print -r -- valid-alias"
+	const validFunctionBody = "\tprint -r -- valid-function\n\tprint -r -- second-line"
+	script := (Provider{}).LiveCaptureSource() + `
+aliases[valid.alias-1]='` + validAliasBody + `'
+aliases[azhw:zle-alias]='` + unsupportedCanary + `-alias'
+aliases[-leading]='` + unsupportedCanary + `-leading'
+functions[valid.function-1]=$'print -r -- valid-function\nprint -r -- second-line'
+functions[azhw:zle-history-line-set]='print -r -- ` + unsupportedCanary + `-function'
+functions[.leading]='print -r -- ` + unsupportedCanary + `-dot'
+_zp_live_capture
+`
+	cmd := exec.Command("zsh", "-f")
+	cmd.Stdin = strings.NewReader(script)
+	frame, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("live capture failed: %v", err)
+	}
+	if bytes.Contains(frame, []byte(unsupportedCanary)) || bytes.Contains(frame, []byte("azhw:zle-")) {
+		t.Fatal("unsupported symbol name or body entered the live frame")
+	}
+
+	snapshot, err := (Provider{}).DecodeLiveSnapshot(frame)
+	if err != nil {
+		t.Fatalf("DecodeLiveSnapshot: %v", err)
+	}
+	checks := []struct {
+		identity model.Identity
+		want     string
+	}{
+		{model.Identity{Kind: model.LiveAlias, Name: "valid.alias-1"}, validAliasBody},
+		{model.Identity{Kind: model.LiveFunction, Name: "valid.function-1"}, validFunctionBody},
+	}
+	for _, check := range checks {
+		got := findLiveTestState(t, snapshot, check.identity)
+		if got.Scalar == nil || *got.Scalar != check.want {
+			t.Errorf("%#v=%#v want scalar %q", check.identity, got, check.want)
+		}
+	}
+}
+
 func TestLiveCaptureSourceHasNoChildOrProcessLocalRecords(t *testing.T) {
 	source := (Provider{}).LiveCaptureSource()
 	if source == "" {
