@@ -12,10 +12,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
+	"unsafe"
 )
 
 const (
@@ -245,7 +247,7 @@ func openStateRootNoFollow(path string) (*os.File, error) {
 			_ = syscall.Close(fd)
 			return nil, fmt.Errorf("%w: invalid root path component", ErrStateStoreAuthentication)
 		}
-		next, openErr := syscall.Openat(fd, part, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_CLOEXEC|syscall.O_NOFOLLOW, 0)
+		next, openErr := stateOpenat(fd, part, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_CLOEXEC|syscall.O_NOFOLLOW, 0)
 		closeErr := syscall.Close(fd)
 		if openErr != nil {
 			return nil, fmt.Errorf("%w: open root component: %v", ErrStateStoreAuthentication, openErr)
@@ -305,10 +307,10 @@ func (s *StateStore) authenticateRoot() error {
 
 func (s *StateStore) openLock() (*os.File, error) {
 	rootFD := int(s.root.Fd())
-	fd, err := syscall.Openat(rootFD, stateLockFileName, syscall.O_RDWR|syscall.O_CREAT|syscall.O_EXCL|syscall.O_CLOEXEC|syscall.O_NOFOLLOW, 0o600)
+	fd, err := stateOpenat(rootFD, stateLockFileName, syscall.O_RDWR|syscall.O_CREAT|syscall.O_EXCL|syscall.O_CLOEXEC|syscall.O_NOFOLLOW, 0o600)
 	created := err == nil
 	if errors.Is(err, syscall.EEXIST) {
-		fd, err = syscall.Openat(rootFD, stateLockFileName, syscall.O_RDWR|syscall.O_CLOEXEC|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+		fd, err = stateOpenat(rootFD, stateLockFileName, syscall.O_RDWR|syscall.O_CLOEXEC|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("open state lock: %w", err)
@@ -335,7 +337,7 @@ func (s *StateStore) authenticateLockBinding(lock *os.File) error {
 	if lock == nil {
 		return fmt.Errorf("%w: missing state lock", ErrStateStoreAuthentication)
 	}
-	currentFD, err := syscall.Openat(int(s.root.Fd()), stateLockFileName, syscall.O_RDONLY|syscall.O_CLOEXEC|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	currentFD, err := stateOpenat(int(s.root.Fd()), stateLockFileName, syscall.O_RDONLY|syscall.O_CLOEXEC|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return fmt.Errorf("%w: reopen state lock binding", ErrStateStoreAuthentication)
 	}
@@ -382,7 +384,7 @@ func acquireStateLock(ctx context.Context, fd int) error {
 }
 
 func (s *StateStore) readCanonical() (State, []byte, error) {
-	fd, err := syscall.Openat(int(s.root.Fd()), stateFileName, syscall.O_RDONLY|syscall.O_CLOEXEC|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	fd, err := stateOpenat(int(s.root.Fd()), stateFileName, syscall.O_RDONLY|syscall.O_CLOEXEC|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if errors.Is(err, syscall.ENOENT) {
 		state := State{SchemaVersion: StateSchemaVersion}
 		canonical, marshalErr := MarshalState(state)
@@ -431,7 +433,7 @@ func (s *StateStore) replaceCanonical(payload []byte) (returnErr error) {
 		return err
 	}
 	rootFD := int(s.root.Fd())
-	fd, err := syscall.Openat(rootFD, name, syscall.O_WRONLY|syscall.O_CREAT|syscall.O_EXCL|syscall.O_CLOEXEC|syscall.O_NOFOLLOW, 0o600)
+	fd, err := stateOpenat(rootFD, name, syscall.O_WRONLY|syscall.O_CREAT|syscall.O_EXCL|syscall.O_CLOEXEC|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
 		return fmt.Errorf("create state temporary: %w", err)
 	}
@@ -441,7 +443,7 @@ func (s *StateStore) replaceCanonical(payload []byte) (returnErr error) {
 			_ = syscall.Close(fd)
 		}
 		if temporaryExists {
-			_ = syscall.Unlinkat(rootFD, name)
+			_ = stateUnlinkat(rootFD, name, 0)
 		}
 	}()
 	if err := syscall.Fchmod(fd, 0o600); err != nil {
@@ -526,7 +528,7 @@ func (s *StateStore) rename(oldRoot int, oldName string, newRoot int, newName st
 	if s.faults.rename != nil {
 		return s.faults.rename(oldRoot, oldName, newRoot, newName)
 	}
-	return syscall.Renameat(oldRoot, oldName, newRoot, newName)
+	return stateRenameat(oldRoot, oldName, newRoot, newName)
 }
 
 func (s *StateStore) syncDirectory(fd int) error {
@@ -541,10 +543,10 @@ func (s *StateStore) syncDirectory(fd int) error {
 func (s *StateStore) appendForensic(state State) error {
 	payload := []byte(fmt.Sprintf("revision=%d events=%d shells=%d receipts=%d\n", state.HeadRevision, len(state.Events), len(state.Shells), len(state.OperationReceipts)))
 	rootFD := int(s.root.Fd())
-	fd, err := syscall.Openat(rootFD, stateForensicFileName, syscall.O_WRONLY|syscall.O_APPEND|syscall.O_CREAT|syscall.O_EXCL|syscall.O_CLOEXEC|syscall.O_NOFOLLOW, 0o600)
+	fd, err := stateOpenat(rootFD, stateForensicFileName, syscall.O_WRONLY|syscall.O_APPEND|syscall.O_CREAT|syscall.O_EXCL|syscall.O_CLOEXEC|syscall.O_NOFOLLOW, 0o600)
 	created := err == nil
 	if errors.Is(err, syscall.EEXIST) {
-		fd, err = syscall.Openat(rootFD, stateForensicFileName, syscall.O_WRONLY|syscall.O_APPEND|syscall.O_CLOEXEC|syscall.O_NOFOLLOW, 0)
+		fd, err = stateOpenat(rootFD, stateForensicFileName, syscall.O_WRONLY|syscall.O_APPEND|syscall.O_CLOEXEC|syscall.O_NOFOLLOW, 0)
 	}
 	if err != nil {
 		return err
@@ -588,4 +590,89 @@ func (s *StateStore) appendForensic(state State) error {
 		payload = payload[written:]
 	}
 	return syscall.Fsync(fd)
+}
+
+// The standard syscall package exposes these descriptor-relative operations
+// unevenly across Linux and Darwin. Keep the wrappers here so neither target
+// falls back to reopening an authenticated path.
+func stateOpenat(fd int, path string, flags int, perm uint32) (int, error) {
+	pointer, err := syscall.BytePtrFromString(path)
+	if err != nil {
+		return -1, err
+	}
+	number, _, _, supported := stateAtSyscallNumbers()
+	if !supported {
+		return -1, syscall.ENOSYS
+	}
+	opened, _, callErr := syscall.Syscall6(number, uintptr(fd), uintptr(unsafe.Pointer(pointer)), uintptr(flags), uintptr(perm), 0, 0)
+	if callErr != 0 {
+		return -1, callErr
+	}
+	return int(opened), nil
+}
+
+func stateUnlinkat(fd int, path string, flags int) error {
+	pointer, err := syscall.BytePtrFromString(path)
+	if err != nil {
+		return err
+	}
+	_, number, _, supported := stateAtSyscallNumbers()
+	if !supported {
+		return syscall.ENOSYS
+	}
+	_, _, callErr := syscall.Syscall6(number, uintptr(fd), uintptr(unsafe.Pointer(pointer)), uintptr(flags), 0, 0, 0)
+	if callErr != 0 {
+		return callErr
+	}
+	return nil
+}
+
+func stateRenameat(oldFD int, oldPath string, newFD int, newPath string) error {
+	oldPointer, err := syscall.BytePtrFromString(oldPath)
+	if err != nil {
+		return err
+	}
+	newPointer, err := syscall.BytePtrFromString(newPath)
+	if err != nil {
+		return err
+	}
+	_, _, number, supported := stateAtSyscallNumbers()
+	if !supported {
+		return syscall.ENOSYS
+	}
+	_, _, callErr := syscall.Syscall6(number, uintptr(oldFD), uintptr(unsafe.Pointer(oldPointer)), uintptr(newFD), uintptr(unsafe.Pointer(newPointer)), 0, 0)
+	if callErr != 0 {
+		return callErr
+	}
+	return nil
+}
+
+func stateAtSyscallNumbers() (openat, unlinkat, renameat uintptr, supported bool) {
+	if runtime.GOOS == "darwin" {
+		return 463, 472, 465, true
+	}
+	switch runtime.GOARCH {
+	case "amd64":
+		return 257, 263, 264, true
+	case "arm64":
+		return 56, 35, 38, true
+	case "386":
+		return 295, 301, 302, true
+	case "arm":
+		return 322, 328, 329, true
+	case "ppc64", "ppc64le":
+		return 286, 292, 293, true
+	case "s390x":
+		return 288, 294, 295, true
+	case "mips", "mipsle":
+		return 4288, 4294, 4295, true
+	case "mips64", "mips64le":
+		return 5247, 5253, 5254, true
+	case "riscv64", "loong64":
+		// These architectures expose renameat2; the fifth argument is the
+		// zero flags value already supplied by stateRenameat.
+		return 56, 35, 276, true
+	default:
+		return 0, 0, 0, false
+	}
 }
