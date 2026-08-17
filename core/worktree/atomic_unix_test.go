@@ -425,6 +425,36 @@ func TestInterruptedResponseReopenSurfacesStoredReceipt(t *testing.T) {
 	}
 }
 
+func TestFaultForensicAppendDoesNotReverseCanonicalAndRecordsRecovery(t *testing.T) {
+	root := privateStateRoot(t)
+	store := seedStateStore(t, root)
+	defer closeStateStore(t, store)
+	store.faults.forensicAppend = func(int, []byte) (int, error) {
+		return 0, errors.New("forensic append fault")
+	}
+	if err := store.WithTransaction(context.Background(), func(state *State) error {
+		advanceStateForAtomicTest(t, state, "forensic-fault")
+		return nil
+	}); err != nil {
+		t.Fatalf("derived append reversed canonical success: %v", err)
+	}
+	store.faults.forensicAppend = nil
+	state, err := store.Read(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.HeadRevision != 2 || state.Shells["shell-1"].LastRecoveredError != RecoveredPersistence {
+		t.Fatalf("recovered diagnostic missing from canonical state: %#v", state.Shells["shell-1"])
+	}
+	forensic, err := os.ReadFile(filepath.Join(root, stateForensicFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(forensic, []byte("shared")) {
+		t.Fatalf("forensic projection exposed captured value: %q", forensic)
+	}
+}
+
 func TestAtomicReadersSeeOldOrCompleteNewAndIgnoreTemps(t *testing.T) {
 	root := privateStateRoot(t)
 	store := seedStateStore(t, root)
