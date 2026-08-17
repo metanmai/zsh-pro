@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"zsh-pro/core/model"
+	"zsh-pro/core/worktree"
 )
 
 // Store is the CLI's narrow profile-store dependency. The composition root
@@ -13,6 +14,23 @@ type Store interface {
 	Current() string
 	Checkout(ctx context.Context, name string) error
 	Read(ctx context.Context, branch string) (model.Profile, error)
+}
+
+// WorktreeReader is the complete value-safe public observation boundary. It
+// deliberately carries no legacy per-process current-profile operations.
+type WorktreeReader interface {
+	WorkflowStatus(context.Context, string) (worktree.WorkflowStatus, error)
+	Diff(context.Context) (model.CategorizedDiff, error)
+}
+
+// WorktreeWorkflow is the complete durable mutation boundary. Commit has no
+// staging/partial input, and checkout's create intent is explicit.
+type WorktreeWorkflow interface {
+	Commit(context.Context, string) (model.WorktreeCommitResult, error)
+	Branch(context.Context, string) error
+	Checkout(context.Context, string, bool) error
+	ResetHard(context.Context) error
+	SetAutoApplyDefault(context.Context, bool) error
 }
 
 // IngestTransactionStore is the CLI-neutral authenticated ingest surface. It

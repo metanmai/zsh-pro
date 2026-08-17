@@ -28,6 +28,8 @@ type CLI struct {
 	store            Store
 	emitter          Emitter
 	storeInitializer StoreInitializer
+	worktreeReader   WorktreeReader
+	worktreeWorkflow WorktreeWorkflow
 }
 
 // New returns a CLI bound to a Provider.
@@ -43,6 +45,22 @@ func NewWithStoreInitializer(p shell.Provider, s Store, e Emitter, initializer S
 }
 
 func newCLI(p shell.Provider, s Store, e Emitter, initializer StoreInitializer) *CLI {
+	return newCLIWithWorktree(p, s, e, initializer, nil, nil)
+}
+
+// NewWithWorktree binds the public Git-shaped controller to durable worktree
+// interfaces while retaining the existing constructor for source compatibility.
+func NewWithWorktree(p shell.Provider, s Store, e Emitter, reader WorktreeReader, workflow WorktreeWorkflow) *CLI {
+	return newCLIWithWorktree(p, s, e, nil, reader, workflow)
+}
+
+// NewWithStoreInitializerAndWorktree composes both explicit installation and
+// the durable worktree controller without widening either dependency.
+func NewWithStoreInitializerAndWorktree(p shell.Provider, s Store, e Emitter, initializer StoreInitializer, reader WorktreeReader, workflow WorktreeWorkflow) *CLI {
+	return newCLIWithWorktree(p, s, e, initializer, reader, workflow)
+}
+
+func newCLIWithWorktree(p shell.Provider, s Store, e Emitter, initializer StoreInitializer, reader WorktreeReader, workflow WorktreeWorkflow) *CLI {
 	if isNilLike(p) {
 		p = nil
 	}
@@ -52,7 +70,13 @@ func newCLI(p shell.Provider, s Store, e Emitter, initializer StoreInitializer) 
 	if isNilLike(e) {
 		e = NotReadyEmitter()
 	}
-	return &CLI{provider: p, store: s, emitter: e, storeInitializer: initializer}
+	if isNilLike(reader) {
+		reader = nil
+	}
+	if isNilLike(workflow) {
+		workflow = nil
+	}
+	return &CLI{provider: p, store: s, emitter: e, storeInitializer: initializer, worktreeReader: reader, worktreeWorkflow: workflow}
 }
 
 // Run executes a command. Exit codes: 0 clean, 1 runtime error, 2 usage,
@@ -94,10 +118,15 @@ func (c *CLI) Run(args []string, stdout, stderr io.Writer) int {
 		}
 		return c.runList(stdout, stderr)
 	case "status":
+		if c.worktreeReader != nil {
+			return c.runWorktree(args, stdout, stderr)
+		}
 		if len(args) != 1 {
 			return noArgumentUsage(stderr, args[0])
 		}
 		return c.runStatus(stdout, stderr)
+	case "diff", "commit", "branch", "checkout", "reset", "config":
+		return c.runWorktree(args, stdout, stderr)
 	case "emit":
 		return c.runEmit(args[1:], stdout, stderr)
 	case "runtime":
