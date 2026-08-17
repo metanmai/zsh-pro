@@ -1,10 +1,16 @@
 package activate
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"zsh-pro/core/model"
 )
+
+// BuildLivePatch derives one forward plan and its replacement reverse.
+func BuildLivePatch(_, _ []model.LiveIdentityState) (LivePatch, error) {
+	return LivePatch{}, errors.New("live patch construction is not implemented")
+}
 
 // Diff derives full deactivate operations from active, then full activate
 // operations from target. Shadow restores derive from Added, not Shadowed.

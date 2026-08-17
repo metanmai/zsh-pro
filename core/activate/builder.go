@@ -1,6 +1,7 @@
 package activate
 
 import (
+	"errors"
 	"regexp"
 	"strings"
 	"zsh-pro/core/model"
@@ -11,6 +12,11 @@ var symbolNameRE = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]*$`)
 var legacyDynamicPathRE = regexp.MustCompile(`^\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})(?:/[A-Za-z0-9_@%+=,.-]+)*$`)
 
 const unsetOptCommand = "unset" + "opt"
+
+// BuildEffective is the Phase 7 committed-worktree construction boundary.
+func BuildEffective(_ model.Profile, _ []model.OverlayEntry) (model.CommittedWorktree, error) {
+	return model.CommittedWorktree{}, errors.New("effective worktree construction is not implemented")
+}
 
 // Build converts only effectively managed profile entries into declarative intent.
 func Build(p model.Profile) model.Manifest {

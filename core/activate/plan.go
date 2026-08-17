@@ -1,6 +1,8 @@
 // Package activate contains shell-agnostic manifest and activation planning.
 package activate
 
+import "zsh-pro/core/model"
+
 // Plan contains all reverse operations followed by all forward operations.
 type Plan struct {
 	Deactivate []Op
@@ -9,6 +11,51 @@ type Plan struct {
 
 // Op is implemented by each agnostic activation operation.
 type Op interface{ activationOp() }
+
+// LivePatch carries the exact forward mutation and a complete replacement
+// reverse plan for the shell's newly acknowledged live state.
+type LivePatch struct {
+	Forward            []Op
+	ReplacementReverse []Op
+}
+
+// SetLiveScalar sets one scalar-valued live identity. Identity.Kind is limited
+// to environment, alias, and function by BuildLivePatch and the concrete
+// emitter validates it again before producing source.
+type SetLiveScalar struct {
+	Identity model.Identity
+	Value    string
+}
+
+func (SetLiveScalar) activationOp() {}
+
+// RemoveLiveScalar removes one scalar-valued live identity.
+type RemoveLiveScalar struct{ Identity model.Identity }
+
+func (RemoveLiveScalar) activationOp() {}
+
+// TransitionLiveList transforms one PATH/FPATH value while retaining both
+// sides so the concrete emitter can preserve occurrence ownership.
+type TransitionLiveList struct {
+	Identity                    model.Identity
+	BeforePresent, AfterPresent bool
+	Before, After               []string
+}
+
+func (TransitionLiveList) activationOp() {}
+
+// SetLiveOptionState and RemoveLiveOptionState model exact option state and an
+// explicit option tombstone without carrying shell syntax across the boundary.
+type SetLiveOptionState struct {
+	Identity model.Identity
+	Enabled  bool
+}
+
+func (SetLiveOptionState) activationOp() {}
+
+type RemoveLiveOptionState struct{ Identity model.Identity }
+
+func (RemoveLiveOptionState) activationOp() {}
 
 type RestoreScalar struct {
 	Name, Applied string
