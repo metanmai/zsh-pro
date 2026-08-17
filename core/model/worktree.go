@@ -1,12 +1,24 @@
 package model
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+	"math"
+	"regexp"
+	"strings"
+)
 
 const (
 	WorktreeSchemaV1        = "v1"
 	MaxSnapshotBytes        = 2 * 1024 * 1024
 	MaxSnapshotRecords      = 10_000
 	MaxResolutionTokenBytes = 128
+)
+
+var (
+	liveEnvNameRE    = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	liveSymbolNameRE = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]*$`)
+	liveTokenRE      = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]*$`)
 )
 
 // LiveKind is one supported shell-neutral live-state category.
@@ -251,32 +263,315 @@ func CloneLiveValue(value LiveValue) LiveValue {
 	return out
 }
 
-func ValidateIdentity(Identity) error { return errors.New("live identity validation not implemented") }
-
-func ValidateLiveIdentityState(LiveIdentityState) error {
-	return errors.New("live state validation not implemented")
+// ValidateIdentity accepts only the closed live kind set and conservative
+// shell-neutral names that the existing activation layer can reproduce.
+func ValidateIdentity(identity Identity) error {
+	if identity.Name == "" || strings.IndexByte(identity.Name, 0) >= 0 {
+		return errors.New("live identity name is invalid")
+	}
+	switch identity.Kind {
+	case LiveEnv:
+		if !liveEnvNameRE.MatchString(identity.Name) {
+			return fmt.Errorf("environment identity %q is invalid", identity.Name)
+		}
+	case LiveAlias, LiveFunction:
+		if !liveSymbolNameRE.MatchString(identity.Name) {
+			return fmt.Errorf("symbol identity %q is invalid", identity.Name)
+		}
+	case LivePath:
+		if identity.Name != "PATH" {
+			return fmt.Errorf("path identity %q is invalid", identity.Name)
+		}
+	case LiveFPath:
+		if identity.Name != "FPATH" {
+			return fmt.Errorf("fpath identity %q is invalid", identity.Name)
+		}
+	case LiveOption:
+		if !liveEnvNameRE.MatchString(identity.Name) {
+			return fmt.Errorf("option identity %q is invalid", identity.Name)
+		}
+	default:
+		return fmt.Errorf("live identity kind %q is unsupported", identity.Kind)
+	}
+	return nil
 }
 
-func ValidateLiveSnapshot(LiveSnapshot) error {
-	return errors.New("live snapshot validation not implemented")
+// ValidateLiveValue verifies presence, the kind-selected payload, and framed
+// NUL exclusion before a value crosses into diff or persistence code.
+func ValidateLiveValue(kind LiveKind, value LiveValue) error {
+	if !value.Present {
+		if value.Scalar != nil || value.List != nil || value.Option != nil {
+			return errors.New("removed live value carries a payload")
+		}
+		return nil
+	}
+	switch kind {
+	case LiveEnv, LiveAlias, LiveFunction:
+		if value.Scalar == nil || value.List != nil || value.Option != nil {
+			return fmt.Errorf("live kind %q requires a scalar payload", kind)
+		}
+		if strings.IndexByte(*value.Scalar, 0) >= 0 {
+			return errors.New("live scalar contains NUL")
+		}
+	case LivePath, LiveFPath:
+		if value.Scalar != nil || value.Option != nil {
+			return fmt.Errorf("live kind %q requires a list payload", kind)
+		}
+		for _, element := range value.List {
+			if strings.IndexByte(element, 0) >= 0 {
+				return errors.New("live list element contains NUL")
+			}
+		}
+	case LiveOption:
+		if value.Option == nil || value.Scalar != nil || value.List != nil {
+			return errors.New("live option requires a boolean payload")
+		}
+	default:
+		return fmt.Errorf("live value kind %q is unsupported", kind)
+	}
+	return nil
 }
 
-func EqualLiveValue(LiveKind, LiveValue, LiveValue) bool { return false }
-
-func NormalizeLiveStates([]LiveIdentityState) ([]LiveIdentityState, error) {
-	return nil, errors.New("live state normalization not implemented")
+func ValidateLiveIdentityState(state LiveIdentityState) error {
+	if err := ValidateIdentity(state.Identity); err != nil {
+		return err
+	}
+	return ValidateLiveValue(state.Identity.Kind, state.Value)
 }
 
-func NormalizeOverlay([]OverlayEntry) ([]OverlayEntry, error) {
-	return nil, errors.New("live overlay normalization not implemented")
+func ValidateLiveSnapshot(snapshot LiveSnapshot) error {
+	if snapshot.ByteSize > MaxSnapshotBytes {
+		return fmt.Errorf("live snapshot is %d bytes; maximum is %d", snapshot.ByteSize, MaxSnapshotBytes)
+	}
+	if len(snapshot.States) > MaxSnapshotRecords {
+		return fmt.Errorf("live snapshot has %d records; maximum is %d", len(snapshot.States), MaxSnapshotRecords)
+	}
+	var semanticBytes uint64
+	for _, state := range snapshot.States {
+		if err := ValidateLiveIdentityState(state); err != nil {
+			return err
+		}
+		var err error
+		semanticBytes, err = checkedLiveAdd(semanticBytes, uint64(len(state.Identity.Kind)))
+		if err == nil {
+			semanticBytes, err = checkedLiveAdd(semanticBytes, uint64(len(state.Identity.Name)))
+		}
+		if err == nil {
+			semanticBytes, err = checkedLiveAdd(semanticBytes, liveValueBytes(state.Value))
+		}
+		if err != nil || semanticBytes > MaxSnapshotBytes {
+			return fmt.Errorf("live snapshot semantic payload exceeds %d bytes", MaxSnapshotBytes)
+		}
+	}
+	return nil
+}
+
+func checkedLiveAdd(left, right uint64) (uint64, error) {
+	if math.MaxUint64-left < right {
+		return left, errors.New("live snapshot size overflow")
+	}
+	return left + right, nil
+}
+
+func liveValueBytes(value LiveValue) uint64 {
+	if !value.Present {
+		return 0
+	}
+	if value.Scalar != nil {
+		return uint64(len(*value.Scalar))
+	}
+	if value.Option != nil {
+		return 1
+	}
+	var size uint64
+	for _, element := range value.List {
+		if math.MaxUint64-size < uint64(len(element))+1 {
+			return math.MaxUint64
+		}
+		size += uint64(len(element)) + 1
+	}
+	return size
+}
+
+func EqualLiveValue(kind LiveKind, left, right LiveValue) bool {
+	if ValidateLiveValue(kind, left) != nil || ValidateLiveValue(kind, right) != nil {
+		return false
+	}
+	if left.Present != right.Present {
+		return false
+	}
+	if !left.Present {
+		return true
+	}
+	switch kind {
+	case LiveEnv, LiveAlias, LiveFunction:
+		return *left.Scalar == *right.Scalar
+	case LivePath, LiveFPath:
+		if len(left.List) != len(right.List) {
+			return false
+		}
+		for index := range left.List {
+			if left.List[index] != right.List[index] {
+				return false
+			}
+		}
+		return true
+	case LiveOption:
+		return *left.Option == *right.Option
+	default:
+		return false
+	}
+}
+
+// NormalizeLiveStates keeps one defensively copied final occurrence per exact
+// identity while preserving the relative order of those final occurrences.
+func NormalizeLiveStates(states []LiveIdentityState) ([]LiveIdentityState, error) {
+	last := make(map[Identity]int, len(states))
+	for index, state := range states {
+		if err := ValidateLiveIdentityState(state); err != nil {
+			return nil, err
+		}
+		last[state.Identity] = index
+	}
+	out := make([]LiveIdentityState, 0, len(last))
+	for index, state := range states {
+		if last[state.Identity] != index {
+			continue
+		}
+		out = append(out, LiveIdentityState{Identity: state.Identity, Value: CloneLiveValue(state.Value)})
+	}
+	return out, nil
+}
+
+// NormalizeOverlay applies the same final-occurrence authority to explicit
+// values and tombstones. A tombstone can never smuggle a value payload.
+func NormalizeOverlay(entries []OverlayEntry) ([]OverlayEntry, error) {
+	last := make(map[Identity]int, len(entries))
+	for index, entry := range entries {
+		if err := ValidateIdentity(entry.Identity); err != nil {
+			return nil, err
+		}
+		if entry.Tombstone {
+			if err := ValidateLiveValue(entry.Identity.Kind, entry.Value); err != nil || entry.Value.Present {
+				return nil, errors.New("live tombstone carries a value")
+			}
+		} else {
+			if err := ValidateLiveValue(entry.Identity.Kind, entry.Value); err != nil {
+				return nil, err
+			}
+			if !entry.Value.Present {
+				return nil, errors.New("live overlay value is not present")
+			}
+		}
+		last[entry.Identity] = index
+	}
+	out := make([]OverlayEntry, 0, len(last))
+	for index, entry := range entries {
+		if last[entry.Identity] != index {
+			continue
+		}
+		out = append(out, OverlayEntry{Identity: entry.Identity, Value: CloneLiveValue(entry.Value), Tombstone: entry.Tombstone})
+	}
+	return out, nil
 }
 
 func NextRevision(revision uint64) (uint64, error) {
-	return revision, errors.New("revision transition not implemented")
+	if revision == math.MaxUint64 {
+		return revision, errors.New("worktree revision overflow")
+	}
+	return revision + 1, nil
 }
 
-func NewCommittedWorktree(Profile, LiveProjection) CommittedWorktree { return CommittedWorktree{} }
+func NewCommittedWorktree(source Profile, projection LiveProjection) CommittedWorktree {
+	projection.Schema = WorktreeSchemaV1
+	return CommittedWorktree{
+		Schema:     WorktreeSchemaV1,
+		Source:     CloneProfile(source),
+		Projection: CloneLiveProjection(projection),
+	}
+}
+
+// CloneProfile copies every slice and pointer reachable from the source IR.
+func CloneProfile(profile Profile) Profile {
+	out := Profile{Entries: make([]Entry, len(profile.Entries))}
+	for index, entry := range profile.Entries {
+		out.Entries[index] = cloneProfileEntry(entry)
+	}
+	if profile.Entries == nil {
+		out.Entries = nil
+	}
+	return out
+}
+
+func cloneProfileEntry(entry Entry) Entry {
+	out := entry
+	out.Names = cloneStrings(entry.Names)
+	out.DeclarationFlags = cloneStrings(entry.DeclarationFlags)
+	out.OptionFlags = cloneStrings(entry.OptionFlags)
+	if entry.Secret != nil {
+		secret := *entry.Secret
+		out.Secret = &secret
+	}
+	if entry.RuntimeValue != nil {
+		value := *entry.RuntimeValue
+		out.RuntimeValue = &value
+	}
+	if entry.FunctionBody != nil {
+		body := *entry.FunctionBody
+		out.FunctionBody = &body
+	}
+	if entry.ListValue != nil {
+		value := &ListValue{Segments: append([]ListSegment(nil), entry.ListValue.Segments...)}
+		if entry.ListValue.Segments == nil {
+			value.Segments = nil
+		}
+		out.ListValue = value
+	}
+	return out
+}
+
+func CloneLiveStates(states []LiveIdentityState) []LiveIdentityState {
+	if states == nil {
+		return nil
+	}
+	out := make([]LiveIdentityState, len(states))
+	for index, state := range states {
+		out[index] = LiveIdentityState{Identity: state.Identity, Value: CloneLiveValue(state.Value)}
+	}
+	return out
+}
+
+func CloneLiveChanges(changes []LiveChange) []LiveChange {
+	if changes == nil {
+		return nil
+	}
+	out := make([]LiveChange, len(changes))
+	for index, change := range changes {
+		out[index] = LiveChange{Kind: change.Kind, Identity: change.Identity, Value: CloneLiveValue(change.Value)}
+	}
+	return out
+}
+
+func CloneLiveProjection(projection LiveProjection) LiveProjection {
+	out := projection
+	out.States = CloneLiveStates(projection.States)
+	out.Tombstones = append([]Identity(nil), projection.Tombstones...)
+	if projection.Tombstones == nil {
+		out.Tombstones = nil
+	}
+	return out
+}
+
+func cloneStrings(values []string) []string {
+	if values == nil {
+		return nil
+	}
+	return append([]string(nil), values...)
+}
 
 func (token ResolutionToken) Validate() error {
-	return errors.New("resolution token validation not implemented")
+	if len(token) == 0 || len(token) > MaxResolutionTokenBytes || !liveTokenRE.MatchString(string(token)) {
+		return errors.New("resolution token is invalid")
+	}
+	return nil
 }
