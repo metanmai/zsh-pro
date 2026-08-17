@@ -8,9 +8,12 @@ package store
 
 import (
 	"encoding/json"
+	"errors"
 
 	"zsh-pro/core/model"
 )
+
+var errCommittedWorktreeDTONotImplemented = errors.New("committed worktree DTO is not implemented")
 
 // Serialization design (resolves critical decision #1, option b): a store-local
 // DTO maps model.Profile<->JSON rather than tagging the Phase 2 model.Entry
@@ -122,6 +125,18 @@ func UnmarshalProfile(b []byte) (model.Profile, error) {
 		p.Entries[i] = fromEntryDTO(dto.Entries[i])
 	}
 	return p, nil
+}
+
+// MarshalCommittedWorktree is introduced by Phase 07. Its RED implementation
+// exists only so the behavior-first contract can compile through normal hooks.
+func MarshalCommittedWorktree(model.CommittedWorktree) ([]byte, error) {
+	return nil, errCommittedWorktreeDTONotImplemented
+}
+
+// UnmarshalCommittedWorktree is introduced by Phase 07. Its RED implementation
+// exists only so the behavior-first contract can compile through normal hooks.
+func UnmarshalCommittedWorktree([]byte) (model.CommittedWorktree, error) {
+	return model.CommittedWorktree{}, errCommittedWorktreeDTONotImplemented
 }
 
 // toEntryDTO maps a domain Entry to its wire DTO, defensively copying Names so the

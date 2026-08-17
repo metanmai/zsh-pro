@@ -2,6 +2,7 @@ package store
 
 import (
 	"bytes"
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
@@ -540,6 +541,210 @@ func TestListValueDTOOmissionAndMalformedDynamicFailClosed(t *testing.T) {
 		t.Fatalf("self-only contract=%#v err=%v", out.Entries[0].ListValue, err)
 	}
 }
+
+func TestCommittedWorktreeDTORoundTripExactProjection(t *testing.T) {
+	empty := ""
+	document := model.NewCommittedWorktree(model.Profile{Entries: []model.Entry{
+		{
+			Text: "export EDITOR='nvim'", StartLine: 3, Category: model.CatEnvironment,
+			Kind: model.KindAssignment, CmdName: "export", Names: []string{"EDITOR"},
+			Value: "'nvim'", Exported: true, Managed: true, StructuralFidelityKnown: true,
+			ValueMode: model.ValueModeLiteral, RuntimeValue: stringPointerStore("nvim"),
+		},
+		{
+			Text: "export TOKEN='<zsh-pro secret file:TOKEN>'", StartLine: 4,
+			Category: model.CatSecrets, Kind: model.KindAssignment, CmdName: "export",
+			Names: []string{"TOKEN"}, Value: "'<zsh-pro secret file:TOKEN>'", Exported: true,
+			Managed: true, StructuralFidelityKnown: true, ValueMode: model.ValueModeUnsupported,
+			Secret: &model.SecretRef{Kind: model.SecretRefFile, Key: "TOKEN"},
+		},
+	}}, model.LiveProjection{
+		States: []model.LiveIdentityState{
+			{Identity: model.Identity{Kind: model.LiveEnv, Name: "EDITOR"}, Value: model.ScalarLiveValue("nvim\nnightly")},
+			{Identity: model.Identity{Kind: model.LiveAlias, Name: "empty"}, Value: model.LiveValue{Present: true, Scalar: &empty}},
+			{Identity: model.Identity{Kind: model.LiveFunction, Name: "multi"}, Value: model.ScalarLiveValue("print one\nprint two")},
+			{Identity: model.Identity{Kind: model.LivePath, Name: "PATH"}, Value: model.LiveValue{Present: true, List: []string{"/one", "", "/one"}}},
+			{Identity: model.Identity{Kind: model.LiveFPath, Name: "FPATH"}, Value: model.LiveValue{Present: true, List: []string{}}},
+			{Identity: model.Identity{Kind: model.LiveOption, Name: "AUTO_CD"}, Value: model.OptionLiveValue(false)},
+		},
+		Tombstones: []model.Identity{
+			{Kind: model.LiveEnv, Name: "REMOVED"},
+			{Kind: model.LiveAlias, Name: "old_alias"},
+		},
+	})
+
+	payload, err := MarshalCommittedWorktree(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(payload) == 0 || payload[len(payload)-1] != '\n' || (len(payload) > 1 && payload[len(payload)-2] == '\n') {
+		t.Fatalf("committed payload must have exactly one trailing newline: %q", tail(payload))
+	}
+	for _, fragment := range []string{`"worktree"`, `"schema": "v1"`, `"projection"`, `"states"`, `"tombstones"`, `"present": true`, `"option": false`} {
+		if !bytes.Contains(payload, []byte(fragment)) {
+			t.Fatalf("committed payload missing %s:\n%s", fragment, payload)
+		}
+	}
+	decoded, err := UnmarshalCommittedWorktree(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(decoded, document) {
+		t.Fatalf("committed DTO round trip mismatch:\n got=%#v\nwant=%#v\n%s", decoded, document, payload)
+	}
+	again, err := MarshalCommittedWorktree(decoded)
+	if err != nil || !bytes.Equal(again, payload) {
+		t.Fatalf("committed DTO is not deterministic: err=%v\nfirst=%s\nagain=%s", err, payload, again)
+	}
+
+	decoded.Source.Entries[0].Names[0] = "MUTATED"
+	*decoded.Projection.States[0].Value.Scalar = "mutated"
+	decoded.Projection.States[3].Value.List[0] = "mutated"
+	decoded.Projection.Tombstones[0].Name = "MUTATED"
+	if document.Source.Entries[0].Names[0] != "EDITOR" || *document.Projection.States[0].Value.Scalar != "nvim\nnightly" || document.Projection.States[3].Value.List[0] != "/one" || document.Projection.Tombstones[0].Name != "REMOVED" {
+		t.Fatal("decoded committed DTO aliases caller-owned source or projection storage")
+	}
+}
+
+func TestCommittedWorktreeDTOPresenceVersionAndShapeFailures(t *testing.T) {
+	legacy := []byte(`{"entries":[]}`)
+	if _, err := UnmarshalCommittedWorktree(legacy); err == nil {
+		t.Fatal("source-only legacy payload was inferred as a committed projection")
+	}
+	if profile, err := UnmarshalProfile(legacy); err != nil || profile.Entries != nil {
+		t.Fatalf("legacy source read changed: profile=%#v err=%v", profile, err)
+	}
+
+	rows := []struct {
+		name string
+		raw  string
+	}{
+		{name: "missing worktree schema", raw: `{"entries":[],"worktree":{"projection":{"schema":"v1","states":{"values":[]},"tombstones":{"values":[]}}}}`},
+		{name: "unknown worktree schema", raw: `{"entries":[],"worktree":{"schema":"v2","projection":{"schema":"v1","states":{"values":[]},"tombstones":{"values":[]}}}}`},
+		{name: "missing projection", raw: `{"entries":[],"worktree":{"schema":"v1"}}`},
+		{name: "unknown projection schema", raw: `{"entries":[],"worktree":{"schema":"v1","projection":{"schema":"v2","states":{"values":[]},"tombstones":{"values":[]}}}}`},
+		{name: "missing states", raw: `{"entries":[],"worktree":{"schema":"v1","projection":{"schema":"v1","tombstones":{"values":[]}}}}`},
+		{name: "missing tombstones", raw: `{"entries":[],"worktree":{"schema":"v1","projection":{"schema":"v1","states":{"values":[]}}}}`},
+		{name: "unknown kind", raw: `{"entries":[],"worktree":{"schema":"v1","projection":{"schema":"v1","states":{"values":[{"identity":{"kind":"future","name":"X"},"value":{"present":true,"scalar":"x"}}]},"tombstones":{"values":[]}}}}`},
+		{name: "absent state", raw: `{"entries":[],"worktree":{"schema":"v1","projection":{"schema":"v1","states":{"values":[{"identity":{"kind":"env","name":"X"},"value":{"present":false}}]},"tombstones":{"values":[]}}}}`},
+		{name: "duplicate state", raw: `{"entries":[],"worktree":{"schema":"v1","projection":{"schema":"v1","states":{"values":[{"identity":{"kind":"env","name":"X"},"value":{"present":true,"scalar":"one"}},{"identity":{"kind":"env","name":"X"},"value":{"present":true,"scalar":"two"}}]},"tombstones":{"values":[]}}}}`},
+		{name: "state tombstone overlap", raw: `{"entries":[],"worktree":{"schema":"v1","projection":{"schema":"v1","states":{"values":[{"identity":{"kind":"env","name":"X"},"value":{"present":true,"scalar":"one"}}]},"tombstones":{"values":[{"kind":"env","name":"X"}]}}}}`},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			if document, err := UnmarshalCommittedWorktree([]byte(row.raw)); err == nil {
+				t.Fatalf("malformed current projection decoded: %#v", document)
+			}
+		})
+	}
+}
+
+func TestDTOCompatibilityLegacyReaderAndWriterBoundary(t *testing.T) {
+	legacyBytes := []byte(`{
+  "entries": [
+    {
+      "text": "export EDITOR=nvim",
+      "startLine": 1,
+      "category": "environment",
+      "kind": "assignment",
+      "cmdName": "export",
+      "names": ["EDITOR"],
+      "value": "nvim",
+      "exported": true,
+      "managed": true,
+      "override": "auto",
+      "dynamic": false
+    }
+  ]
+}
+`)
+	legacySource, err := frozenLegacyUnmarshalProfile(legacyBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newSource, err := UnmarshalProfile(legacyBytes)
+	if err != nil || !reflect.DeepEqual(newSource, legacySource) {
+		t.Fatalf("new source reader changed frozen legacy bytes: got=%#v want=%#v err=%v", newSource, legacySource, err)
+	}
+	document := model.NewCommittedWorktree(newSource, model.LiveProjection{
+		States: []model.LiveIdentityState{{Identity: model.Identity{Kind: model.LiveEnv, Name: "EDITOR"}, Value: model.ScalarLiveValue("helix")}},
+	})
+	currentBytes, err := MarshalCommittedWorktree(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frozenSource, err := frozenLegacyUnmarshalProfile(currentBytes)
+	if err != nil || !reflect.DeepEqual(frozenSource, document.Source) {
+		t.Fatalf("frozen legacy reader lost new writer Source: got=%#v want=%#v err=%v\n%s", frozenSource, document.Source, err, currentBytes)
+	}
+	currentSource, err := UnmarshalProfile(currentBytes)
+	if err != nil || !reflect.DeepEqual(currentSource, document.Source) {
+		t.Fatalf("current source-only read invented projection state: got=%#v want=%#v err=%v", currentSource, document.Source, err)
+	}
+
+	partial := bytes.Replace(currentBytes, []byte(`"states": {`), []byte(`"futureStates": {`), 1)
+	if _, err := UnmarshalCommittedWorktree(partial); err == nil {
+		t.Fatal("partial current projection did not fail closed")
+	}
+	partialSource, err := UnmarshalProfile(partial)
+	if err != nil || !reflect.DeepEqual(partialSource, document.Source) {
+		t.Fatalf("partial projection corrupted explicitly requested legacy source read: got=%#v err=%v", partialSource, err)
+	}
+}
+
+func TestCommittedWorktreeDTORejectsPinnedSecretCanaries(t *testing.T) {
+	const canary = "runtime-secret-canary-07-05"
+	secret := model.Entry{
+		Text: "export TOKEN='<zsh-pro secret file:TOKEN>'", Category: model.CatSecrets,
+		Kind: model.KindAssignment, CmdName: "export", Names: []string{"TOKEN"},
+		Value: "'<zsh-pro secret file:TOKEN>'", Exported: true, Managed: true,
+		StructuralFidelityKnown: true, ValueMode: model.ValueModeUnsupported,
+		Secret: &model.SecretRef{Kind: model.SecretRefFile, Key: "TOKEN"},
+	}
+	valid := model.NewCommittedWorktree(model.Profile{Entries: []model.Entry{secret}}, model.LiveProjection{})
+	payload, err := MarshalCommittedWorktree(valid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(payload, []byte(canary)) {
+		t.Fatalf("secret canary entered valid redacted DTO: %s", payload)
+	}
+
+	pinned := model.NewCommittedWorktree(valid.Source, model.LiveProjection{States: []model.LiveIdentityState{
+		{Identity: model.Identity{Kind: model.LiveEnv, Name: "TOKEN"}, Value: model.ScalarLiveValue(canary)},
+	}})
+	if payload, err := MarshalCommittedWorktree(pinned); err == nil || len(payload) != 0 {
+		t.Fatalf("pinned runtime literal crossed DTO boundary: payload=%q err=%v", payload, err)
+	}
+
+	malformed := model.CloneProfile(valid.Source)
+	malformed.Entries[0].Text = "export TOKEN=" + canary
+	malformed.Entries[0].Value = canary
+	if payload, err := MarshalCommittedWorktree(model.NewCommittedWorktree(malformed, model.LiveProjection{})); err == nil || len(payload) != 0 {
+		t.Fatalf("malformed SecretRef source crossed DTO boundary: payload=%q err=%v", payload, err)
+	}
+}
+
+type frozenLegacyProfileDTO struct {
+	Entries []entryDTO `json:"entries"`
+}
+
+func frozenLegacyUnmarshalProfile(payload []byte) (model.Profile, error) {
+	var dto frozenLegacyProfileDTO
+	if err := json.Unmarshal(payload, &dto); err != nil {
+		return model.Profile{}, err
+	}
+	if len(dto.Entries) == 0 {
+		return model.Profile{}, nil
+	}
+	profile := model.Profile{Entries: make([]model.Entry, len(dto.Entries))}
+	for index := range dto.Entries {
+		profile.Entries[index] = fromEntryDTO(dto.Entries[index])
+	}
+	return profile, nil
+}
+
+func stringPointerStore(value string) *string { return &value }
 
 func tail(b []byte) []byte {
 	if len(b) <= 12 {
