@@ -204,6 +204,12 @@ func TestLiveSecretPolicyCompositionRejectsPostAttachSecretCanary(t *testing.T) 
 	}
 }
 
+func TestCanonicalWorktreeAuthority(t *testing.T) {
+	t.Run("public path authority repairs exact revision", TestCanonicalWorktreeAuthorityRepairsExactRevision)
+	t.Run("runtime authority is descriptor-bound and late", TestMainWorktreeRuntimeFactoryIsCanonicalLateBoundAuthority)
+	t.Run("real classifier rejects post-attach secret", TestLiveSecretPolicyCompositionRejectsPostAttachSecretCanary)
+}
+
 func TestRuntimeCaptureUsesCompositionStoreAndVaultForEveryLocation(t *testing.T) {
 	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
 		t.Skip("descriptor-bound runtime capture is unsupported on this platform")

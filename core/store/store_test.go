@@ -768,6 +768,18 @@ func TestCommitWorktreeSHA256ObjectFormat(t *testing.T) {
 	}
 }
 
+func TestWorktreeGitWorkflow(t *testing.T) {
+	t.Run("exact projection round trip", TestCommitWorktreeReadWorktreeRevisionExactRoundTrip)
+	t.Run("validated direct branch authority", TestResolveWorktreeRevisionUsesValidatedDirectBranchAuthority)
+	t.Run("current-base branch creation", TestCreateFromUsesExactCurrentBaseAndNeverOverwrites)
+	t.Run("expected-base conflict", TestCommitWorktreeExpectedBaseRaceIsVisibleConflict)
+	t.Run("secret canaries excluded", TestCommitWorktreeSecretCanariesAreRedactedOrRejected)
+	t.Run("object and tree types fail closed", TestReadWorktreeRevisionRejectsBlobTreeTagAndSHAshapedInputs)
+	t.Run("legacy authority isolated", TestLegacyStoreAdaptersRemainIsolatedFromExactWorktreeAuthority)
+	t.Run("new-reader legacy-writer compatibility", TestDTOCompatibilityLegacyReaderAndWriterBoundary)
+	t.Run("partial projection fails closed", TestCommittedWorktreeDTOPresenceVersionAndShapeFailures)
+}
+
 func TestCommitWorktreeConcurrentRefRaceHasOneWinner(t *testing.T) {
 	ctx := context.Background()
 	store := newWorktreeStore(t, nil)
