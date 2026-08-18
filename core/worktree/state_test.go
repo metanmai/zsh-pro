@@ -189,6 +189,104 @@ func TestStateVerifierAtRestAndSecretCanary(t *testing.T) {
 	}
 }
 
+func TestStateAdmittedIdentitiesStrictValueFreeRoundTrip(t *testing.T) {
+	state := validStateFixture(t)
+	want := []model.Identity{
+		{Kind: model.LiveAlias, Name: "late-alias"},
+		{Kind: model.LiveEnv, Name: "LATE_EDITOR"},
+	}
+
+	baseEncoded, err := MarshalState(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(baseEncoded, &raw); err != nil {
+		t.Fatal(err)
+	}
+	identitiesJSON, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw["admitted_identities"] = identitiesJSON
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := UnmarshalState(encoded)
+	if err != nil {
+		t.Fatalf("strict admitted identity metadata rejected: %v", err)
+	}
+	if !bytes.Contains(encoded, []byte(`"admitted_identities"`)) ||
+		!bytes.Contains(encoded, []byte("late-alias")) ||
+		!bytes.Contains(encoded, []byte("LATE_EDITOR")) {
+		t.Fatalf("admitted identity metadata missing from canonical state: %s", encoded)
+	}
+	field := reflect.ValueOf(decoded).FieldByName("AdmittedIdentities")
+	if !field.IsValid() {
+		t.Fatal("State.AdmittedIdentities is missing")
+	}
+	got, ok := field.Interface().([]model.Identity)
+	if !ok || !reflect.DeepEqual(got, want) {
+		t.Fatalf("AdmittedIdentities = %#v, want %#v", got, want)
+	}
+
+	delete(raw, "admitted_identities")
+	legacy, err := json.Marshal(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := UnmarshalState(legacy); err != nil {
+		t.Fatalf("legacy state without admitted identities rejected: %v", err)
+	}
+
+	var emptyRaw map[string]json.RawMessage
+	if err := json.Unmarshal(baseEncoded, &emptyRaw); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := emptyRaw["admitted_identities"]; !ok || string(got) != "[]" {
+		t.Fatalf("new materialized state did not emit a present empty admitted list: %s", baseEncoded)
+	}
+
+	for name, identities := range map[string][]model.Identity{
+		"duplicate":          {{Kind: model.LiveEnv, Name: "DUP"}, {Kind: model.LiveEnv, Name: "DUP"}},
+		"invalid":            {{Kind: model.LiveEnv, Name: "BAD-NAME"}},
+		"noncanonical order": {{Kind: model.LiveEnv, Name: "SECOND"}, {Kind: model.LiveAlias, Name: "first"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var candidate map[string]json.RawMessage
+			if err := json.Unmarshal(baseEncoded, &candidate); err != nil {
+				t.Fatal(err)
+			}
+			candidate["admitted_identities"], err = json.Marshal(identities)
+			if err != nil {
+				t.Fatal(err)
+			}
+			malformed, err := json.Marshal(candidate)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, decodeErr := UnmarshalState(malformed); decodeErr == nil {
+				t.Fatal("invalid admitted identity metadata accepted")
+			}
+		})
+	}
+
+	var strict map[string]any
+	if err := json.Unmarshal(encoded, &strict); err != nil {
+		t.Fatal(err)
+	}
+	identities := strict["admitted_identities"].([]any)
+	identities[0].(map[string]any)["Value"] = "value-canary-must-not-cross"
+	malformed, err := json.Marshal(strict)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := UnmarshalState(malformed); err == nil || strings.Contains(err.Error(), "value-canary-must-not-cross") {
+		t.Fatalf("value-bearing admitted identity did not fail closed without disclosure: %v", err)
+	}
+}
+
 func validStateFixture(t *testing.T) State {
 	t.Helper()
 	raw := bytes.Repeat([]byte("Z"), model.ShellCapabilityBytes)

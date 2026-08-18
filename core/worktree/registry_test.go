@@ -265,6 +265,102 @@ func TestAdmissionFailsClosedWithoutAttachmentOrSecretPolicy(t *testing.T) {
 	}
 }
 
+func TestRegistryRestoreAdmittedRevalidatesPolicy(t *testing.T) {
+	secretIdentity := model.Identity{Kind: model.LiveEnv, Name: "RESTORED_API_TOKEN"}
+	policy := fakeLiveSecretPolicy{secretIdentity: true}
+	profile := model.Profile{Entries: []model.Entry{
+		materializedAssignment("EDITOR", model.CatEnvironment),
+		materializedSecretEntry("PINNED_TOKEN"),
+	}}
+	restored := []model.Identity{
+		{Kind: model.LiveAlias, Name: "late-alias"},
+		{Kind: model.LiveEnv, Name: "LATE_EDITOR"},
+		{Kind: model.LiveEnv, Name: "EDITOR"},
+	}
+
+	first := NewRegistry(policy)
+	if err := first.Seed(profile); err != nil {
+		t.Fatal(err)
+	}
+	if err := restoreAdmittedForTest(t, first, restored); err != nil {
+		t.Fatalf("RestoreAdmitted() error = %v", err)
+	}
+	if err := restoreAdmittedForTest(t, first, restored); err != nil {
+		t.Fatalf("idempotent RestoreAdmitted() error = %v", err)
+	}
+	second := NewRegistry(policy)
+	if err := second.Seed(profile); err != nil {
+		t.Fatal(err)
+	}
+	if err := restoreAdmittedForTest(t, second, restored); err != nil {
+		t.Fatal(err)
+	}
+	for _, identity := range restored {
+		if !first.Owns(identity) || first.Owns(identity) != second.Owns(identity) {
+			t.Errorf("restored ownership differs for %#v", identity)
+		}
+	}
+
+	attachment, err := second.Attach(model.LiveSnapshot{States: []model.LiveIdentityState{
+		liveScalar(model.LiveEnv, "INHERITED", "ambient-value-canary"),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Owns(model.Identity{Kind: model.LiveEnv, Name: "INHERITED"}) ||
+		second.Admit(attachment, model.Identity{Kind: model.LiveEnv, Name: "INHERITED"}).Reason != AdmissionPresentAtAttach {
+		t.Fatal("ambient present-at-attach identity became restored ownership")
+	}
+
+	unsafe := []struct {
+		name     string
+		identity model.Identity
+	}{
+		{name: "malformed", identity: model.Identity{Kind: model.LiveEnv, Name: "BAD-NAME"}},
+		{name: "bookkeeping", identity: model.Identity{Kind: model.LiveFunction, Name: "_zp_private_helper"}},
+		{name: "volatile", identity: model.Identity{Kind: model.LiveEnv, Name: "PWD"}},
+		{name: "live secret", identity: secretIdentity},
+		{name: "pinned secret", identity: model.Identity{Kind: model.LiveEnv, Name: "PINNED_TOKEN"}},
+	}
+	for _, test := range unsafe {
+		t.Run(test.name, func(t *testing.T) {
+			registry := NewRegistry(policy)
+			if err := registry.Seed(profile); err != nil {
+				t.Fatal(err)
+			}
+			partial := model.Identity{Kind: model.LiveAlias, Name: "must-not-partially-restore"}
+			if err := restoreAdmittedForTest(t, registry, []model.Identity{partial, test.identity}); err == nil {
+				t.Fatal("unsafe durable admission accepted")
+			}
+			if registry.Owns(partial) {
+				t.Fatal("failed durable restoration partially mutated ownership")
+			}
+		})
+	}
+
+	if err := restoreAdmittedForTest(t, first, []model.Identity{{Kind: model.LiveEnv, Name: "DUP"}, {Kind: model.LiveEnv, Name: "DUP"}}); err == nil {
+		t.Fatal("duplicate durable admission accepted")
+	}
+	missingPolicy := NewRegistry(nil)
+	if err := missingPolicy.Seed(model.Profile{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := restoreAdmittedForTest(t, missingPolicy, []model.Identity{{Kind: model.LiveEnv, Name: "SAFE"}}); err == nil {
+		t.Fatal("durable admission accepted without a live-secret policy")
+	}
+}
+
+func restoreAdmittedForTest(t *testing.T, registry *Registry, identities []model.Identity) error {
+	t.Helper()
+	restorer, ok := any(registry).(interface {
+		RestoreAdmitted([]model.Identity) error
+	})
+	if !ok {
+		t.Fatal("Registry.RestoreAdmitted is missing")
+	}
+	return restorer.RestoreAdmitted(identities)
+}
+
 func materializedAssignment(name string, category model.Category) model.Entry {
 	value := "value"
 	return model.Entry{
