@@ -21,6 +21,10 @@ import (
 	"zsh-pro/core/model"
 )
 
+var expectedRecoveredPersistencePayload = []byte("ZPWT recovered-persistence v1\n")
+
+const expectedRecoveredPersistenceFileName = "recovered-persistence"
+
 func TestStateStorePathAndAuthenticatedDescriptorUseSameCanonicalGeneration(t *testing.T) {
 	root := privateStateRoot(t)
 	pathStore, err := OpenStateStore(root)
@@ -452,6 +456,204 @@ func TestFaultForensicAppendDoesNotReverseCanonicalAndRecordsRecovery(t *testing
 	}
 	if bytes.Contains(forensic, []byte("shared")) {
 		t.Fatalf("forensic projection exposed captured value: %q", forensic)
+	}
+}
+
+func TestRecoveredPersistenceMarkerPersistsAfterAppendFailure(t *testing.T) {
+	root := privateStateRoot(t)
+	store := seedStateStore(t, root)
+	directorySyncs := 0
+	store.faults.dirSync = func(fd int) error {
+		directorySyncs++
+		return syscall.Fsync(fd)
+	}
+	store.faults.forensicAppend = func(int, []byte) (int, error) {
+		return 0, errors.New("forensic append fault")
+	}
+	if err := store.WithTransaction(context.Background(), func(state *State) error {
+		advanceStateForAtomicTest(t, state, "durable-forensic-fault")
+		return nil
+	}); err != nil {
+		t.Fatalf("derived append reversed canonical success: %v", err)
+	}
+	if directorySyncs != 2 {
+		t.Fatalf("canonical and marker directory syncs = %d, want 2", directorySyncs)
+	}
+	markerPath := filepath.Join(root, expectedRecoveredPersistenceFileName)
+	marker, err := os.ReadFile(markerPath)
+	if err != nil {
+		t.Fatalf("read durable recovery marker: %v", err)
+	}
+	if !bytes.Equal(marker, expectedRecoveredPersistencePayload) {
+		t.Fatalf("recovery marker used a non-protocol payload of %d bytes", len(marker))
+	}
+	info, err := os.Stat(markerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 || !info.Mode().IsRegular() {
+		t.Fatalf("recovery marker mode/type = %v", info.Mode())
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(markerPath); err != nil {
+		t.Fatalf("store close removed durable recovery marker: %v", err)
+	}
+}
+
+func TestRecoveredPersistenceMarkerRejectsPathReplacementAndMalformedContent(t *testing.T) {
+	t.Run("authenticated descriptor ignores replacement path", func(t *testing.T) {
+		parent := t.TempDir()
+		root := filepath.Join(parent, "runtime")
+		if err := os.Mkdir(root, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		store := seedStateStore(t, root)
+		defer closeStateStore(t, store)
+		moved := filepath.Join(parent, "authenticated")
+		if err := os.Rename(root, moved); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(root, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		store.faults.forensicAppend = func(int, []byte) (int, error) {
+			return 0, errors.New("forensic append fault")
+		}
+		if err := store.WithTransaction(context.Background(), func(state *State) error {
+			advanceStateForAtomicTest(t, state, "descriptor-marker")
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if marker, err := os.ReadFile(filepath.Join(moved, expectedRecoveredPersistenceFileName)); err != nil || !bytes.Equal(marker, expectedRecoveredPersistencePayload) {
+			t.Fatalf("authenticated marker = %d bytes, err=%v", len(marker), err)
+		}
+		if _, err := os.Stat(filepath.Join(root, expectedRecoveredPersistenceFileName)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("replacement path received recovery evidence: %v", err)
+		}
+	})
+
+	malformed := []struct {
+		name  string
+		build func(t *testing.T, markerPath string)
+	}{
+		{"symlink", func(t *testing.T, markerPath string) {
+			target := filepath.Join(t.TempDir(), "outside")
+			if err := os.WriteFile(target, []byte("outside-canary"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, markerPath); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"directory", func(t *testing.T, markerPath string) {
+			if err := os.Mkdir(markerPath, 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"wrong-mode", func(t *testing.T, markerPath string) {
+			if err := os.WriteFile(markerPath, expectedRecoveredPersistencePayload, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"oversized", func(t *testing.T, markerPath string) {
+			payload := append(append([]byte(nil), expectedRecoveredPersistencePayload...), 'x')
+			if err := os.WriteFile(markerPath, payload, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"trailing", func(t *testing.T, markerPath string) {
+			payload := append(append([]byte(nil), expectedRecoveredPersistencePayload...), '\n')
+			if err := os.WriteFile(markerPath, payload, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"malformed", func(t *testing.T, markerPath string) {
+			payload := bytes.Repeat([]byte{'x'}, len(expectedRecoveredPersistencePayload))
+			if err := os.WriteFile(markerPath, payload, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+	for _, test := range malformed {
+		t.Run(test.name, func(t *testing.T) {
+			root := privateStateRoot(t)
+			store := seedStateStore(t, root)
+			defer closeStateStore(t, store)
+			markerPath := filepath.Join(root, expectedRecoveredPersistenceFileName)
+			test.build(t, markerPath)
+			if _, err := store.Read(context.Background()); err == nil {
+				t.Fatal("unsafe recovery marker accepted")
+			}
+			if info, err := os.Lstat(markerPath); err != nil || info == nil {
+				t.Fatalf("unsafe marker was erased: info=%v err=%v", info, err)
+			}
+		})
+	}
+}
+
+func TestRecoveredPersistenceMarkerClearsOnlyAfterProjection(t *testing.T) {
+	root := privateStateRoot(t)
+	store := seedStateStore(t, root)
+	store.faults.forensicAppend = func(int, []byte) (int, error) {
+		return 0, errors.New("forensic append fault")
+	}
+	if err := store.WithTransaction(context.Background(), func(state *State) error {
+		advanceStateForAtomicTest(t, state, "projection-source")
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	markerPath := filepath.Join(root, expectedRecoveredPersistenceFileName)
+	store.faults.forensicAppend = nil
+	store.faults.beforeRename = func() error { return errors.New("projection replace fault") }
+	if _, err := store.Read(context.Background()); err == nil {
+		t.Fatal("canonical projection failure was not returned")
+	}
+	if _, err := os.Stat(markerPath); err != nil {
+		t.Fatalf("projection failure cleared marker: %v", err)
+	}
+
+	store.faults.beforeRename = nil
+	directorySyncs := 0
+	store.faults.dirSync = func(fd int) error {
+		directorySyncs++
+		return syscall.Fsync(fd)
+	}
+	state, err := store.Read(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Shells["shell-1"].LastRecoveredError != RecoveredPersistence {
+		t.Fatalf("recovery was not projected: %#v", state.Shells["shell-1"])
+	}
+	if directorySyncs != 2 {
+		t.Fatalf("projection replace and marker clear syncs = %d, want 2", directorySyncs)
+	}
+	if _, err := os.Stat(markerPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("successfully projected marker still present: %v", err)
+	}
+	store.faults.dirSync = nil
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := OpenStateStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeStateStore(t, reopened)
+	state, err = reopened.Read(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Shells["shell-1"].LastRecoveredError != RecoveredPersistence {
+		t.Fatalf("canonical surfaced evidence did not survive reopen: %#v", state.Shells["shell-1"])
+	}
+	if _, err := os.Stat(markerPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("marker was reprojected after successful clear: %v", err)
 	}
 }
 
