@@ -510,6 +510,56 @@ func TestWorktreeCapabilityStdinAndReplyCleanupContract(t *testing.T) {
 	}
 }
 
+func TestWorktreeAttachReplyGrammarCarriesReconcileState(t *testing.T) {
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("zsh not installed")
+	}
+	dir := t.TempDir()
+	loader := filepath.Join(dir, "loader.zsh")
+	if err := os.WriteFile(loader, []byte((Provider{}).HookScript()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name          string
+		reply         string
+		wantRC        string
+		wantAttached  string
+		wantApplied   string
+		wantReconcile string
+	}{
+		{name: "exact", reply: "ZPWA 1 7 1 0", wantRC: "0", wantAttached: "1", wantApplied: "7", wantReconcile: "0"},
+		{name: "mismatch", reply: "ZPWA 1 7 1 1", wantRC: "0", wantAttached: "1", wantApplied: "0", wantReconcile: "1"},
+		{name: "missing reconcile", reply: "ZPWA 1 7 1", wantRC: "1", wantAttached: "0", wantApplied: "0", wantReconcile: "0"},
+		{name: "extra field", reply: "ZPWA 1 7 1 0 extra", wantRC: "1", wantAttached: "0", wantApplied: "0", wantReconcile: "0"},
+		{name: "noncanonical false", reply: "ZPWA 1 7 1 false", wantRC: "1", wantAttached: "0", wantApplied: "0", wantReconcile: "0"},
+		{name: "noncanonical zero", reply: "ZPWA 1 7 1 00", wantRC: "1", wantAttached: "0", wantApplied: "0", wantReconcile: "0"},
+		{name: "contradictory unattached", reply: "ZPWA 1 7 0 1", wantRC: "1", wantAttached: "0", wantApplied: "0", wantReconcile: "0"},
+		{name: "trailing response", reply: "ZPWA 1 7 1 0\ntrailing", wantRC: "1", wantAttached: "0", wantApplied: "0", wantReconcile: "0"},
+	}
+	const body = `
+source "$1" || exit 10
+typeset -g ZP_WORKTREE_SHELL_ID=${(l:64::a:)} ZP_WORKTREE_CAPABILITY=${(l:64::b:)}
+typeset -g ZP_WORKTREE_ATTACHED=0 ZP_WORKTREE_APPLIED_REVISION=0 ZP_WORKTREE_RECONCILE_REQUIRED=0
+typeset -ga ZP_WORKTREE_BASELINE_FIELDS=(ZP_LIVE_SNAPSHOT 1 E)
+typeset -ga ZP_WORKTREE_BASELINE_COUNTS=(2 1)
+_zp_worktree_invoke() { : ${(P)2::=$ZP_TEST_ATTACH_REPLY}; return 0 }
+_zp_worktree_ensure_attached
+rc=$?
+print -r -- "$rc|$ZP_WORKTREE_ATTACHED|$ZP_WORKTREE_APPLIED_REVISION|$ZP_WORKTREE_RECONCILE_REQUIRED"
+`
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cmd := exec.Command("zsh", "-f", "-c", body, "zsh-pro-attach-reply", loader)
+			cmd.Env = append(os.Environ(), "ZP_TEST_ATTACH_REPLY="+test.reply)
+			output, err := cmd.CombinedOutput()
+			want := strings.Join([]string{test.wantRC, test.wantAttached, test.wantApplied, test.wantReconcile}, "|") + "\n"
+			if err != nil || string(output) != want {
+				t.Fatalf("attach reply %q = (%v, %q), want %q", test.reply, err, output, want)
+			}
+		})
+	}
+}
+
 func TestWorktreeHookBoundariesAndAutoApplyContract(t *testing.T) {
 	script := (Provider{}).HookScript()
 	precmd := functionBody(script, "_zp_worktree_precmd")

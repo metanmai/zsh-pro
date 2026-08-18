@@ -619,6 +619,284 @@ func TestWorktreeAdversarialDriverContract(t *testing.T) {
 	}
 }
 
+const firstSyncCanonicalValue = "value-canary"
+
+type firstSyncFixture struct {
+	t           *testing.T
+	testRoot    string
+	binDir      string
+	binary      string
+	home        string
+	runtimeRoot string
+	loader      string
+	zshPath     string
+	basePath    string
+}
+
+func buildFirstSyncBinary(t *testing.T) (string, string) {
+	t.Helper()
+	testRoot := t.TempDir()
+	binDir := filepath.Join(testRoot, "bin")
+	if err := os.MkdirAll(binDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	binary := filepath.Join(binDir, "zsh-pro")
+	build := exec.Command("go", "build", "-o", binary, "./core/cmd/zsh-pro")
+	build.Dir = liveTestRepositoryRoot(t)
+	build.Env = append(os.Environ(), "GOTOOLCHAIN=local")
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build production binary: %v\n%s", err, output)
+	}
+	return testRoot, binary
+}
+
+func newFirstSyncFixture(t *testing.T, testRoot, binary, name, failure string) *firstSyncFixture {
+	t.Helper()
+	zshPath, err := exec.LookPath("zsh")
+	if err != nil {
+		t.Skip("zsh not installed")
+	}
+	root := filepath.Join(testRoot, name)
+	binDir := filepath.Join(root, "bin")
+	home := filepath.Join(root, "home")
+	runtimeRoot := filepath.Join(root, "runtime")
+	for _, dir := range []string{binDir, home} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	source := filepath.Join(home, "source.zsh")
+	if err := os.WriteFile(source, []byte("export ZP15_FIRST_SYNC_VALUE=initial\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	basePath := "/usr/bin:/bin"
+	ingest := exec.Command(binary, "ingest", source)
+	ingest.Env = []string{"HOME=" + home, "ZDOTDIR=" + home, "ZSHPRO_HOME=" + runtimeRoot, "PATH=" + basePath, "LC_ALL=C"}
+	if output, err := ingest.CombinedOutput(); err != nil {
+		t.Fatalf("production ingest: %v\n%s", err, output)
+	}
+	loader := filepath.Join(runtimeRoot, "loader.zsh")
+	if _, err := os.Stat(loader); err != nil {
+		t.Fatalf("installed loader: %v", err)
+	}
+
+	stateStore, err := worktree.OpenStateStore(runtimeRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := worktree.NewService(stateStore, worktree.NewRegistry(Provider{}))
+	if err != nil {
+		_ = stateStore.Close()
+		t.Fatal(err)
+	}
+	state, err := stateStore.Read(context.Background())
+	if err != nil {
+		_ = stateStore.Close()
+		t.Fatal(err)
+	}
+	capability, err := model.NewShellCapability(bytes.Repeat([]byte{'a'}, model.ShellCapabilityBytes))
+	if err != nil {
+		_ = stateStore.Close()
+		t.Fatal(err)
+	}
+	credential := model.ShellCredential{ShellID: strings.Repeat("a", 64), Capability: capability}
+	attached, err := service.Attach(context.Background(), model.AttachRequest{
+		OperationID: strings.Repeat("b", 64), Credential: credential,
+		Initial: model.LiveSnapshot{States: model.CloneLiveStates(state.Shared)},
+	})
+	if err != nil || !attached.Attached || attached.ReconcileRequired || attached.Revision != 1 {
+		_ = stateStore.Close()
+		t.Fatalf("seed shell attachment = (%+v, %v)", attached, err)
+	}
+	published, err := service.Publish(context.Background(), model.PublishRequest{
+		OperationID: strings.Repeat("c", 64), Credential: credential, AcknowledgedRevision: attached.Revision,
+		Delta: []model.LiveChange{{
+			Kind: model.LiveUpdate, Identity: model.Identity{Kind: model.LiveEnv, Name: "ZP15_FIRST_SYNC_VALUE"},
+			Value: model.ScalarLiveValue(firstSyncCanonicalValue),
+		}},
+	})
+	if err != nil || published.SharedRevision != 2 {
+		_ = stateStore.Close()
+		t.Fatalf("seed canonical mutation = (%+v, %v)", published, err)
+	}
+	if err := stateStore.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	shim := filepath.Join(binDir, "zsh-pro")
+	shimSource := `#!/bin/sh
+operation="${3-}"
+printf '%s\n' "$operation" >> "$ZP15_CALL_LOG"
+case "$ZP15_FAILURE:$operation" in
+  prepare:prepare) cat >/dev/null; exit 71 ;;
+  acknowledge:acknowledge) cat >/dev/null; exit 72 ;;
+  timeout:prepare) cat >/dev/null; sleep 1; exit 73 ;;
+esac
+exec "$ZP15_REAL_BINARY" "$@"
+`
+	if err := os.WriteFile(shim, []byte(shimSource), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return &firstSyncFixture{
+		t: t, testRoot: root, binDir: binDir, binary: binary, home: home, runtimeRoot: runtimeRoot,
+		loader: loader, zshPath: zshPath, basePath: basePath,
+	}
+}
+
+func (fixture *firstSyncFixture) shell(t *testing.T, failure string) (*retainedWorktreeShell, string) {
+	t.Helper()
+	dir := filepath.Join(fixture.testRoot, "shell")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	callLog := filepath.Join(fixture.testRoot, "calls")
+	env := []string{
+		"HOME=" + fixture.home,
+		"ZDOTDIR=" + fixture.home,
+		"ZSHPRO_HOME=" + fixture.runtimeRoot,
+		"PATH=" + fixture.binDir + ":" + fixture.basePath,
+		"TERM=dumb", "LC_ALL=C",
+		"ZP15_CALL_LOG=" + callLog,
+		"ZP15_FAILURE=" + failure,
+		"ZP15_REAL_BINARY=" + fixture.binary,
+	}
+	return startRetainedWorktreeShell(t, fixture.zshPath, dir, env), callLog
+}
+
+func readFirstSyncCalls(t *testing.T, path string) []string {
+	t.Helper()
+	payload, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.Fields(string(payload))
+}
+
+func firstSyncHead(t *testing.T, runtimeRoot string) uint64 {
+	t.Helper()
+	store, err := worktree.OpenStateStore(runtimeRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	state, err := store.Read(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return state.HeadRevision
+}
+
+func TestWorktreeFirstExplicitSyncReconciles(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("zsh not installed")
+	}
+	testRoot, binary := buildFirstSyncBinary(t)
+	for _, test := range []struct {
+		name        string
+		prelude     string
+		wantCalls   []string
+		wantInitial string
+	}{
+		{name: "mismatch-auto-apply-default", wantCalls: []string{"attach", "attach", "prepare", "acknowledge"}, wantInitial: "unset"},
+		{name: "mismatch-auto-apply-disabled", prelude: "export ZSHPRO_AUTO_APPLY=false", wantCalls: []string{"attach", "attach", "prepare", "acknowledge"}, wantInitial: "unset"},
+		{name: "exact-attach", prelude: "export ZP15_FIRST_SYNC_VALUE=" + firstSyncCanonicalValue, wantCalls: []string{"attach", "attach"}, wantInitial: firstSyncCanonicalValue},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newFirstSyncFixture(t, testRoot, binary, test.name, "")
+			shell, callLog := fixture.shell(t, "")
+			command := test.prelude + "\nsource " + worktreeShellQuote(fixture.loader) + ` || return 10
+print -r -- "initial:${ZP15_FIRST_SYNC_VALUE-unset}"
+zsh-pro sync
+sync_rc=$?
+print -r -- "result:$sync_rc:$ZP_WORKTREE_APPLIED_REVISION:$ZP_WORKTREE_RECONCILE_REQUIRED:${#ZP_WORKTREE_LAST_ERROR}:${ZP15_FIRST_SYNC_VALUE-unset}"
+zsh-pro status
+`
+			output := shell.runOK(t, command)
+			if !strings.Contains(output, "initial:"+test.wantInitial+"\n") ||
+				!strings.Contains(output, "result:0:2:0:0:"+firstSyncCanonicalValue+"\n") ||
+				!strings.Contains(output, "behind: false\n") {
+				t.Fatalf("first explicit sync did not converge: %q", output)
+			}
+			if calls := readFirstSyncCalls(t, callLog); strings.Join(calls, "\x00") != strings.Join(test.wantCalls, "\x00") {
+				t.Fatalf("first explicit sync operations = %v, want %v", calls, test.wantCalls)
+			}
+			if output := shell.runOK(t, `zsh-pro sync
+print -r -- "$ZP_WORKTREE_APPLIED_REVISION|$ZP_WORKTREE_RECONCILE_REQUIRED|${#ZP_WORKTREE_LAST_ERROR}|$ZP15_FIRST_SYNC_VALUE"
+`); output != "2|0|0|"+firstSyncCanonicalValue+"\n" {
+				t.Fatalf("repeated explicit sync = %q", output)
+			}
+			if head := firstSyncHead(t, fixture.runtimeRoot); head != 2 {
+				t.Fatalf("repeated explicit sync advanced canonical head to %d", head)
+			}
+		})
+	}
+}
+
+func TestWorktreeFirstExplicitSyncFailureStaysBehind(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("zsh not installed")
+	}
+	testRoot, binary := buildFirstSyncBinary(t)
+	for _, test := range []struct {
+		name     string
+		failure  string
+		override string
+		mutates  bool
+	}{
+		{name: "prepare", failure: "prepare"},
+		{name: "timeout", failure: "timeout"},
+		{name: "apply", override: "typeset -gr ZP15_FIRST_SYNC_VALUE=local", mutates: true},
+		{name: "capture", override: `functions[_zp15_capture_original]=${functions[_zp_worktree_capture]}
+typeset -gi ZP15_CAPTURE_COUNT=0
+_zp_worktree_capture() { (( ++ZP15_CAPTURE_COUNT )); (( ZP15_CAPTURE_COUNT < 3 )) || return 73; _zp15_capture_original "$@" }
+`, mutates: true},
+		{name: "acknowledge", failure: "acknowledge", mutates: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newFirstSyncFixture(t, testRoot, binary, test.name, test.failure)
+			shell, _ := fixture.shell(t, test.failure)
+			command := "source " + worktreeShellQuote(fixture.loader) + " || return 10\n" + test.override + `
+zsh-pro sync
+sync_rc=$?
+print -r -- "result:$sync_rc:$ZP_WORKTREE_APPLIED_REVISION:$ZP_WORKTREE_RECONCILE_REQUIRED:${#ZP_WORKTREE_LAST_ERROR}:${+ZP_ACTIVE_REVERSE_FN}:${+ZP_RECOVERY_REVERSE_FN}"
+zsh-pro status
+`
+			started := time.Now()
+			output := shell.runOK(t, command)
+			elapsed := time.Since(started)
+			if test.name == "timeout" && elapsed > 1200*time.Millisecond {
+				t.Fatalf("first-sync timeout exceeded absolute allowance: %s", elapsed)
+			}
+			lines := strings.Split(strings.TrimSpace(output), "\n")
+			if len(lines) == 0 || !strings.HasPrefix(lines[0], "result:") {
+				t.Fatalf("first-sync failure result missing: %q", output)
+			}
+			fields := strings.Split(lines[0], ":")
+			if len(fields) != 8 || fields[1] == "0" || fields[2] != "0" || fields[3] != "1" || fields[4] == "0" {
+				t.Fatalf("first-sync failure published false convergence: %q", output)
+			}
+			if test.mutates && fields[5] == "0" && fields[6] == "0" {
+				t.Fatalf("mutating failure retained no reverse owner: %q", output)
+			}
+			if !strings.Contains(output, "behind: true\n") {
+				t.Fatalf("first-sync failure status is not behind: %q", output)
+			}
+			if strings.Contains(output, firstSyncCanonicalValue) || strings.Contains(shell.stderr.String(), firstSyncCanonicalValue) {
+				t.Fatalf("first-sync failure leaked a live value: output=%q stderr=%q", output, shell.stderr.String())
+			}
+			if next := shell.runOK(t, "print -r -- next-command-sentinel"); next != "next-command-sentinel\n" {
+				t.Fatalf("retained shell unusable after %s: %q", test.name, next)
+			}
+		})
+	}
+}
+
 func TestWorktreeTwoShellEndToEnd(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")
