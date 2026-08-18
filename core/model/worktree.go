@@ -221,9 +221,10 @@ type AttachRequest struct {
 }
 
 type AttachResult struct {
-	Revision   uint64
-	Attached   bool
-	Exclusions []Exclusion
+	Revision          uint64
+	Attached          bool
+	ReconcileRequired bool
+	Exclusions        []Exclusion
 }
 
 type PublishRequest struct {

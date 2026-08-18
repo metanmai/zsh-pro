@@ -425,7 +425,12 @@ func (s *Service) Attach(ctx context.Context, request model.AttachRequest) (mode
 			shell.AttachState = AttachStateCleanReconcile
 			shell.Behind = true
 		}
-		result = model.AttachResult{Revision: state.HeadRevision, Attached: true, Exclusions: attachment.Exclusions()}
+		result = model.AttachResult{
+			Revision:          state.HeadRevision,
+			Attached:          true,
+			ReconcileRequired: shell.AttachState == AttachStateCleanReconcile,
+			Exclusions:        attachment.Exclusions(),
+		}
 		state.Shells[request.Credential.ShellID] = shell
 		appendReceipt(state, OperationReceipt{
 			ShellID: request.Credential.ShellID, OperationID: request.OperationID,
