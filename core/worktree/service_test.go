@@ -80,6 +80,96 @@ func TestAttachRequiredBeforePublishAndExactReplayPublishesNoDelta(t *testing.T)
 	}
 }
 
+func TestAttachResultTruthfullyReportsCleanReconcile(t *testing.T) {
+	reconcileRequired := func(t *testing.T, result model.AttachResult) bool {
+		t.Helper()
+		field := reflect.ValueOf(result).FieldByName("ReconcileRequired")
+		if !field.IsValid() || field.Kind() != reflect.Bool {
+			t.Fatal("AttachResult does not carry the reconcile-required decision")
+		}
+		return field.Bool()
+	}
+
+	t.Run("exact initial snapshot is applied at head", func(t *testing.T) {
+		harness := materializedServiceHarness(t, fakeLiveSecretPolicy{})
+		credential := serviceCredential(t, "shell-exact", 'E')
+		result, err := harness.service.Attach(context.Background(), model.AttachRequest{
+			OperationID: "attach-exact-truth", Credential: credential,
+			Initial: serviceSnapshot(serviceState("EDITOR", "shared")),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !result.Attached || result.Revision != 1 || reconcileRequired(t, result) {
+			t.Fatalf("exact attach result = %#v", result)
+		}
+		shell := harness.state(t).Shells[credential.ShellID]
+		if shell.AttachState != AttachStateAtHead || shell.AppliedRevision != 1 || shell.Behind ||
+			!equalLiveStates(shell.AppliedBaseline, []model.LiveIdentityState{serviceState("EDITOR", "shared")}) {
+			t.Fatalf("exact attach shell truth = %#v", shell)
+		}
+	})
+
+	t.Run("mismatched initial snapshot remains behind and replays identically", func(t *testing.T) {
+		harness := materializedServiceHarness(t, fakeLiveSecretPolicy{})
+		credential := serviceCredential(t, "shell-mismatch", 'M')
+		request := model.AttachRequest{
+			OperationID: "attach-mismatch-truth", Credential: credential,
+			Initial: serviceSnapshot(serviceState("EDITOR", "stale-local")),
+		}
+		harness.store.faults.afterRename = func() error { return errors.New("lost attach response") }
+		result, err := harness.service.Attach(context.Background(), request)
+		if err == nil || !result.Attached || result.Revision != 1 || !reconcileRequired(t, result) {
+			t.Fatalf("lost-response mismatch attach = %#v, %v", result, err)
+		}
+		harness.store.faults.afterRename = nil
+		replayed, err := reopenService(t, harness.root, fakeLiveSecretPolicy{}).Attach(context.Background(), request)
+		if err != nil || !reflect.DeepEqual(replayed, result) || !reconcileRequired(t, replayed) {
+			t.Fatalf("mismatch replay = %#v, %v; want %#v", replayed, err, result)
+		}
+		shell := harness.state(t).Shells[credential.ShellID]
+		if shell.AttachState != AttachStateCleanReconcile || shell.AppliedRevision != 0 || !shell.Behind || len(shell.AppliedBaseline) != 0 {
+			t.Fatalf("mismatch attach shell truth = %#v", shell)
+		}
+	})
+
+	t.Run("concurrent later head is never claimed by attach or stale acknowledgement", func(t *testing.T) {
+		harness := materializedServiceHarness(t, fakeLiveSecretPolicy{})
+		a := serviceCredential(t, "shell-a", 'A')
+		c := serviceCredential(t, "shell-c", 'C')
+		harness.attach(t, a, "attach-a-before-c")
+		harness.publish(t, a, "publish-head-2", 1, serviceUpdate(serviceIdentity("REMOTE_2"), "two"))
+
+		attached, err := harness.service.Attach(context.Background(), model.AttachRequest{
+			OperationID: "attach-c-at-head-2", Credential: c,
+			Initial: serviceSnapshot(serviceState("EDITOR", "shared")),
+		})
+		if err != nil || attached.Revision != 2 || !reconcileRequired(t, attached) {
+			t.Fatalf("concurrent mismatch attach = %#v, %v", attached, err)
+		}
+		if shell := harness.state(t).Shells[c.ShellID]; shell.AppliedRevision != 0 || !shell.Behind {
+			t.Fatalf("attach falsely applied concurrent head: %#v", shell)
+		}
+		pending, err := harness.service.PreparePull(context.Background(), model.PreparePullRequest{
+			OperationID: "prepare-c-head-2", Credential: c, AppliedRevision: 0,
+		})
+		if err != nil || pending.PendingRevision != 2 {
+			t.Fatalf("prepare head 2 = %#v, %v", pending, err)
+		}
+		harness.publish(t, a, "publish-head-3", 1, serviceUpdate(serviceIdentity("REMOTE_3"), "three"))
+		acknowledged, err := harness.service.Acknowledge(context.Background(), model.AcknowledgeRequest{
+			OperationID: "ack-c-head-2", Credential: c, Revision: pending.PendingRevision, Token: pending.Token,
+			Snapshot: serviceSnapshot(serviceState("EDITOR", "shared"), serviceState("REMOTE_2", "two")),
+		})
+		if err != nil || !acknowledged.Acknowledged || acknowledged.AppliedRevision != 2 {
+			t.Fatalf("stale target acknowledgement = %#v, %v", acknowledged, err)
+		}
+		if shell := harness.state(t).Shells[c.ShellID]; shell.AppliedRevision != 2 || !shell.Behind {
+			t.Fatalf("later head was falsely acknowledged: %#v", shell)
+		}
+	})
+}
+
 func TestAttachFiltersInheritedAndSecretValuesWhilePostAttachAdmissionWorks(t *testing.T) {
 	secret := serviceIdentity("CREATED_API_TOKEN")
 	harness := materializedServiceHarness(t, fakeLiveSecretPolicy{secret: true})

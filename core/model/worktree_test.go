@@ -248,6 +248,11 @@ func TestAttachResolveAndValueFreeMetadataContracts(t *testing.T) {
 	if _, ok := attachType.FieldByName("Delta"); ok {
 		t.Fatal("AttachRequest can publish a delta")
 	}
+	attachResultType := reflect.TypeOf(AttachResult{})
+	reconcileField, ok := attachResultType.FieldByName("ReconcileRequired")
+	if !ok || reconcileField.Type.Kind() != reflect.Bool {
+		t.Fatal("AttachResult must carry one boolean ReconcileRequired decision")
+	}
 
 	resolveType := reflect.TypeOf(ResolveSharedRequest{})
 	for _, field := range []string{"Conflict", "Token", "Snapshot"} {
@@ -269,7 +274,7 @@ func TestAttachResolveAndValueFreeMetadataContracts(t *testing.T) {
 		}
 	}
 
-	for _, value := range []any{Conflict{}, Exclusion{}, RevisionEvent{}, WorktreeStatus{}, CategorizedDiff{}, WorktreeCommitResult{}} {
+	for _, value := range []any{AttachResult{}, Conflict{}, Exclusion{}, RevisionEvent{}, WorktreeStatus{}, CategorizedDiff{}, WorktreeCommitResult{}} {
 		if path, found := forbiddenValueField(reflect.TypeOf(value), map[reflect.Type]bool{}); found {
 			t.Errorf("%T contains captured value-bearing field at %s", value, path)
 		}
