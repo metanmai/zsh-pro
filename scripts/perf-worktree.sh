@@ -27,6 +27,7 @@ bin_dir=$perf_root/bin
 shim_dir=$perf_root/shims
 duration_file=$perf_root/durations-ms
 sorted_file=$perf_root/durations-sorted-ms
+adversarial_report=$perf_root/adversarial-report
 git_counter=$perf_root/git-calls
 zsh_counter=$perf_root/child-zsh-calls
 mkdir -m 700 "$home_dir" "$bin_dir" "$shim_dir"
@@ -101,6 +102,30 @@ status=$(HOME=$home_dir ZDOTDIR=$home_dir ZSHPRO_HOME=$runtime_root PATH=$system
 grep -qx 'revision: 1' <<< "$status"
 grep -qx 'dirty identities: 0' <<< "$status"
 printf 'state_bytes=%d revision=1 dirty=0\n' "$state_bytes"
+
+(
+	cd "$repo_dir"
+	ZP_WORKTREE_ADVERSARIAL_REPORT=$adversarial_report GOTOOLCHAIN=local \
+		go test ./core/shell/zsh -run '^TestWorktreeAbsoluteDeadlineAdversarialTransport$' \
+		-count=2 -timeout=25s
+)
+[[ $(wc -l < "$adversarial_report") -eq 6 ]] || {
+	echo "adversarial report did not contain two complete three-mode runs" >&2
+	exit 1
+}
+for mode in oversized-capture blocked-reader term-ignoring-helper; do
+	case "$mode" in
+		oversized-capture) report_prefix='mode=oversized-capture ' ;;
+		blocked-reader) report_prefix='mode=blocked-reader ' ;;
+		term-ignoring-helper) report_prefix='mode=term-ignoring-helper ' ;;
+	esac
+	expected="${report_prefix}elapsed_ms=[0-9]+ return_class=fail-open survivors=0 pipe_delta=0 applied_revision_unchanged=1 behind_error=1 continuation=1"
+	[[ $(grep -Ec "^${expected}$" "$adversarial_report") -eq 2 ]] || {
+		echo "adversarial mode $mode did not prove repeated bounded cleanup" >&2
+		exit 1
+	}
+done
+LC_ALL=C sort "$adversarial_report"
 
 (
 	cd "$repo_dir"

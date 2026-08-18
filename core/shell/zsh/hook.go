@@ -1059,10 +1059,15 @@ _zp_worktree_capture_matches_baseline() {
 
 _zp_worktree_publish_impl() {
   local deadline="$1" response='' operation_id=''
-  local -i match_rc=1
+  local -i match_rc=1 capture_rc=0
   _zp_worktree_ensure_attached "$deadline" || return 1
   (( ZP_WORKTREE_ATTACHED_NOW )) && return 0
-  _zp_worktree_capture "$deadline" || return $?
+  _zp_worktree_capture "$deadline"
+  capture_rc=$?
+  if (( capture_rc != 0 )); then
+    _zp_worktree_error "worktree capture failed"
+    return "$capture_rc"
+  fi
   if (( ${ZP_WORKTREE_SKIP_UNCHANGED_PUBLISH-0} )); then
     _zp_worktree_capture_matches_baseline "$deadline" && match_rc=0 || match_rc=$?
     if (( match_rc == 0 )); then

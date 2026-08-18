@@ -245,7 +245,7 @@ print -r -- "result:$hook_rc:$explicit_rc:$ZP_WORKTREE_APPLIED_REVISION:${#ZP_WO
 				t.Fatalf("adversarial operation returned %d after %s: %q", rc, elapsed, output)
 			}
 			fields := strings.Split(strings.TrimSpace(output), ":")
-			if len(fields) != 9 || fields[0] != "result" || fields[1] != "0" || fields[2] == "0" || fields[3] != "1" || fields[5] != "0" || fields[6] != "0" || fields[7] != "0" || fields[8] != "0" {
+			if len(fields) != 9 || fields[0] != "result" || fields[1] != "0" || fields[2] == "0" || fields[3] != "1" || fields[4] == "0" || fields[5] != "0" || fields[6] != "0" || fields[7] != "0" || fields[8] != "0" {
 				t.Fatalf("fail-open state after %s = %q", test.name, output)
 			}
 			if sentinel := shell.runOK(t, "print -r -- next-command-sentinel"); sentinel != "next-command-sentinel\n" {
@@ -254,7 +254,8 @@ print -r -- "result:$hook_rc:$explicit_rc:$ZP_WORKTREE_APPLIED_REVISION:${#ZP_WO
 			if children := processChildren(t, shell.cmd.Process.Pid); len(children) != 0 {
 				t.Fatalf("%s retained child processes: %v", test.name, children)
 			}
-			if afterPipes := processPipeCount(t, shell.cmd.Process.Pid); afterPipes != beforePipes {
+			afterPipes := processPipeCount(t, shell.cmd.Process.Pid)
+			if afterPipes != beforePipes {
 				t.Fatalf("%s pipe descriptors = %d, want baseline %d", test.name, afterPipes, beforePipes)
 			}
 			if payload, readErr := os.ReadFile(pidFile); readErr == nil {
@@ -264,6 +265,20 @@ print -r -- "result:$hook_rc:$explicit_rc:$ZP_WORKTREE_APPLIED_REVISION:${#ZP_WO
 				}
 			} else if test.name != "oversized-capture" {
 				t.Fatalf("%s helper did not start: %v", test.name, readErr)
+			}
+			if reportPath := os.Getenv("ZP_WORKTREE_ADVERSARIAL_REPORT"); reportPath != "" {
+				report, openErr := os.OpenFile(reportPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+				if openErr != nil {
+					t.Fatal(openErr)
+				}
+				_, writeErr := fmt.Fprintf(report, "mode=%s elapsed_ms=%d return_class=fail-open survivors=0 pipe_delta=%d applied_revision_unchanged=1 behind_error=1 continuation=1\n", test.name, elapsed.Milliseconds(), afterPipes-beforePipes)
+				closeErr := report.Close()
+				if writeErr != nil {
+					t.Fatal(writeErr)
+				}
+				if closeErr != nil {
+					t.Fatal(closeErr)
+				}
 			}
 		})
 	}
