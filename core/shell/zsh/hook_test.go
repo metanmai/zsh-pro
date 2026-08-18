@@ -273,7 +273,8 @@ _ZP_WORKTREE_CAPTURE_FIELDS=(ZP_LIVE_SNAPSHOT 1)
 _ZP_WORKTREE_CAPTURE_COUNTS=(2)
 _zp_worktree_capture_append_record 0.250 R env ZP_BOUNDARY exported 1 ok || exit 15
 (( snapshot_records == 1 )) || exit 16
-[[ "${(j: :)seen_deadlines}" == 0.250 ]] || exit 17
+(( ${#seen_deadlines} >= 1 )) || exit 17
+for seen in "${seen_deadlines[@]}"; do [[ "$seen" == 0.250 ]] || exit 17; done
 fake_index=0 fake_times=(0.251)
 _zp_worktree_capture_append_record 0.250 R env ZP_TOO_LATE exported 1 hidden && exit 18
 (( ${#_ZP_WORKTREE_CAPTURE_FIELDS} == 0 && ${#_ZP_WORKTREE_CAPTURE_COUNTS} == 0 )) || exit 19
@@ -290,38 +291,36 @@ _zp_worktree_capture_append_record 0.250 R env ZP_RECORD_OVERFLOW exported 1 hid
 (( ${#_ZP_WORKTREE_CAPTURE_FIELDS} == 0 && ${#_ZP_WORKTREE_CAPTURE_COUNTS} == 0 )) || exit 23
 
 # Snapshot bytes are likewise admitted exactly at 2 MiB and rejected at plus
-# one before the record is retained. The record below is 35 encoded bytes.
-snapshot_records=0 snapshot_bytes=$(( 2097152 - 35 ))
+# one before the record is retained. The record below is 33 encoded bytes.
+snapshot_records=0 snapshot_bytes=$(( 2097152 - 33 ))
 _ZP_WORKTREE_CAPTURE_FIELDS=(ZP_LIVE_SNAPSHOT 1)
 _ZP_WORKTREE_CAPTURE_COUNTS=(2)
 _zp_worktree_capture_append_record 0.250 R env ZP_BYTE_LIMIT exported 1 x || exit 24
 (( snapshot_bytes == 2097152 )) || exit 25
-snapshot_records=0 snapshot_bytes=$(( 2097152 - 34 ))
+snapshot_records=0 snapshot_bytes=$(( 2097152 - 32 ))
 _ZP_WORKTREE_CAPTURE_FIELDS=(ZP_LIVE_SNAPSHOT 1)
 _ZP_WORKTREE_CAPTURE_COUNTS=(2)
 _zp_worktree_capture_append_record 0.250 R env ZP_BYTE_LIMIT exported 1 x && exit 26
 (( ${#_ZP_WORKTREE_CAPTURE_FIELDS} == 0 && ${#_ZP_WORKTREE_CAPTURE_COUNTS} == 0 )) || exit 27
 
 # Serialization uses the same absolute deadline and enforces complete private
-# frame overhead incrementally. One scalar record serializes to seven bytes.
-typeset -gi ZP_WORKTREE_FRAME_BYTES=$(( 2101248 - 7 ))
+# frame overhead incrementally. One scalar record serializes to six bytes.
+typeset -gi ZP_WORKTREE_FRAME_BYTES=$(( 2101248 - 6 ))
 _zp_worktree_write_scalar_record 1 x 0.250 >/dev/null || exit 28
 (( ZP_WORKTREE_FRAME_BYTES == 2101248 )) || exit 29
-ZP_WORKTREE_FRAME_BYTES=$(( 2101248 - 6 ))
+ZP_WORKTREE_FRAME_BYTES=$(( 2101248 - 5 ))
 _zp_worktree_write_scalar_record 1 x 0.250 >/dev/null && exit 30
 
 typeset -ga test_fields=(ZP_LIVE_SNAPSHOT 1 E)
 typeset -ga test_counts=(2 1)
-fake_index=0 fake_times=(0.249 0.249 0.249 0.249)
+typeset fake_now=0.249
 _zp_worktree_budget_check() {
-  local deadline="$1" now
-  (( ++fake_index ))
-  now="${fake_times[$fake_index]-0.251}"
-  (( now <= deadline ))
+  local deadline="$1"
+  (( fake_now <= deadline ))
 }
 ZP_WORKTREE_FRAME_BYTES=0
 _zp_worktree_write_snapshot_records 32 test_fields test_counts 0.250 >/dev/null || exit 31
-fake_index=0 fake_times=(0.251)
+fake_now=0.251
 ZP_WORKTREE_FRAME_BYTES=0
 _zp_worktree_write_snapshot_records 32 test_fields test_counts 0.250 >/dev/null && exit 32
 

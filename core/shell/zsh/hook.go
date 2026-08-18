@@ -534,84 +534,178 @@ _zp_worktree_budget_begin() {
 }
 
 _zp_worktree_budget_check() {
-  local deadline="$1" now="${2-${EPOCHREALTIME-0}}"
-  (( now <= deadline ))
+  (( ${2-${EPOCHREALTIME-0}} <= $1 ))
+}
+
+_zp_worktree_capture_clear() {
+  _ZP_WORKTREE_CAPTURE_FIELDS=()
+  _ZP_WORKTREE_CAPTURE_COUNTS=()
+}
+
+_zp_worktree_capture_append_record() {
+  local deadline="$1" marker="$2" kind="$3" name="$4" attribute="$5" count="$6" value
+  local -i encoded_bytes=0 encoded_fields=0 field_count=$(( $# - 1 )) value_count=$(( $# - 6 ))
+  shift
+  [[ "$marker" == R && "$count" == <-> && ( ${#count} == 1 || "$count" != 0* ) ]] && (( count == value_count )) || {
+    _zp_worktree_capture_clear
+    return 1
+  }
+  case "$kind" in
+    env)
+      [[ "$attribute" == exported && "$name" == [ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_]* && "$name" != *[^0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_]* ]] && (( count == 1 )) || { _zp_worktree_capture_clear; return 1; }
+      [[ "$name" != PATH && "$name" != FPATH && "$name" != PWD && "$name" != OLDPWD && "$name" != SHLVL && "$name" != _ ]] || { _zp_worktree_capture_clear; return 1; }
+      ;;
+    alias|function)
+      [[ "$attribute" == body && "${name:l}" != _zp_* && "${name:l}" != __zp_* ]] && (( count == 1 )) || { _zp_worktree_capture_clear; return 1; }
+      [[ "$name" == [0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_]* && "$name" != *[^0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_.-]* ]] || { _zp_worktree_capture_clear; return 1; }
+      ;;
+    path) [[ "$name" == PATH && "$attribute" == ordered ]] || { _zp_worktree_capture_clear; return 1; } ;;
+    fpath) [[ "$name" == FPATH && "$attribute" == ordered ]] || { _zp_worktree_capture_clear; return 1; } ;;
+    option)
+      [[ "$attribute" == boolean && "$name" == [ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_]* && "$name" != *[^0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_]* && ( "$6" == on || "$6" == off ) ]] && (( count == 1 )) || { _zp_worktree_capture_clear; return 1; }
+      ;;
+    *) _zp_worktree_capture_clear; return 1 ;;
+  esac
+  (( snapshot_records < 10000 )) || { _zp_worktree_capture_clear; return 1; }
+  for value in "$@"; do
+    (( encoded_bytes <= 2097152 - ${#value} - 1 )) || { _zp_worktree_capture_clear; return 1; }
+    (( encoded_bytes += ${#value} + 1 ))
+    (( ++encoded_fields % 64 != 0 )) || _zp_worktree_budget_check "$deadline" || { _zp_worktree_capture_clear; return 124; }
+  done
+  _zp_worktree_budget_check "$deadline" || { _zp_worktree_capture_clear; return 124; }
+  (( snapshot_bytes <= 2097152 - encoded_bytes )) || { _zp_worktree_capture_clear; return 1; }
+  _ZP_WORKTREE_CAPTURE_FIELDS+=("$@")
+  _ZP_WORKTREE_CAPTURE_COUNTS+=("$field_count")
+  (( ++snapshot_records, snapshot_bytes += encoded_bytes ))
+  return 0
 }
 
 _zp_worktree_capture() {
-  zmodload zsh/parameter 2>/dev/null || return 1
-  local name descriptor value option_state
+  local deadline="$1" name descriptor value option_state rc=1
   local -a elements
+  local -i snapshot_records=0 snapshot_bytes=21 scan_count=0
   _ZP_WORKTREE_CAPTURE_FIELDS=(ZP_LIVE_SNAPSHOT 1)
   _ZP_WORKTREE_CAPTURE_COUNTS=(2)
-
-	for name in "${(@ok)parameters}"; do
-		[[ "$name" == PATH || "$name" == FPATH || "$name" == PWD || "$name" == OLDPWD || "$name" == SHLVL || "$name" == _ ]] && continue
-    descriptor="${parameters[$name]}"
-    [[ "$descriptor" == *scalar* && "$descriptor" == *export* ]] || continue
-    value="${(P)name}"
-    _ZP_WORKTREE_CAPTURE_FIELDS+=(R env "$name" exported 1 "$value")
-    _ZP_WORKTREE_CAPTURE_COUNTS+=(6)
-  done
-  for name in "${(@ok)aliases}"; do
-		[[ "${name:l}" != _zp_* && "${name:l}" != __zp_* ]] || continue
-		[[ "$name" == [0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_]* && "$name" != *[^0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_.-]* ]] || continue
-    _ZP_WORKTREE_CAPTURE_FIELDS+=(R alias "$name" body 1 "${aliases[$name]}")
-    _ZP_WORKTREE_CAPTURE_COUNTS+=(6)
-  done
-  for name in "${(@ok)functions}"; do
-		[[ "${name:l}" != _zp_* && "${name:l}" != __zp_* ]] || continue
-		[[ "$name" == [0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_]* && "$name" != *[^0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_.-]* ]] || continue
-    _ZP_WORKTREE_CAPTURE_FIELDS+=(R function "$name" body 1 "${functions[$name]}")
-    _ZP_WORKTREE_CAPTURE_COUNTS+=(6)
-  done
-
-  elements=("${path[@]}")
-  _ZP_WORKTREE_CAPTURE_FIELDS+=(R path PATH ordered "${#elements}" "${elements[@]}")
-  _ZP_WORKTREE_CAPTURE_COUNTS+=( $(( 5 + ${#elements} )) )
-  elements=("${fpath[@]}")
-  _ZP_WORKTREE_CAPTURE_FIELDS+=(R fpath FPATH ordered "${#elements}" "${elements[@]}")
-  _ZP_WORKTREE_CAPTURE_COUNTS+=( $(( 5 + ${#elements} )) )
-
-  for name in "${(@ok)options}"; do
-    option_state="${options[$name]}"
-    _ZP_WORKTREE_CAPTURE_FIELDS+=(R option "$name" boolean 1 "$option_state")
-    _ZP_WORKTREE_CAPTURE_COUNTS+=(6)
-  done
-  _ZP_WORKTREE_CAPTURE_FIELDS+=(E)
-  _ZP_WORKTREE_CAPTURE_COUNTS+=(1)
+  {
+    _zp_worktree_budget_check "$deadline" || return 124
+    zmodload zsh/parameter 2>/dev/null || return 1
+    for name in "${(@ok)parameters}"; do
+      (( ++scan_count % 64 != 0 )) || _zp_worktree_budget_check "$deadline" || return 124
+      [[ "$name" == PATH || "$name" == FPATH || "$name" == PWD || "$name" == OLDPWD || "$name" == SHLVL || "$name" == _ ]] && continue
+      descriptor="${parameters[$name]}"
+      [[ "$descriptor" == *scalar* && "$descriptor" == *export* ]] || continue
+      value="${(P)name}"
+      _zp_worktree_capture_append_record "$deadline" R env "$name" exported 1 "$value" || return $?
+      value=''
+    done
+    _zp_worktree_budget_check "$deadline" || return 124
+    scan_count=0
+    for name in "${(@ok)aliases}"; do
+      (( ++scan_count % 64 != 0 )) || _zp_worktree_budget_check "$deadline" || return 124
+      [[ "${name:l}" != _zp_* && "${name:l}" != __zp_* ]] || continue
+      [[ "$name" == [0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_]* && "$name" != *[^0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_.-]* ]] || continue
+      value="${aliases[$name]}"
+      _zp_worktree_capture_append_record "$deadline" R alias "$name" body 1 "$value" || return $?
+      value=''
+    done
+    _zp_worktree_budget_check "$deadline" || return 124
+    scan_count=0
+    for name in "${(@ok)functions}"; do
+      (( ++scan_count % 64 != 0 )) || _zp_worktree_budget_check "$deadline" || return 124
+      [[ "${name:l}" != _zp_* && "${name:l}" != __zp_* ]] || continue
+      [[ "$name" == [0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_]* && "$name" != *[^0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_.-]* ]] || continue
+      value="${functions[$name]}"
+      _zp_worktree_capture_append_record "$deadline" R function "$name" body 1 "$value" || return $?
+      value=''
+    done
+    _zp_worktree_budget_check "$deadline" || return 124
+    elements=("${path[@]}")
+    _zp_worktree_capture_append_record "$deadline" R path PATH ordered "${#elements}" "${elements[@]}" || return $?
+    elements=()
+    _zp_worktree_budget_check "$deadline" || return 124
+    elements=("${fpath[@]}")
+    _zp_worktree_capture_append_record "$deadline" R fpath FPATH ordered "${#elements}" "${elements[@]}" || return $?
+    elements=()
+    _zp_worktree_budget_check "$deadline" || return 124
+    scan_count=0
+    for name in "${(@ok)options}"; do
+      (( ++scan_count % 64 != 0 )) || _zp_worktree_budget_check "$deadline" || return 124
+      option_state="${options[$name]}"
+      _zp_worktree_capture_append_record "$deadline" R option "$name" boolean 1 "$option_state" || return $?
+    done
+    _zp_worktree_budget_check "$deadline" || return 124
+    _ZP_WORKTREE_CAPTURE_FIELDS+=(E)
+    _ZP_WORKTREE_CAPTURE_COUNTS+=(1)
+    rc=0
+  } always {
+    value='' option_state='' elements=()
+    (( rc == 0 )) || _zp_worktree_capture_clear
+  }
+  return "$rc"
 }
 
 _zp_worktree_write_scalar_record() {
-  local tag="$1" value="$2" LC_ALL=C
-  builtin printf '%s %s\n' "$tag" "${#value}"
+  local tag="$1" value="$2" deadline="$3" length LC_ALL=C
+  local -i addition
+  length="${#value}"
+  _zp_worktree_budget_check "$deadline" || return 124
+  addition=$(( ${#tag} + 1 + ${#length} + 1 + length + 1 ))
+  (( ZP_WORKTREE_FRAME_BYTES <= 2101248 - addition )) || return 1
+  (( ZP_WORKTREE_FRAME_BYTES += addition, ++ZP_WORKTREE_FRAME_RECORDS_WRITTEN ))
+  builtin printf '%s %s\n' "$tag" "$length"
   builtin printf '%s\n' "$value"
 }
 
 _zp_worktree_write_snapshot_records() {
-  local tag="$1" fields_name="$2" counts_name="$3" offset=0 count length index value LC_ALL=C
-  local -a fields counts record
+  local tag="$1" fields_name="$2" counts_name="$3" deadline="$4" value marker LC_ALL=C
+  local -i offset=0 count length index end addition snapshot_bytes=0 snapshot_records=0
+  local -a fields counts
+  _zp_worktree_budget_check "$deadline" || return 124
   fields=("${(@P)fields_name}")
   counts=("${(@P)counts_name}")
+  _zp_worktree_budget_check "$deadline" || return 124
+  (( ${#counts} <= 10002 )) || return 1
   for count in "${counts[@]}"; do
+    _zp_worktree_budget_check "$deadline" || return 124
     [[ "$count" == <-> && "$count" != 0 ]] || return 1
-    record=("${fields[@]:$offset:$count}")
-    (( ${#record} == count )) || return 1
+    end=$(( offset + count ))
+    (( end <= ${#fields} )) || return 1
+    marker="${fields[$(( offset + 1 ))]}"
+    case "$marker" in
+      R) (( ++snapshot_records <= 10000 )) || return 1 ;;
+      ZP_LIVE_SNAPSHOT) (( offset == 0 && count == 2 )) || return 1 ;;
+      E) (( end == ${#fields} && count == 1 )) || return 1 ;;
+      *) return 1 ;;
+    esac
     length=0
-    for value in "${record[@]}"; do (( length += ${#value} + 1 )); done
+    for (( index=offset + 1; index <= end; ++index )); do
+      value="${fields[$index]}"
+      (( length <= 2097152 - ${#value} - 1 )) || return 1
+      (( length += ${#value} + 1 ))
+    done
+    _zp_worktree_budget_check "$deadline" || return 124
+    (( snapshot_bytes <= 2097152 - length )) || return 1
+    (( snapshot_bytes += length ))
+    addition=$(( ${#tag} + 1 + ${#length} + 1 + length + 1 ))
+    (( ZP_WORKTREE_FRAME_BYTES <= 2101248 - addition )) || return 1
+    (( ZP_WORKTREE_FRAME_BYTES += addition, ++ZP_WORKTREE_FRAME_RECORDS_WRITTEN ))
     builtin printf '%s %s\n' "$tag" "$length"
-    for value in "${record[@]}"; do builtin printf '%s\0' "$value"; done
+    for (( index=offset + 1; index <= end; ++index )); do
+      builtin printf '%s\0' "${fields[$index]}"
+    done
     builtin printf '\n'
-    (( offset += count ))
+    offset=$end
   done
-  (( offset == ${#fields} ))
+  (( offset == ${#fields} && snapshot_records <= 10000 && snapshot_bytes <= 2097152 ))
 }
 
 _zp_worktree_write_frame() {
   local operation="$1" mode="$2" operation_id="$3" revision="$4" token="$5"
   local identity_kind="$6" identity_name="$7" apply_name="$8" reverse_name="$9"
   local baseline_fields="${10}" baseline_counts="${11}" current_fields="${12}" current_counts="${13}"
-  local record_count baseline_records=0 current_records=0
+  local deadline="${14}" header
+  local -i record_count baseline_records=0 current_records=0 header_bytes
+  local -i ZP_WORKTREE_FRAME_BYTES=0 ZP_WORKTREE_FRAME_RECORDS_WRITTEN=0
   [[ -z "$baseline_counts" ]] || baseline_records=${#${(P)baseline_counts}}
   [[ -z "$current_counts" ]] || current_records=${#${(P)current_counts}}
   case "$operation:$mode" in
@@ -623,51 +717,56 @@ _zp_worktree_write_frame() {
     resolve:*) record_count=$(( 10 + current_records )) ;;
     *) return 1 ;;
   esac
-  builtin printf 'ZPWT 1 %s\n' "$record_count"
-  _zp_worktree_write_scalar_record 1 "$operation" || return 1
-  if [[ "$operation" == attach ]]; then _zp_worktree_write_scalar_record 2 "$mode" || return 1; fi
+  (( record_count <= 10016 )) || return 1
+  _zp_worktree_budget_check "$deadline" || return 124
+  header="ZPWT 1 ${record_count}"
+  header_bytes=$(( ${#header} + 1 ))
+  (( header_bytes <= 2101248 )) || return 1
+  ZP_WORKTREE_FRAME_BYTES=$header_bytes
+  builtin printf '%s\n' "$header"
+  _zp_worktree_write_scalar_record 1 "$operation" "$deadline" || return $?
+  if [[ "$operation" == attach ]]; then _zp_worktree_write_scalar_record 2 "$mode" "$deadline" || return $?; fi
   if [[ "$mode" != allocate ]]; then
-    _zp_worktree_write_scalar_record 3 "$ZP_WORKTREE_SHELL_ID" || return 1
-    _zp_worktree_write_scalar_record 4 "$ZP_WORKTREE_CALL_CAPABILITY" || return 1
-    _zp_worktree_write_scalar_record 5 "$operation_id" || return 1
+    _zp_worktree_write_scalar_record 3 "$ZP_WORKTREE_SHELL_ID" "$deadline" || return $?
+    _zp_worktree_write_scalar_record 4 "$ZP_WORKTREE_CALL_CAPABILITY" "$deadline" || return $?
+    _zp_worktree_write_scalar_record 5 "$operation_id" "$deadline" || return $?
   fi
   case "$operation" in
-    publish|prepare|acknowledge) _zp_worktree_write_scalar_record 6 "$revision" || return 1 ;;
+    publish|prepare|acknowledge) _zp_worktree_write_scalar_record 6 "$revision" "$deadline" || return $? ;;
   esac
   case "$operation" in
-    acknowledge|resolve) _zp_worktree_write_scalar_record 7 "$token" || return 1 ;;
+    acknowledge|resolve) _zp_worktree_write_scalar_record 7 "$token" "$deadline" || return $? ;;
   esac
   if [[ "$operation" == resolve ]]; then
-    _zp_worktree_write_scalar_record 8 "$identity_kind" || return 1
-    _zp_worktree_write_scalar_record 9 "$identity_name" || return 1
+    _zp_worktree_write_scalar_record 8 "$identity_kind" "$deadline" || return $?
+    _zp_worktree_write_scalar_record 9 "$identity_name" "$deadline" || return $?
   fi
   if [[ "$operation" == prepare || "$operation" == resolve ]]; then
-    _zp_worktree_write_scalar_record 10 "$apply_name" || return 1
-    _zp_worktree_write_scalar_record 11 "$reverse_name" || return 1
+    _zp_worktree_write_scalar_record 10 "$apply_name" "$deadline" || return $?
+    _zp_worktree_write_scalar_record 11 "$reverse_name" "$deadline" || return $?
   fi
   if [[ "$operation" == publish ]]; then
-    _zp_worktree_write_snapshot_records 31 "$baseline_fields" "$baseline_counts" || return 1
+    _zp_worktree_write_snapshot_records 31 "$baseline_fields" "$baseline_counts" "$deadline" || return $?
   fi
   if [[ "$mode" != allocate ]]; then
-    _zp_worktree_write_snapshot_records 32 "$current_fields" "$current_counts" || return 1
+    _zp_worktree_write_snapshot_records 32 "$current_fields" "$current_counts" "$deadline" || return $?
   fi
-  builtin printf '255 0\n\n'
+  # The exact final wire record remains 255 0 plus its empty payload line.
+  _zp_worktree_write_scalar_record 255 '' "$deadline" || return $?
+  (( ZP_WORKTREE_FRAME_RECORDS_WRITTEN == record_count ))
 }
 
 _zp_worktree_invoke() {
   local operation="$1" result_name="$2" mode="$3" operation_id="$4" revision="$5" token="$6"
   local identity_kind="$7" identity_name="$8" apply_name="$9" reverse_name="${10}"
   local baseline_fields="${11}" baseline_counts="${12}" current_fields="${13}" current_counts="${14}"
+	local deadline="${15}"
 	local captured='' line='' rc=1 xtrace_was_on=0 history_pushed=0 helper_pid=0 closer_pid=0
-	local read_fd=-1 write_fd=-1 remaining deadline='' wait_rc=0 frame_rc=0
+	local read_fd=-1 write_fd=-1 remaining wait_rc=0 frame_rc=0
 	local ZP_WORKTREE_CALL_CAPABILITY=''
 	: ${(P)result_name::=}
 	{
-		if (( ${+ZP_WORKTREE_TRANSITION_DEADLINE} )); then
-			deadline="$ZP_WORKTREE_TRANSITION_DEADLINE"
-		else
-			_zp_worktree_budget_begin deadline || return 1
-		fi
+		[[ -n "$deadline" ]] || return 1
 		_zp_worktree_budget_check "$deadline" || return 124
 		[[ -o xtrace ]] && xtrace_was_on=1
 		setopt NOXTRACE 2>/dev/null || return 1
@@ -698,7 +797,7 @@ _zp_worktree_invoke() {
 		# the two private duplicates remain owned by this call.
 		coproc :
 		closer_pid=$!
-		( _zp_worktree_write_frame "$operation" "$mode" "$operation_id" "$revision" "$token" "$identity_kind" "$identity_name" "$apply_name" "$reverse_name" "$baseline_fields" "$baseline_counts" "$current_fields" "$current_counts" ) >&$write_fd || frame_rc=$?
+		( _zp_worktree_write_frame "$operation" "$mode" "$operation_id" "$revision" "$token" "$identity_kind" "$identity_name" "$apply_name" "$reverse_name" "$baseline_fields" "$baseline_counts" "$current_fields" "$current_counts" "$deadline" ) >&$write_fd || frame_rc=$?
 		exec {write_fd}>&-
 		write_fd=-1
 		if (( frame_rc != 0 )); then
@@ -769,7 +868,7 @@ _zp_worktree_refresh_auto_apply() {
 }
 
 _zp_worktree_ensure_attached_impl() {
-  local response='' operation_id='' rc=1
+  local deadline="$1" response='' operation_id='' rc=1
   local -a lines fields
   typeset -g ZP_WORKTREE_ATTACHED_NOW=0
   (( ZP_WORKTREE_UNSUPPORTED == 0 )) || return 64
@@ -783,13 +882,13 @@ _zp_worktree_ensure_attached_impl() {
     fi
   fi
   if (( ${#ZP_WORKTREE_BASELINE_COUNTS} == 0 )); then
-    _zp_worktree_capture || return 1
+    _zp_worktree_capture "$deadline" || return $?
     ZP_WORKTREE_BASELINE_FIELDS=("${_ZP_WORKTREE_CAPTURE_FIELDS[@]}")
     ZP_WORKTREE_BASELINE_COUNTS=("${_ZP_WORKTREE_CAPTURE_COUNTS[@]}")
     _ZP_WORKTREE_CAPTURE_FIELDS=() _ZP_WORKTREE_CAPTURE_COUNTS=()
   fi
   if [[ -z "$ZP_WORKTREE_SHELL_ID" ]]; then
-    if _zp_worktree_invoke attach response allocate '' '' '' '' '' '' '' '' '' '' ''; then :; else
+    if _zp_worktree_invoke attach response allocate '' '' '' '' '' '' '' '' '' '' '' "$deadline"; then :; else
       rc=$?
       (( rc == 64 )) && typeset -g ZP_WORKTREE_UNSUPPORTED=1
       _zp_worktree_error "worktree attachment allocation failed"
@@ -807,7 +906,7 @@ _zp_worktree_ensure_attached_impl() {
   [[ -n "$ZP_WORKTREE_ATTACH_OPERATION_ID" ]] || _zp_worktree_next_operation operation_id
   [[ -n "$ZP_WORKTREE_ATTACH_OPERATION_ID" ]] || typeset -g ZP_WORKTREE_ATTACH_OPERATION_ID="$operation_id"
   operation_id="$ZP_WORKTREE_ATTACH_OPERATION_ID"
-  if ! _zp_worktree_invoke attach response commit "$operation_id" '' '' '' '' '' '' '' '' ZP_WORKTREE_BASELINE_FIELDS ZP_WORKTREE_BASELINE_COUNTS; then
+  if ! _zp_worktree_invoke attach response commit "$operation_id" '' '' '' '' '' '' '' '' ZP_WORKTREE_BASELINE_FIELDS ZP_WORKTREE_BASELINE_COUNTS "$deadline"; then
     _zp_worktree_error "worktree attachment failed"
     return 1
   fi
@@ -850,13 +949,42 @@ _zp_worktree_parse_publish_response() {
   return 0
 }
 
+_zp_worktree_capture_matches_baseline() {
+  local deadline="$1" value
+  local -i index
+  (( ${#_ZP_WORKTREE_CAPTURE_FIELDS} == ${#ZP_WORKTREE_BASELINE_FIELDS} && ${#_ZP_WORKTREE_CAPTURE_COUNTS} == ${#ZP_WORKTREE_BASELINE_COUNTS} )) || return 1
+  for (( index=1; index <= ${#_ZP_WORKTREE_CAPTURE_COUNTS}; ++index )); do
+    (( index % 64 != 0 )) || _zp_worktree_budget_check "$deadline" || return 124
+    [[ "${_ZP_WORKTREE_CAPTURE_COUNTS[$index]}" == "${ZP_WORKTREE_BASELINE_COUNTS[$index]}" ]] || return 1
+  done
+  _zp_worktree_budget_check "$deadline" || return 124
+  for (( index=1; index <= ${#_ZP_WORKTREE_CAPTURE_FIELDS}; ++index )); do
+    (( index % 64 != 0 )) || _zp_worktree_budget_check "$deadline" || return 124
+    [[ "${_ZP_WORKTREE_CAPTURE_FIELDS[$index]}" == "${ZP_WORKTREE_BASELINE_FIELDS[$index]}" ]] || return 1
+  done
+  _zp_worktree_budget_check "$deadline"
+}
+
 _zp_worktree_publish_impl() {
-  local response='' operation_id=''
-  _zp_worktree_ensure_attached || return 1
+  local deadline="$1" response='' operation_id=''
+  local -i match_rc=1
+  _zp_worktree_ensure_attached "$deadline" || return 1
   (( ZP_WORKTREE_ATTACHED_NOW )) && return 0
-  _zp_worktree_capture || return 1
+  _zp_worktree_capture "$deadline" || return $?
+  if (( ${ZP_WORKTREE_SKIP_UNCHANGED_PUBLISH-0} )); then
+    _zp_worktree_capture_matches_baseline "$deadline" && match_rc=0 || match_rc=$?
+    if (( match_rc == 0 )); then
+      _ZP_WORKTREE_CAPTURE_FIELDS=() _ZP_WORKTREE_CAPTURE_COUNTS=()
+      typeset -g ZP_WORKTREE_LAST_ERROR=''
+      return 0
+    fi
+    if (( match_rc == 124 )); then
+      _ZP_WORKTREE_CAPTURE_FIELDS=() _ZP_WORKTREE_CAPTURE_COUNTS=()
+      return 124
+    fi
+  fi
   _zp_worktree_next_operation operation_id
-  if ! _zp_worktree_invoke publish response '' "$operation_id" "$ZP_WORKTREE_APPLIED_REVISION" '' '' '' '' '' ZP_WORKTREE_BASELINE_FIELDS ZP_WORKTREE_BASELINE_COUNTS _ZP_WORKTREE_CAPTURE_FIELDS _ZP_WORKTREE_CAPTURE_COUNTS; then
+  if ! _zp_worktree_invoke publish response '' "$operation_id" "$ZP_WORKTREE_APPLIED_REVISION" '' '' '' '' '' ZP_WORKTREE_BASELINE_FIELDS ZP_WORKTREE_BASELINE_COUNTS _ZP_WORKTREE_CAPTURE_FIELDS _ZP_WORKTREE_CAPTURE_COUNTS "$deadline"; then
     _ZP_WORKTREE_CAPTURE_FIELDS=() _ZP_WORKTREE_CAPTURE_COUNTS=()
     _zp_worktree_error "worktree publication failed"
     return 1
@@ -874,25 +1002,27 @@ _zp_worktree_publish_impl() {
 }
 
 _zp_worktree_publish() {
-	_zp_worktree_protected_call _zp_worktree_publish_impl
+	local deadline="${ZP_WORKTREE_TRANSITION_DEADLINE-}"
+	[[ -n "$deadline" ]] || _zp_worktree_budget_begin deadline || return 1
+	_zp_worktree_protected_call _zp_worktree_publish_impl "$deadline"
 }
 
 _zp_worktree_apply_transition() {
-  local operation="$1" source='' operation_id='' apply_name reverse_name ack_id='' ack_response=''
+  local operation="$1" deadline="$2" source='' operation_id='' apply_name reverse_name ack_id='' ack_response=''
   local revision token fingerprint old_reverse="${ZP_ACTIVE_REVERSE_FN-}" rc=1
 	unset ZP_WORKTREE_REPLY_PROTOCOL ZP_WORKTREE_REPLY_REVISION ZP_WORKTREE_REPLY_TOKEN ZP_WORKTREE_REPLY_FINGERPRINT ZP_WORKTREE_REPLY_COMPLETE
-	_zp_worktree_budget_check "$ZP_WORKTREE_TRANSITION_DEADLINE" || return 124
+	_zp_worktree_budget_check "$deadline" || return 124
   apply_name="__zp_worktree_apply_${$}_${ZP_WORKTREE_OPERATION_SEQUENCE}"
   reverse_name="__zp_worktree_reverse_${$}_${ZP_WORKTREE_OPERATION_SEQUENCE}"
   if [[ "$operation" == resolve ]]; then
     [[ -n "$ZP_WORKTREE_CONFLICT_TOKEN" && -n "$ZP_WORKTREE_CONFLICT_IDENTITY_KIND" && -n "$ZP_WORKTREE_CONFLICT_IDENTITY_NAME" ]] || return 1
     [[ -n "$ZP_WORKTREE_RESOLVE_OPERATION_ID" ]] || { _zp_worktree_next_operation operation_id; typeset -g ZP_WORKTREE_RESOLVE_OPERATION_ID="$operation_id"; }
     operation_id="$ZP_WORKTREE_RESOLVE_OPERATION_ID"
-    _zp_worktree_invoke resolve source '' "$operation_id" '' "$ZP_WORKTREE_CONFLICT_TOKEN" "$ZP_WORKTREE_CONFLICT_IDENTITY_KIND" "$ZP_WORKTREE_CONFLICT_IDENTITY_NAME" "$apply_name" "$reverse_name" '' '' _ZP_WORKTREE_CAPTURE_FIELDS _ZP_WORKTREE_CAPTURE_COUNTS || return 1
+    _zp_worktree_invoke resolve source '' "$operation_id" '' "$ZP_WORKTREE_CONFLICT_TOKEN" "$ZP_WORKTREE_CONFLICT_IDENTITY_KIND" "$ZP_WORKTREE_CONFLICT_IDENTITY_NAME" "$apply_name" "$reverse_name" '' '' _ZP_WORKTREE_CAPTURE_FIELDS _ZP_WORKTREE_CAPTURE_COUNTS "$deadline" || return 1
   else
     [[ -n "$ZP_WORKTREE_PREPARE_OPERATION_ID" ]] || { _zp_worktree_next_operation operation_id; typeset -g ZP_WORKTREE_PREPARE_OPERATION_ID="$operation_id"; }
     operation_id="$ZP_WORKTREE_PREPARE_OPERATION_ID"
-    _zp_worktree_invoke prepare source '' "$operation_id" "$ZP_WORKTREE_APPLIED_REVISION" '' '' '' "$apply_name" "$reverse_name" '' '' _ZP_WORKTREE_CAPTURE_FIELDS _ZP_WORKTREE_CAPTURE_COUNTS || return 1
+    _zp_worktree_invoke prepare source '' "$operation_id" "$ZP_WORKTREE_APPLIED_REVISION" '' '' '' "$apply_name" "$reverse_name" '' '' _ZP_WORKTREE_CAPTURE_FIELDS _ZP_WORKTREE_CAPTURE_COUNTS "$deadline" || return 1
   fi
 	if [[ -z "$source" ]]; then
     unset ZP_WORKTREE_PREPARE_OPERATION_ID ZP_WORKTREE_RESOLVE_OPERATION_ID
@@ -900,9 +1030,9 @@ _zp_worktree_apply_transition() {
   fi
 	source+=$'\n'
 	{
-		_zp_worktree_budget_check "$ZP_WORKTREE_TRANSITION_DEADLINE" || return 124
+		_zp_worktree_budget_check "$deadline" || return 124
 		_zp_eval_block "$source" || return 1
-		_zp_worktree_budget_check "$ZP_WORKTREE_TRANSITION_DEADLINE" || return 124
+		_zp_worktree_budget_check "$deadline" || return 124
     [[ "${ZP_WORKTREE_REPLY_PROTOCOL-}" == 1 && "${ZP_WORKTREE_REPLY_COMPLETE-}" == 1 ]] || return 1
     revision="${ZP_WORKTREE_REPLY_REVISION-}" token="${ZP_WORKTREE_REPLY_TOKEN-}" fingerprint="${ZP_WORKTREE_REPLY_FINGERPRINT-}"
     _zp_worktree_valid_uint "$revision" && _zp_worktree_valid_uint "$token" && _zp_worktree_valid_hex64 "$fingerprint" || return 1
@@ -913,13 +1043,13 @@ _zp_worktree_apply_transition() {
       [[ -z "$old_reverse" || "$old_reverse" == "$reverse_name" ]] || unset -f "$old_reverse" 2>/dev/null || return 1
 			typeset -g ZP_ACTIVE_REVERSE_FN="$reverse_name" || return 1
 		fi
-		_zp_worktree_budget_check "$ZP_WORKTREE_TRANSITION_DEADLINE" || return 124
-		_zp_worktree_capture || return 1
-		_zp_worktree_budget_check "$ZP_WORKTREE_TRANSITION_DEADLINE" || return 124
+		_zp_worktree_budget_check "$deadline" || return 124
+		_zp_worktree_capture "$deadline" || return $?
+		_zp_worktree_budget_check "$deadline" || return 124
     [[ -n "$ZP_WORKTREE_ACK_OPERATION_ID" ]] || { _zp_worktree_next_operation ack_id; typeset -g ZP_WORKTREE_ACK_OPERATION_ID="$ack_id"; }
     ack_id="$ZP_WORKTREE_ACK_OPERATION_ID"
-		_zp_worktree_invoke acknowledge ack_response '' "$ack_id" "$revision" "$token" '' '' '' '' '' '' _ZP_WORKTREE_CAPTURE_FIELDS _ZP_WORKTREE_CAPTURE_COUNTS || return 1
-		_zp_worktree_budget_check "$ZP_WORKTREE_TRANSITION_DEADLINE" || return 124
+		_zp_worktree_invoke acknowledge ack_response '' "$ack_id" "$revision" "$token" '' '' '' '' '' '' _ZP_WORKTREE_CAPTURE_FIELDS _ZP_WORKTREE_CAPTURE_COUNTS "$deadline" || return 1
+		_zp_worktree_budget_check "$deadline" || return 124
     local -a ack_fields
     ack_fields=(${(z)ack_response})
     (( ${#ack_fields} == 4 )) && [[ "${ack_fields[1]}" == ZPWK && "${ack_fields[2]}" == 1 && "${ack_fields[3]}" == "$revision" && "${ack_fields[4]}" == 1 ]] || return 1
@@ -938,25 +1068,31 @@ _zp_worktree_apply_transition() {
 }
 
 _zp_worktree_pull_impl() {
-	_zp_worktree_ensure_attached || return 1
+	local deadline="$1"
+	_zp_worktree_ensure_attached "$deadline" || return 1
 	(( ZP_WORKTREE_ATTACHED_NOW )) && return 0
-  _zp_worktree_capture || return 1
-  _zp_worktree_apply_transition prepare || { _zp_worktree_error "worktree pull failed"; return 1; }
+  _zp_worktree_capture "$deadline" || return $?
+  _zp_worktree_apply_transition prepare "$deadline" || { _zp_worktree_error "worktree pull failed"; return 1; }
 }
 
 _zp_worktree_pull() {
-	_zp_worktree_protected_call _zp_worktree_pull_impl
+	local deadline="${ZP_WORKTREE_TRANSITION_DEADLINE-}"
+	[[ -n "$deadline" ]] || _zp_worktree_budget_begin deadline || return 1
+	_zp_worktree_protected_call _zp_worktree_pull_impl "$deadline"
 }
 
 _zp_worktree_resolve_shared_impl() {
-	_zp_worktree_ensure_attached || return 1
+	local deadline="$1"
+	_zp_worktree_ensure_attached "$deadline" || return 1
 	(( ZP_WORKTREE_ATTACHED_NOW )) && return 1
-  _zp_worktree_capture || return 1
-  _zp_worktree_apply_transition resolve || { _zp_worktree_error "worktree shared resolution failed"; return 1; }
+  _zp_worktree_capture "$deadline" || return $?
+  _zp_worktree_apply_transition resolve "$deadline" || { _zp_worktree_error "worktree shared resolution failed"; return 1; }
 }
 
 _zp_worktree_resolve_shared() {
-	_zp_worktree_protected_call _zp_worktree_resolve_shared_impl
+	local deadline="${ZP_WORKTREE_TRANSITION_DEADLINE-}"
+	[[ -n "$deadline" ]] || _zp_worktree_budget_begin deadline || return 1
+	_zp_worktree_protected_call _zp_worktree_resolve_shared_impl "$deadline"
 }
 
 _zp_worktree_disable() {
@@ -997,12 +1133,12 @@ _zp_worktree_effective_auto_apply() {
 }
 
 _zp_worktree_sync() {
-	local mode="${1-}" ZP_WORKTREE_TRANSITION_DEADLINE=''
+	local mode="${1-}" ZP_WORKTREE_TRANSITION_DEADLINE='' ZP_WORKTREE_SKIP_UNCHANGED_PUBLISH=1
 	(( ZP_WORKTREE_GUARD == 0 )) || return 0
 	_zp_worktree_budget_begin ZP_WORKTREE_TRANSITION_DEADLINE || return 1
   typeset -g ZP_WORKTREE_GUARD=1
 	{
-		_zp_worktree_ensure_attached || return 1
+		_zp_worktree_ensure_attached "$ZP_WORKTREE_TRANSITION_DEADLINE" || return 1
 		(( ZP_WORKTREE_ATTACHED_NOW )) && return 0
 		if [[ "$mode" == resolve ]]; then
       _zp_worktree_resolve_shared || return 1
@@ -1035,7 +1171,7 @@ _zp_worktree_line_finish() {
 
 zsh-pro() {
 	# Exact explicit resolution form: zsh-pro sync --resolve shared
-	local verb="${1-}" rc=0 status_output='' ZP_WORKTREE_TRANSITION_DEADLINE='' _zp_worktree_dispatcher_marker=1
+	local verb="${1-}" rc=0 status_output='' ZP_WORKTREE_TRANSITION_DEADLINE='' ZP_WORKTREE_SKIP_UNCHANGED_PUBLISH=1 _zp_worktree_dispatcher_marker=1
   case "$verb:$#" in
     sync:1) _zp_worktree_sync ; return $? ;;
     sync:3)
@@ -1217,12 +1353,13 @@ list() {
 }
 
 _zp_worktree_ensure_attached() {
-	local rc=1 xtrace_was_on=0 history_pushed=0
+	local deadline="${1-${ZP_WORKTREE_TRANSITION_DEADLINE-}}" rc=1 xtrace_was_on=0 history_pushed=0
+	[[ -n "$deadline" ]] || _zp_worktree_budget_begin deadline || return 1
 	{
 		[[ -o xtrace ]] && xtrace_was_on=1
 		setopt NOXTRACE 2>/dev/null || return 1
 		if fc -p 2>/dev/null; then history_pushed=1; else return 1; fi
-		_zp_worktree_ensure_attached_impl
+		_zp_worktree_ensure_attached_impl "$deadline"
 		rc=$?
 	} always {
 		if (( history_pushed )); then fc -P 2>/dev/null || :; fi
