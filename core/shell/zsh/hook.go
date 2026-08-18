@@ -16,6 +16,8 @@ typeset -g ZP_RUNTIME_TIMED_OUT=0
 typeset -g +x ZP_WORKTREE_SHELL_ID ZP_WORKTREE_CAPABILITY
 (( ${+ZP_WORKTREE_ATTACHED} )) || typeset -g ZP_WORKTREE_ATTACHED=0
 (( ${+ZP_WORKTREE_APPLIED_REVISION} )) || typeset -g ZP_WORKTREE_APPLIED_REVISION=0
+(( ${+ZP_WORKTREE_RECONCILE_REQUIRED} )) || typeset -g ZP_WORKTREE_RECONCILE_REQUIRED=0
+typeset -g +x ZP_WORKTREE_RECONCILE_REQUIRED
 (( ${+ZP_WORKTREE_OPERATION_SEQUENCE} )) || typeset -g ZP_WORKTREE_OPERATION_SEQUENCE=0
 (( ${+ZP_WORKTREE_LAST_ERROR} )) || typeset -g ZP_WORKTREE_LAST_ERROR=''
 (( ${+ZP_WORKTREE_CONFLICT_COUNT} )) || typeset -g ZP_WORKTREE_CONFLICT_COUNT=0
@@ -1065,11 +1067,16 @@ _zp_worktree_ensure_attached_impl() {
     return 1
   fi
   fields=(${(z)response})
-  if (( ${#fields} != 4 )) || [[ "${fields[1]}" != ZPWA || "${fields[2]}" != 1 || "${fields[4]}" != 1 ]] || ! _zp_worktree_valid_uint "${fields[3]}"; then
+  if (( ${#fields} != 5 )) || [[ "${fields[1]}" != ZPWA || "${fields[2]}" != 1 || "${fields[4]}" != 1 || ( "${fields[5]}" != 0 && "${fields[5]}" != 1 ) ]] || ! _zp_worktree_valid_uint "${fields[3]}"; then
     _zp_worktree_error "worktree attachment acknowledgement was invalid"
     return 1
   fi
-	typeset -g ZP_WORKTREE_ATTACHED=1 ZP_WORKTREE_ATTACHED_NOW=1 ZP_WORKTREE_APPLIED_REVISION="${fields[3]}" ZP_WORKTREE_LAST_ERROR=''
+	typeset -g ZP_WORKTREE_ATTACHED=1 ZP_WORKTREE_ATTACHED_NOW=1 ZP_WORKTREE_RECONCILE_REQUIRED="${fields[5]}" ZP_WORKTREE_LAST_ERROR=''
+	if (( ZP_WORKTREE_RECONCILE_REQUIRED )); then
+		typeset -g ZP_WORKTREE_APPLIED_REVISION=0
+	else
+		typeset -g ZP_WORKTREE_APPLIED_REVISION="${fields[3]}"
+	fi
 	unset ZP_WORKTREE_ATTACH_OPERATION_ID
   response='' fields=() operation_id=''
   return 0
@@ -1188,6 +1195,7 @@ _zp_worktree_apply_transition() {
     unset ZP_WORKTREE_PREPARE_OPERATION_ID ZP_WORKTREE_RESOLVE_OPERATION_ID
     return 0
   fi
+	typeset -g ZP_WORKTREE_RECONCILE_REQUIRED=1
 	source+=$'\n'
 	{
 		_zp_worktree_budget_check "$deadline" || return 124
@@ -1210,7 +1218,7 @@ _zp_worktree_apply_transition() {
     local -a ack_fields
     ack_fields=(${(z)ack_response})
     (( ${#ack_fields} == 4 )) && [[ "${ack_fields[1]}" == ZPWK && "${ack_fields[2]}" == 1 && "${ack_fields[3]}" == "$revision" && "${ack_fields[4]}" == 1 ]] || return 1
-    typeset -g ZP_WORKTREE_APPLIED_REVISION="$revision" ZP_WORKTREE_CONFLICT_COUNT=0 ZP_WORKTREE_LAST_ERROR=''
+    typeset -g ZP_WORKTREE_APPLIED_REVISION="$revision" ZP_WORKTREE_RECONCILE_REQUIRED=0 ZP_WORKTREE_CONFLICT_COUNT=0 ZP_WORKTREE_LAST_ERROR=''
     ZP_WORKTREE_BASELINE_FIELDS=("${_ZP_WORKTREE_CAPTURE_FIELDS[@]}")
     ZP_WORKTREE_BASELINE_COUNTS=("${_ZP_WORKTREE_CAPTURE_COUNTS[@]}")
     unset ZP_WORKTREE_ACK_OPERATION_ID ZP_WORKTREE_PREPARE_OPERATION_ID ZP_WORKTREE_RESOLVE_OPERATION_ID
@@ -1232,7 +1240,7 @@ _zp_worktree_apply_transition() {
 _zp_worktree_pull_impl() {
 	local deadline="$1"
 	_zp_worktree_ensure_attached "$deadline" || return 1
-	(( ZP_WORKTREE_ATTACHED_NOW )) && return 0
+	(( ZP_WORKTREE_ATTACHED_NOW && ! ZP_WORKTREE_RECONCILE_REQUIRED )) && return 0
   _zp_worktree_capture "$deadline" || return $?
   _zp_worktree_apply_transition prepare "$deadline" || { _zp_worktree_error "worktree pull failed"; return 1; }
 }
@@ -1268,7 +1276,7 @@ _zp_worktree_disable() {
 		add-zle-hook-widget -d line-finish _zp_worktree_line_finish 2>/dev/null || :
 	fi
 	unset ZP_WORKTREE_SHELL_ID ZP_WORKTREE_CAPABILITY ZP_WORKTREE_ATTACHED ZP_WORKTREE_ATTACHED_NOW
-	unset ZP_WORKTREE_APPLIED_REVISION ZP_WORKTREE_OPERATION_SEQUENCE ZP_WORKTREE_LAST_ERROR
+	unset ZP_WORKTREE_APPLIED_REVISION ZP_WORKTREE_RECONCILE_REQUIRED ZP_WORKTREE_OPERATION_SEQUENCE ZP_WORKTREE_LAST_ERROR
 	unset ZP_WORKTREE_CONFLICT_COUNT ZP_WORKTREE_CONFLICT_KIND ZP_WORKTREE_CONFLICT_IDENTITY_KIND
 	unset ZP_WORKTREE_CONFLICT_IDENTITY_NAME ZP_WORKTREE_CONFLICT_TOKEN
 	unset ZP_WORKTREE_AUTO_APPLY_DEFAULT ZP_WORKTREE_AUTO_APPLY_EFFECTIVE
@@ -1301,7 +1309,12 @@ _zp_worktree_sync() {
   typeset -g ZP_WORKTREE_GUARD=1
 	{
 		_zp_worktree_ensure_attached "$ZP_WORKTREE_TRANSITION_DEADLINE" || return 1
-		(( ZP_WORKTREE_ATTACHED_NOW )) && return 0
+		if (( ZP_WORKTREE_ATTACHED_NOW )); then
+			(( ZP_WORKTREE_RECONCILE_REQUIRED )) || return 0
+			[[ -z "$mode" ]] || return 1
+			_zp_worktree_pull || return 1
+			return 0
+		fi
 		if [[ "$mode" == resolve ]]; then
       _zp_worktree_resolve_shared || return 1
     elif [[ -z "$mode" ]]; then

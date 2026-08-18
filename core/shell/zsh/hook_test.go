@@ -36,7 +36,7 @@ cat > "$ZP_WORKTREE_TEST_DIR/frame-$op-$count"
 printf '%s|%s|%s\n' "$*" "${ZP_WORKTREE_CAPABILITY-}" "${ZSHPRO_SHELL_CAPABILITY-}" >> "$ZP_WORKTREE_TEST_DIR/visibility"
 case "$op:$count" in
   attach:1) printf '%s\n%s\n%s\n' 'ZPWC 1' '` + shellID + `' '` + capability + `' ;;
-  attach:2) printf '%s\n' 'ZPWA 1 1 1' ;;
+  attach:2) printf '%s\n' 'ZPWA 1 1 1 0' ;;
   publish:1) printf '%s\n%s\n' 'ZPWP 1 2 1' 'overlap env ZP_CONFLICT durable-token' ;;
   publish:2) printf '%s\n' 'ZPWP 1 3 0' ;;
   resolve:1)
@@ -147,7 +147,7 @@ fi
 printf '%s\n' "$$" > "$ZP_WORKTREE_TEST_DIR/helper-pid"
 : > "$ZP_WORKTREE_TEST_DIR/ready"
 while test ! -e "$ZP_WORKTREE_TEST_DIR/release"; do sleep 0.01; done
-printf '%s\n' 'ZPWA 1 1 1'
+printf '%s\n' 'ZPWA 1 1 1 0'
 `
 	if err := os.WriteFile(shim, []byte(shimSource), 0o700); err != nil {
 		t.Fatal(err)
@@ -379,7 +379,7 @@ sleep "$ZP_WORKTREE_TEST_STALL"
 if test "$count" -eq 1; then
   printf '%s\n%s\n%s\n' 'ZPWC 1' 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee' 'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff'
 else
-  printf '%s\n' 'ZPWA 1 1 1'
+  printf '%s\n' 'ZPWA 1 1 1 0'
 fi
 `
 			if err := os.WriteFile(shim, []byte(shimSource), 0o700); err != nil {

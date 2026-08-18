@@ -650,7 +650,7 @@ func buildFirstSyncBinary(t *testing.T) (string, string) {
 	return testRoot, binary
 }
 
-func newFirstSyncFixture(t *testing.T, testRoot, binary, name, failure string) *firstSyncFixture {
+func newFirstSyncFixture(t *testing.T, testRoot, binary, name string) *firstSyncFixture {
 	t.Helper()
 	zshPath, err := exec.LookPath("zsh")
 	if err != nil {
@@ -666,7 +666,7 @@ func newFirstSyncFixture(t *testing.T, testRoot, binary, name, failure string) *
 		}
 	}
 	source := filepath.Join(home, "source.zsh")
-	if err := os.WriteFile(source, []byte("export ZP15_FIRST_SYNC_VALUE=initial\n"), 0o600); err != nil {
+	if err := os.WriteFile(source, []byte("alias zp15_first_sync='print -r -- initial'\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	basePath := "/usr/bin:/bin"
@@ -711,8 +711,8 @@ func newFirstSyncFixture(t *testing.T, testRoot, binary, name, failure string) *
 	published, err := service.Publish(context.Background(), model.PublishRequest{
 		OperationID: strings.Repeat("c", 64), Credential: credential, AcknowledgedRevision: attached.Revision,
 		Delta: []model.LiveChange{{
-			Kind: model.LiveUpdate, Identity: model.Identity{Kind: model.LiveEnv, Name: "ZP15_FIRST_SYNC_VALUE"},
-			Value: model.ScalarLiveValue(firstSyncCanonicalValue),
+			Kind: model.LiveUpdate, Identity: model.Identity{Kind: model.LiveAlias, Name: "zp15_first_sync"},
+			Value: model.ScalarLiveValue("print -r -- " + firstSyncCanonicalValue),
 		}},
 	})
 	if err != nil || published.SharedRevision != 2 {
@@ -802,21 +802,23 @@ func TestWorktreeFirstExplicitSyncReconciles(t *testing.T) {
 	}{
 		{name: "mismatch-auto-apply-default", wantCalls: []string{"attach", "attach", "prepare", "acknowledge"}, wantInitial: "unset"},
 		{name: "mismatch-auto-apply-disabled", prelude: "export ZSHPRO_AUTO_APPLY=false", wantCalls: []string{"attach", "attach", "prepare", "acknowledge"}, wantInitial: "unset"},
-		{name: "exact-attach", prelude: "export ZP15_FIRST_SYNC_VALUE=" + firstSyncCanonicalValue, wantCalls: []string{"attach", "attach"}, wantInitial: firstSyncCanonicalValue},
+		{name: "exact-attach", prelude: "alias zp15_first_sync='print -r -- " + firstSyncCanonicalValue + "'", wantCalls: []string{"attach", "attach"}, wantInitial: "print -r -- " + firstSyncCanonicalValue},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			fixture := newFirstSyncFixture(t, testRoot, binary, test.name, "")
+			fixture := newFirstSyncFixture(t, testRoot, binary, test.name)
 			shell, callLog := fixture.shell(t, "")
 			command := test.prelude + "\nsource " + worktreeShellQuote(fixture.loader) + ` || return 10
-print -r -- "initial:${ZP15_FIRST_SYNC_VALUE-unset}"
+print -r -- "initial:${aliases[zp15_first_sync]-unset}"
 zsh-pro sync
 sync_rc=$?
-print -r -- "result:$sync_rc:$ZP_WORKTREE_APPLIED_REVISION:$ZP_WORKTREE_RECONCILE_REQUIRED:${#ZP_WORKTREE_LAST_ERROR}:${ZP15_FIRST_SYNC_VALUE-unset}"
+print -r -- "result:$sync_rc:$ZP_WORKTREE_APPLIED_REVISION:$ZP_WORKTREE_RECONCILE_REQUIRED:${#ZP_WORKTREE_LAST_ERROR}:${aliases[zp15_first_sync]-unset}"
+zp15_first_sync
 zsh-pro status
 `
 			output := shell.runOK(t, command)
 			if !strings.Contains(output, "initial:"+test.wantInitial+"\n") ||
-				!strings.Contains(output, "result:0:2:0:0:"+firstSyncCanonicalValue+"\n") ||
+				!strings.Contains(output, "result:0:2:0:0:print -r -- "+firstSyncCanonicalValue+"\n") ||
+				!strings.Contains(output, firstSyncCanonicalValue+"\n") ||
 				!strings.Contains(output, "behind: false\n") {
 				t.Fatalf("first explicit sync did not converge: %q", output)
 			}
@@ -824,8 +826,9 @@ zsh-pro status
 				t.Fatalf("first explicit sync operations = %v, want %v", calls, test.wantCalls)
 			}
 			if output := shell.runOK(t, `zsh-pro sync
-print -r -- "$ZP_WORKTREE_APPLIED_REVISION|$ZP_WORKTREE_RECONCILE_REQUIRED|${#ZP_WORKTREE_LAST_ERROR}|$ZP15_FIRST_SYNC_VALUE"
-`); output != "2|0|0|"+firstSyncCanonicalValue+"\n" {
+print -r -- "$ZP_WORKTREE_APPLIED_REVISION|$ZP_WORKTREE_RECONCILE_REQUIRED|${#ZP_WORKTREE_LAST_ERROR}|${aliases[zp15_first_sync]-unset}"
+zp15_first_sync
+`); output != "2|0|0|print -r -- "+firstSyncCanonicalValue+"\n"+firstSyncCanonicalValue+"\n" {
 				t.Fatalf("repeated explicit sync = %q", output)
 			}
 			if head := firstSyncHead(t, fixture.runtimeRoot); head != 2 {
@@ -851,7 +854,8 @@ func TestWorktreeFirstExplicitSyncFailureStaysBehind(t *testing.T) {
 	}{
 		{name: "prepare", failure: "prepare"},
 		{name: "timeout", failure: "timeout"},
-		{name: "apply", override: "typeset -gr ZP15_FIRST_SYNC_VALUE=local", mutates: true},
+		{name: "apply", override: `alias() { [[ "$1" == zp15_first_sync=* ]] && return 61; builtin alias "$@" }
+`},
 		{name: "capture", override: `functions[_zp15_capture_original]=${functions[_zp_worktree_capture]}
 typeset -gi ZP15_CAPTURE_COUNT=0
 _zp_worktree_capture() { (( ++ZP15_CAPTURE_COUNT )); (( ZP15_CAPTURE_COUNT < 3 )) || return 73; _zp15_capture_original "$@" }
@@ -859,7 +863,7 @@ _zp_worktree_capture() { (( ++ZP15_CAPTURE_COUNT )); (( ZP15_CAPTURE_COUNT < 3 )
 		{name: "acknowledge", failure: "acknowledge", mutates: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			fixture := newFirstSyncFixture(t, testRoot, binary, test.name, test.failure)
+			fixture := newFirstSyncFixture(t, testRoot, binary, test.name)
 			shell, _ := fixture.shell(t, test.failure)
 			command := "source " + worktreeShellQuote(fixture.loader) + " || return 10\n" + test.override + `
 zsh-pro sync
@@ -878,7 +882,7 @@ zsh-pro status
 				t.Fatalf("first-sync failure result missing: %q", output)
 			}
 			fields := strings.Split(lines[0], ":")
-			if len(fields) != 8 || fields[1] == "0" || fields[2] != "0" || fields[3] != "1" || fields[4] == "0" {
+			if len(fields) != 7 || fields[1] == "0" || fields[2] != "0" || fields[3] != "1" || fields[4] == "0" {
 				t.Fatalf("first-sync failure published false convergence: %q", output)
 			}
 			if test.mutates && fields[5] == "0" && fields[6] == "0" {
