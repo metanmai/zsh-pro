@@ -728,15 +728,19 @@ func applyStateChanges(states []model.LiveIdentityState, changes []model.LiveCha
 }
 
 func equalLiveStates(left, right []model.LiveIdentityState) bool {
-	if len(left) != len(right) {
+	normalizedLeft, err := model.NormalizeLiveStates(left)
+	if err != nil || len(normalizedLeft) != len(left) {
 		return false
 	}
-	for i := range left {
-		if left[i].Identity != right[i].Identity || !model.EqualLiveValue(left[i].Identity.Kind, left[i].Value, right[i].Value) {
-			return false
-		}
+	normalizedRight, err := model.NormalizeLiveStates(right)
+	if err != nil || len(normalizedRight) != len(right) {
+		return false
 	}
-	return true
+	changes, err := DiffSnapshot(
+		model.LiveSnapshot{States: normalizedLeft},
+		model.LiveSnapshot{States: normalizedRight},
+	)
+	return err == nil && len(changes) == 0
 }
 
 func validStateToken(value string) bool {
