@@ -21,12 +21,14 @@ import (
 )
 
 const (
-	stateFileName             = "worktree.json"
-	stateLockFileName         = "worktree.lock"
-	stateForensicFileName     = "events.jsonl"
-	stateTemporaryPrefix      = ".worktree-state-"
-	stateLockRetryInterval    = 5 * time.Millisecond
-	maxStateForensicFileBytes = 64 * 1024
+	stateFileName                     = "worktree.json"
+	stateLockFileName                 = "worktree.lock"
+	stateForensicFileName             = "events.jsonl"
+	stateRecoveredPersistenceFileName = "recovered-persistence"
+	stateRecoveredPersistencePayload  = "ZPWT recovered-persistence v1\n"
+	stateTemporaryPrefix              = ".worktree-state-"
+	stateLockRetryInterval            = 5 * time.Millisecond
+	maxStateForensicFileBytes         = 64 * 1024
 )
 
 var (
@@ -62,10 +64,7 @@ type StateStore struct {
 	identity  stateRootMetadata
 	closed    bool
 
-	// A derived forensic append is not authoritative. If it fails, the next
-	// successful transaction durably projects a value-free recovered marker.
-	pendingRecoveredPersistence bool
-	faults                      stateStoreFaults
+	faults stateStoreFaults
 }
 
 // OpenStateStore walks an absolute path without following symlinks, authenticates
@@ -192,14 +191,19 @@ func (s *StateStore) WithTransaction(ctx context.Context, mutate func(*State) er
 	if err != nil {
 		return err
 	}
-	if s.pendingRecoveredPersistence {
-		for shellID, shell := range state.Shells {
-			shell.LastRecoveredError = RecoveredPersistence
-			state.Shells[shellID] = shell
-		}
+	recoveredPersistencePending, err := s.hasRecoveredPersistenceMarker(lock)
+	if err != nil {
+		return err
+	}
+	if recoveredPersistencePending {
+		projectRecoveredPersistence(&state)
 	}
 	if err := mutate(&state); err != nil {
 		return err
+	}
+	recoveredPersistenceProjected := false
+	if recoveredPersistencePending {
+		recoveredPersistenceProjected = projectRecoveredPersistence(&state)
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -214,21 +218,33 @@ func (s *StateStore) WithTransaction(ctx context.Context, mutate func(*State) er
 	if err != nil {
 		return err
 	}
-	if bytes.Equal(previous, next) {
+	canonicalChanged := !bytes.Equal(previous, next)
+	if !canonicalChanged && !recoveredPersistenceProjected {
 		if err := s.authenticateLockBinding(lock); err != nil {
 			return err
 		}
 		return s.authenticateRoot()
 	}
-	if err := s.replaceCanonical(next); err != nil {
-		return err
+	if canonicalChanged {
+		if err := s.replaceCanonical(next); err != nil {
+			return err
+		}
+		if err := s.authenticateRoot(); err != nil {
+			return err
+		}
 	}
-	if err := s.authenticateRoot(); err != nil {
-		return err
+	if recoveredPersistenceProjected {
+		if err := s.clearRecoveredPersistenceMarker(lock); err != nil {
+			return err
+		}
 	}
-	s.pendingRecoveredPersistence = false
+	if !canonicalChanged {
+		return nil
+	}
 	if err := s.appendForensic(state); err != nil {
-		s.pendingRecoveredPersistence = true
+		if markerErr := s.writeRecoveredPersistenceMarker(lock); markerErr != nil {
+			return fmt.Errorf("persist recovered persistence evidence: %w", markerErr)
+		}
 	}
 	return nil
 }
@@ -357,6 +373,195 @@ func (s *StateStore) authenticateLockBinding(lock *os.File) error {
 		return fmt.Errorf("%w: state lock binding changed", ErrStateStoreAuthentication)
 	}
 	return nil
+}
+
+func (s *StateStore) authenticateRecoveredPersistenceAuthority(lock *os.File) error {
+	if err := s.authenticateRoot(); err != nil {
+		return err
+	}
+	return s.authenticateLockBinding(lock)
+}
+
+func (s *StateStore) openRecoveredPersistenceMarker(flags int) (*os.File, bool, error) {
+	fd, err := stateOpenat(
+		int(s.root.Fd()),
+		stateRecoveredPersistenceFileName,
+		flags|syscall.O_CLOEXEC|syscall.O_NOFOLLOW|syscall.O_NONBLOCK,
+		0,
+	)
+	if errors.Is(err, syscall.ENOENT) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("open recovered persistence evidence: %w", err)
+	}
+	file := os.NewFile(uintptr(fd), stateRecoveredPersistenceFileName)
+	if file == nil {
+		_ = syscall.Close(fd)
+		return nil, false, errors.New("retain recovered persistence evidence")
+	}
+	if err := authenticateStateFile(fd, 0o600); err != nil {
+		_ = file.Close()
+		return nil, false, fmt.Errorf("%w: recovered persistence evidence identity", ErrStateStoreCorrupt)
+	}
+	info, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, false, fmt.Errorf("stat recovered persistence evidence: %w", err)
+	}
+	if info.Size() != int64(len(stateRecoveredPersistencePayload)) {
+		_ = file.Close()
+		return nil, false, fmt.Errorf("%w: recovered persistence evidence size", ErrStateStoreCorrupt)
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		_ = file.Close()
+		return nil, false, fmt.Errorf("seek recovered persistence evidence: %w", err)
+	}
+	payload, err := io.ReadAll(io.LimitReader(file, int64(len(stateRecoveredPersistencePayload)+1)))
+	if err != nil {
+		_ = file.Close()
+		return nil, false, fmt.Errorf("read recovered persistence evidence: %w", err)
+	}
+	if !bytes.Equal(payload, []byte(stateRecoveredPersistencePayload)) {
+		_ = file.Close()
+		return nil, false, fmt.Errorf("%w: recovered persistence evidence protocol", ErrStateStoreCorrupt)
+	}
+	return file, true, nil
+}
+
+func (s *StateStore) hasRecoveredPersistenceMarker(lock *os.File) (bool, error) {
+	if err := s.authenticateRecoveredPersistenceAuthority(lock); err != nil {
+		return false, err
+	}
+	marker, present, err := s.openRecoveredPersistenceMarker(syscall.O_RDONLY)
+	if marker != nil {
+		_ = marker.Close()
+	}
+	return present, err
+}
+
+func (s *StateStore) writeRecoveredPersistenceMarker(lock *os.File) (returnErr error) {
+	if err := s.authenticateRecoveredPersistenceAuthority(lock); err != nil {
+		return err
+	}
+	rootFD := int(s.root.Fd())
+	fd, err := stateOpenat(
+		rootFD,
+		stateRecoveredPersistenceFileName,
+		syscall.O_RDWR|syscall.O_CREAT|syscall.O_EXCL|syscall.O_CLOEXEC|syscall.O_NOFOLLOW,
+		0o600,
+	)
+	if errors.Is(err, syscall.EEXIST) {
+		marker, present, openErr := s.openRecoveredPersistenceMarker(syscall.O_RDWR)
+		if openErr != nil {
+			return openErr
+		}
+		if !present || marker == nil {
+			return fmt.Errorf("%w: recovered persistence evidence disappeared", ErrStateStoreCorrupt)
+		}
+		defer func() { _ = marker.Close() }()
+		if err := s.syncFile(int(marker.Fd())); err != nil {
+			return fmt.Errorf("sync recovered persistence evidence: %w", err)
+		}
+		if err := s.authenticateRecoveredPersistenceAuthority(lock); err != nil {
+			return err
+		}
+		return s.syncDirectory(rootFD)
+	}
+	if err != nil {
+		return fmt.Errorf("create recovered persistence evidence: %w", err)
+	}
+	markerReady := false
+	defer func() {
+		if fd >= 0 {
+			_ = syscall.Close(fd)
+		}
+		if !markerReady {
+			_ = stateUnlinkat(rootFD, stateRecoveredPersistenceFileName, 0)
+		}
+	}()
+	if err := syscall.Fchmod(fd, 0o600); err != nil {
+		return fmt.Errorf("chmod recovered persistence evidence: %w", err)
+	}
+	if err := authenticateStateFile(fd, 0o600); err != nil {
+		return fmt.Errorf("%w: recovered persistence evidence identity", ErrStateStoreCorrupt)
+	}
+	if err := s.writeAll(fd, []byte(stateRecoveredPersistencePayload)); err != nil {
+		return fmt.Errorf("write recovered persistence evidence: %w", err)
+	}
+	if err := s.syncFile(fd); err != nil {
+		return fmt.Errorf("sync recovered persistence evidence: %w", err)
+	}
+	if err := syscall.Close(fd); err != nil {
+		fd = -1
+		return fmt.Errorf("close recovered persistence evidence: %w", err)
+	}
+	fd = -1
+	markerReady = true
+	if err := s.authenticateRecoveredPersistenceAuthority(lock); err != nil {
+		return err
+	}
+	if err := s.syncDirectory(rootFD); err != nil {
+		return fmt.Errorf("sync recovered persistence evidence directory: %w", err)
+	}
+	return nil
+}
+
+func (s *StateStore) clearRecoveredPersistenceMarker(lock *os.File) error {
+	if err := s.authenticateRecoveredPersistenceAuthority(lock); err != nil {
+		return err
+	}
+	held, present, err := s.openRecoveredPersistenceMarker(syscall.O_RDONLY)
+	if err != nil {
+		return err
+	}
+	if !present || held == nil {
+		return fmt.Errorf("%w: recovered persistence evidence disappeared", ErrStateStoreCorrupt)
+	}
+	defer func() { _ = held.Close() }()
+	heldInfo, err := held.Stat()
+	if err != nil {
+		return fmt.Errorf("stat recovered persistence evidence: %w", err)
+	}
+	if err := s.authenticateRecoveredPersistenceAuthority(lock); err != nil {
+		return err
+	}
+	current, present, err := s.openRecoveredPersistenceMarker(syscall.O_RDONLY)
+	if err != nil {
+		return err
+	}
+	if !present || current == nil {
+		return fmt.Errorf("%w: recovered persistence evidence disappeared", ErrStateStoreCorrupt)
+	}
+	currentInfo, statErr := current.Stat()
+	closeErr := current.Close()
+	if statErr != nil {
+		return fmt.Errorf("stat current recovered persistence evidence: %w", statErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close current recovered persistence evidence: %w", closeErr)
+	}
+	if !os.SameFile(heldInfo, currentInfo) {
+		return fmt.Errorf("%w: recovered persistence evidence binding changed", ErrStateStoreAuthentication)
+	}
+	if err := stateUnlinkat(int(s.root.Fd()), stateRecoveredPersistenceFileName, 0); err != nil {
+		return fmt.Errorf("remove recovered persistence evidence: %w", err)
+	}
+	if err := s.syncDirectory(int(s.root.Fd())); err != nil {
+		return fmt.Errorf("sync recovered persistence evidence directory: %w", err)
+	}
+	return nil
+}
+
+func projectRecoveredPersistence(state *State) bool {
+	if state == nil || len(state.Shells) == 0 {
+		return false
+	}
+	for shellID, shell := range state.Shells {
+		shell.LastRecoveredError = RecoveredPersistence
+		state.Shells[shellID] = shell
+	}
+	return true
 }
 
 func acquireStateLock(ctx context.Context, fd int) error {
