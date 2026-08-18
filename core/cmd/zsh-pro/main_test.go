@@ -1660,7 +1660,7 @@ func TestMainIngestAllowsOnlyExactLoaderSymbols(t *testing.T) {
 		"_zp_worktree_capture", "_zp_worktree_capture_append_record", "_zp_worktree_capture_clear", "_zp_worktree_capture_matches_baseline",
 		"_zp_worktree_close_coproc_endpoints", "_zp_worktree_close_owned_fd", "_zp_worktree_close_transport_fd",
 		"_zp_worktree_disable", "_zp_worktree_dispatcher_installed", "_zp_worktree_effective_auto_apply",
-		"_zp_worktree_ensure_attached", "_zp_worktree_ensure_attached_impl", "_zp_worktree_error", "_zp_worktree_invoke",
+		"_zp_worktree_ensure_attached", "_zp_worktree_ensure_attached_impl", "_zp_worktree_error", "_zp_worktree_install_transition", "_zp_worktree_invoke",
 		"_zp_worktree_line_finish", "_zp_worktree_needs_legacy_switch", "_zp_worktree_next_operation", "_zp_worktree_parse_publish_response",
 		"_zp_worktree_pid_owned", "_zp_worktree_precmd", "_zp_worktree_protected_call", "_zp_worktree_publish", "_zp_worktree_publish_impl",
 		"_zp_worktree_pull", "_zp_worktree_pull_impl", "_zp_worktree_refresh_auto_apply",
