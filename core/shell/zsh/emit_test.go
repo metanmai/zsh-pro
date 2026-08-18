@@ -166,6 +166,77 @@ func TestEmitLivePatchOwnsExactApplyAndReplacementReverse(t *testing.T) {
 	}
 }
 
+func TestEmitLivePatchFailsFastPerOperation(t *testing.T) {
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("zsh not available")
+	}
+
+	identity := func(name string) model.Identity {
+		return model.Identity{Kind: model.LiveAlias, Name: name}
+	}
+	operations := []activate.Op{
+		activate.SetLiveScalar{Identity: identity("zp14_first"), Value: "print -r -- first-secret-value"},
+		activate.SetLiveScalar{Identity: identity("zp14_middle"), Value: "print -r -- middle-secret-value"},
+		activate.SetLiveScalar{Identity: identity("zp14_final"), Value: "print -r -- final-secret-value"},
+	}
+
+	for index, name := range []string{"first", "middle", "final"} {
+		t.Run("forward_"+name, func(t *testing.T) {
+			source, err := (Provider{}).EmitLivePatch(operations, nil, "__zp14_apply", "__zp14_reverse")
+			if err != nil {
+				t.Fatal(err)
+			}
+			failed := []string{"zp14_first", "zp14_middle", "zp14_final"}[index]
+			failureStatus := 41 + index
+			checks := []string{
+				"alias() { if [[ $1 == " + failed + "=* ]]; then return " + fmt.Sprint(failureStatus) + "; fi; builtin alias \"$@\"; }",
+				string(source),
+				"__zp14_apply",
+				"typeset -i operation_rc=$?",
+				"(( operation_rc == " + fmt.Sprint(failureStatus) + " )) || exit 71",
+			}
+			for later := index + 1; later < len(operations); later++ {
+				name := []string{"zp14_first", "zp14_middle", "zp14_final"}[later]
+				checks = append(checks, "(( ! ${+aliases["+name+"]} )) || exit 72")
+			}
+			output, runErr := exec.Command("zsh", "-f", "-c", strings.Join(checks, "\n")).CombinedOutput()
+			if strings.Contains(string(output), "secret-value") {
+				t.Fatalf("failure diagnostics leaked a live value: %q", output)
+			}
+			if runErr != nil {
+				t.Fatalf("%s forward operation did not fail fast: %v\n%s", name, runErr, output)
+			}
+		})
+	}
+
+	t.Run("replacement_reverse", func(t *testing.T) {
+		reverse := []activate.Op{
+			activate.SetLiveScalar{Identity: identity("zp14_reverse_first"), Value: "print -r -- reverse-first-secret-value"},
+			activate.SetLiveScalar{Identity: identity("zp14_reverse_middle"), Value: "print -r -- reverse-middle-secret-value"},
+			activate.SetLiveScalar{Identity: identity("zp14_reverse_final"), Value: "print -r -- reverse-final-secret-value"},
+		}
+		source, err := (Provider{}).EmitLivePatch(nil, reverse, "__zp14_apply", "__zp14_reverse")
+		if err != nil {
+			t.Fatal(err)
+		}
+		script := strings.Join([]string{
+			"alias() { if [[ $1 == zp14_reverse_middle=* ]]; then return 57; fi; builtin alias \"$@\"; }",
+			string(source),
+			"__zp14_reverse",
+			"typeset -i operation_rc=$?",
+			"(( operation_rc == 57 )) || exit 81",
+			"(( ! ${+aliases[zp14_reverse_final]} )) || exit 82",
+		}, "\n")
+		output, runErr := exec.Command("zsh", "-f", "-c", script).CombinedOutput()
+		if strings.Contains(string(output), "secret-value") {
+			t.Fatalf("failure diagnostics leaked a replacement reverse value: %q", output)
+		}
+		if runErr != nil {
+			t.Fatalf("replacement reverse did not fail fast: %v\n%s", runErr, output)
+		}
+	})
+}
+
 func TestEmitRuntimeTransitionOwnsFinalAcknowledgementEnvelope(t *testing.T) {
 	fingerprint := strings.Repeat("ab", 32)
 	source, err := (Provider{}).EmitRuntimeTransition(nil, nil, "__zp08_apply", "__zp08_reverse", 17, 29, fingerprint)
