@@ -832,20 +832,17 @@ _zp_worktree_close_coproc_endpoints() {
 	local deadline="$1" mode="$2" sink=''
 	if [[ "$mode" == replace ]]; then
 		# Replacing the active coprocess closes zsh's special endpoints for the
-		# helper. Keep the inert child alive through an explicit one-line
-		# handshake so zsh cannot recycle the special endpoints before cleanup.
-		coproc { IFS= read -r sink }
+		# helper. Read the inert child's EOF before reaping it so zsh retains the
+		# replacement endpoints until their portable close is complete.
+		coproc :
 		closer_pid=$!
-		_zp_worktree_record_owned_pid closer_pid closer_state closer_job || return 1
-		print -r -p -- '' 2>/dev/null || return 1
+		[[ "$closer_pid" == <-> ]] && (( closer_pid > 1 )) || { closer_pid=0; closer_job=0; closer_state=cleared; return 1; }
+		closer_job="${(k)jobstates[(r)*:${closer_pid}=*]}"
+		[[ "$closer_job" == <-> ]] && (( closer_job > 0 )) || closer_job=0
+		closer_state=created
 	fi
-	while (( closer_pid > 0 )); do
-		_zp_worktree_reap_exited_pid closer_pid '' closer_state closer_job || :
-		(( closer_pid == 0 )) && break
-		_zp_worktree_budget_check "$deadline" || return 124
-	done
-	# Reading EOF from the already-reaped inert coprocess releases zsh's two
-	# special coprocess endpoints without enumerating the process descriptor table.
+	# Reading EOF releases both of zsh's special coprocess endpoints without
+	# enumerating the process descriptor table.
 	IFS= read -r -p sink 2>/dev/null || :
 }
 
@@ -855,25 +852,14 @@ _zp_worktree_close_owned_fd() {
 	exec {fd}>&- || :
 }
 
-_zp_worktree_record_owned_pid() {
-	local pid_name="$1" state_name="$2" job_name="$3" pid="${(P)1}" job=''
-	[[ "$pid" == <-> ]] && (( pid > 1 )) || {
-		: ${(P)pid_name::=0}
-		: ${(P)job_name::=0}
-		: ${(P)state_name::=cleared}
-		return 1
-	}
-	job="${(k)jobstates[(r)*:${pid}=*]}"
-	[[ "$job" == <-> ]] && (( job > 0 )) || job=0
-	: ${(P)job_name::=$job}
-	: ${(P)state_name::=created}
-}
-
 _zp_worktree_pid_owned() {
 	local pid_name="$1" state_name="$2" job_name="$3"
 	local pid="${(P)1}" state="${(P)2}" job="${(P)3}" job_state=''
 	[[ "$state" == created && "$pid" == <-> && "$job" == <-> ]] || return 1
 	(( pid > 1 && job > 0 )) || return 1
+	# Query only the captured zsh job. This refreshes an asynchronously completed
+	# child before the lifecycle can authorize a signal or defer its wait.
+	jobs -p "%$job" >/dev/null 2>&1 || return 1
 	job_state="${jobstates[$job]-}"
 	[[ "$job_state" != done:* && "$job_state" == *":${pid}="* ]]
 }
@@ -979,13 +965,19 @@ _zp_worktree_invoke() {
 			*) return 2 ;;
 		esac
 		helper_pid=$!
-		_zp_worktree_record_owned_pid helper_pid helper_state helper_job || return 1
+		[[ "$helper_pid" == <-> ]] && (( helper_pid > 1 )) || { helper_pid=0; helper_job=0; helper_state=cleared; return 1; }
+		helper_job="${(k)jobstates[(r)*:${helper_pid}=*]}"
+		[[ "$helper_job" == <-> ]] && (( helper_job > 0 )) || helper_job=0
+		helper_state=created
 		exec {write_fd}>&p || return 1
 		exec {read_fd}<&p || return 1
 		_zp_worktree_close_coproc_endpoints "$termination_deadline" replace || return $?
 		( _zp_worktree_write_frame "$operation" "$mode" "$operation_id" "$revision" "$token" "$identity_kind" "$identity_name" "$apply_name" "$reverse_name" "$baseline_fields" "$baseline_counts" "$current_fields" "$current_counts" "$deadline" ) >&$write_fd &
 		writer_pid=$!
-		_zp_worktree_record_owned_pid writer_pid writer_state writer_job || return 1
+		[[ "$writer_pid" == <-> ]] && (( writer_pid > 1 )) || { writer_pid=0; writer_job=0; writer_state=cleared; return 1; }
+		writer_job="${(k)jobstates[(r)*:${writer_pid}=*]}"
+		[[ "$writer_job" == <-> ]] && (( writer_job > 0 )) || writer_job=0
+		writer_state=created
 		_zp_worktree_close_transport_fd write_fd
 		while true; do
 			remaining=$(( termination_deadline - EPOCHREALTIME ))

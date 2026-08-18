@@ -240,7 +240,7 @@ timeout_revision=$ZP_WORKTREE_APPLIED_REVISION
 timeout_error=${#ZP_WORKTREE_LAST_ERROR}
 PATH=` + worktreeShellQuote(filepath.Dir(binary)+":"+fixture.basePath) + `
 rehash
-zsh-pro sync
+_zp_worktree_line_finish
 valid_rc=$?
 print -r -- "result:$timeout_rc:$timeout_revision:$timeout_error:$valid_rc:$ZP_WORKTREE_APPLIED_REVISION:${#ZP_WORKTREE_LAST_ERROR}:$portable_jobs_before:${#jobstates}:${aliases[zp15_first_sync]-unset}:${(q)ZP_WORKTREE_LAST_ERROR}"
 `
