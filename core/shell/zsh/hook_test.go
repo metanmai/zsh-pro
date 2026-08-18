@@ -685,7 +685,7 @@ func TestWorktreeRecoveryOwnerPrecedesMutation(t *testing.T) {
 		t.Fatal("loader does not define _zp_worktree_install_transition")
 	}
 	ownerIndex := strings.Index(install, `ZP_RECOVERY_REVERSE_FN="$reverse"`)
-	applyIndex := strings.Index(install, `"$apply"`)
+	applyIndex := strings.Index(install, `if "$apply"; then`)
 	if ownerIndex < 0 || applyIndex < 0 || ownerIndex >= applyIndex {
 		t.Fatalf("replacement recovery is not installed before mutation:\n%s", install)
 	}

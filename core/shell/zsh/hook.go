@@ -401,6 +401,68 @@ _zp_run_payload() {
   return "$apply_rc"
 }
 
+_zp_worktree_install_transition() {
+  local apply="$1" reverse="$2" old_reverse="$3" apply_rc=1 cleanup_rc=1
+  # The generated pair and the prior owner are all loader-selected. Validate
+  # the complete ownership graph before the first forward mutation.
+  if [[ -z "$apply" || -z "$reverse" || "$apply" == "$reverse" ||
+        ${+functions[$apply]} != 1 || ${+functions[$reverse]} != 1 ]]; then
+    unset -f "$apply" 2>/dev/null || :
+    [[ "$reverse" == "${ZP_ACTIVE_REVERSE_FN-}" || "$reverse" == "${ZP_RECOVERY_REVERSE_FN-}" ]] || unset -f "$reverse" 2>/dev/null || :
+    return 1
+  fi
+  if [[ "${ZP_RECOVERY_REVERSE_FN+x}" == x || "${ZP_ACTIVE_REVERSE_FN-}" != "$old_reverse" ||
+        ( -n "$old_reverse" && ( "$old_reverse" == "$reverse" || ${+functions[$old_reverse]} != 1 ) ) ]]; then
+    unset -f "$apply" 2>/dev/null || :
+    [[ "$reverse" == "${ZP_ACTIVE_REVERSE_FN-}" || "$reverse" == "${ZP_RECOVERY_REVERSE_FN-}" ]] || unset -f "$reverse" 2>/dev/null || :
+    return 1
+  fi
+  if ! _zp_preflight_undo_slots ZP_ACTIVE_REVERSE_FN ZP_RECOVERY_REVERSE_FN; then
+    unset -f "$apply" 2>/dev/null || :
+    unset -f "$reverse" 2>/dev/null || :
+    return 1
+  fi
+
+  # Replacement recovery is reachable before forward operation one. Keep the
+  # previous active owner intact until the replacement has fully applied and
+  # its active-pointer promotion succeeds.
+  if ! typeset -g ZP_RECOVERY_REVERSE_FN="$reverse"; then
+    unset -f "$apply" 2>/dev/null || :
+    unset -f "$reverse" 2>/dev/null || :
+    return 1
+  fi
+  if "$apply"; then
+    apply_rc=0
+  else
+    apply_rc=$?
+  fi
+  if (( apply_rc != 0 )); then
+    if _zp_recover_failed_target; then cleanup_rc=0; else cleanup_rc=$?; fi
+    unset -f "$apply" 2>/dev/null || :
+    if (( cleanup_rc != 0 )); then return "$cleanup_rc"; fi
+    return "$apply_rc"
+  fi
+
+  # Promotion never creates an ownership gap: recovery remains set until the
+  # active pointer names the replacement. Old cleanup happens last.
+  if ! typeset -g ZP_ACTIVE_REVERSE_FN="$reverse"; then
+    unset -f "$apply" 2>/dev/null || :
+    return 1
+  fi
+  if ! unset ZP_RECOVERY_REVERSE_FN; then
+    unset -f "$apply" 2>/dev/null || :
+    return 1
+  fi
+  if [[ -n "$old_reverse" && "$old_reverse" != "$reverse" ]]; then
+    if ! unset -f "$old_reverse" 2>/dev/null; then
+      unset -f "$apply" 2>/dev/null || :
+      return 1
+    fi
+  fi
+  if ! unset -f "$apply" 2>/dev/null; then return 1; fi
+  return 0
+}
+
 _zp_has_known_active_profile() {
   local name="$1" reverse="${ZP_ACTIVE_REVERSE_FN-}"
   [[ "${ZP_ACTIVE_PROFILE+x}" == x && "$ZP_ACTIVE_PROFILE" == "$name" &&
@@ -1107,6 +1169,7 @@ _zp_worktree_publish() {
 _zp_worktree_apply_transition() {
   local operation="$1" deadline="$2" source='' operation_id='' apply_name reverse_name ack_id='' ack_response=''
   local revision token fingerprint old_reverse="${ZP_ACTIVE_REVERSE_FN-}" rc=1
+	[[ "${ZP_RECOVERY_REVERSE_FN+x}" != x ]] || return 1
 	unset ZP_WORKTREE_REPLY_PROTOCOL ZP_WORKTREE_REPLY_REVISION ZP_WORKTREE_REPLY_TOKEN ZP_WORKTREE_REPLY_FINGERPRINT ZP_WORKTREE_REPLY_COMPLETE
 	_zp_worktree_budget_check "$deadline" || return 124
   apply_name="__zp_worktree_apply_${$}_${ZP_WORKTREE_OPERATION_SEQUENCE}"
@@ -1135,10 +1198,7 @@ _zp_worktree_apply_transition() {
     _zp_worktree_valid_uint "$revision" && _zp_worktree_valid_uint "$token" && _zp_worktree_valid_hex64 "$fingerprint" || return 1
 		if (( ${+functions[$apply_name]} || ${+functions[$reverse_name]} )); then
       (( ${+functions[$apply_name]} && ${+functions[$reverse_name]} )) || return 1
-      "$apply_name" || return 1
-      unset -f "$apply_name" 2>/dev/null || return 1
-      [[ -z "$old_reverse" || "$old_reverse" == "$reverse_name" ]] || unset -f "$old_reverse" 2>/dev/null || return 1
-			typeset -g ZP_ACTIVE_REVERSE_FN="$reverse_name" || return 1
+			_zp_worktree_install_transition "$apply_name" "$reverse_name" "$old_reverse" || return $?
 		fi
 		_zp_worktree_budget_check "$deadline" || return 124
 		_zp_worktree_capture "$deadline" || return $?
@@ -1159,6 +1219,11 @@ _zp_worktree_apply_transition() {
   } always {
     source='' operation_id='' ack_id='' ack_response='' token='' fingerprint=''
     _ZP_WORKTREE_CAPTURE_FIELDS=() _ZP_WORKTREE_CAPTURE_COUNTS=()
+		if [[ -n "$apply_name" && ${+functions[$apply_name]} == 1 ]]; then unset -f "$apply_name" 2>/dev/null || :; fi
+		if [[ -n "$reverse_name" && ${+functions[$reverse_name]} == 1 &&
+		      "$reverse_name" != "${ZP_ACTIVE_REVERSE_FN-}" && "$reverse_name" != "${ZP_RECOVERY_REVERSE_FN-}" ]]; then
+			unset -f "$reverse_name" 2>/dev/null || :
+		fi
     unset ZP_WORKTREE_REPLY_PROTOCOL ZP_WORKTREE_REPLY_REVISION ZP_WORKTREE_REPLY_TOKEN ZP_WORKTREE_REPLY_FINGERPRINT ZP_WORKTREE_REPLY_COMPLETE
   }
   return "$rc"
@@ -1396,8 +1461,15 @@ deactivate() {
 		_zp_runtime_error 2 "usage: deactivate"
 		return 0
 	fi
-	local rc=1
+	local rc=1 recovered=0
 	{
+		if [[ "${ZP_RECOVERY_REVERSE_FN+x}" == x ]]; then
+			if _zp_worktree_protected_call _zp_recover_failed_target; then recovered=1; else
+				rc=$?
+				_zp_runtime_error "$rc" "target apply cleanup failed; recovery is retained; repair the terminal state and run deactivate again"
+				return 0
+			fi
+		fi
 		if _zp_worktree_dispatcher_installed && [[ "${ZP_ACTIVE_REVERSE_FN-}" == __zp_worktree_reverse_* ]]; then
 			if _zp_worktree_protected_call _zp_run_retained_reverse "$ZP_ACTIVE_REVERSE_FN"; then
 				_zp_worktree_disable
@@ -1408,12 +1480,10 @@ deactivate() {
 			_zp_runtime_error "$rc" "worktree deactivation failed; recovery is retained"
 			return 0
 		fi
-		if [[ "${ZP_RECOVERY_REVERSE_FN+x}" == x ]]; then
-			if _zp_recover_failed_target; then :; else
-				rc=$?
-				_zp_runtime_error "$rc" "target apply cleanup failed; recovery is retained; repair the terminal state and run deactivate again"
-				return 0
-			fi
+		if (( recovered )) && _zp_worktree_dispatcher_installed && [[ "${ZP_ACTIVE_PROFILE+x}" != x ]]; then
+			_zp_worktree_disable
+			_zp_runtime_ok
+			return 0
 		fi
 		if [[ "${ZP_ACTIVE_PROFILE+x}" != x ]]; then _zp_runtime_ok; return 0; fi
 		if ! _zp_prepare_eval_state; then return 0; fi

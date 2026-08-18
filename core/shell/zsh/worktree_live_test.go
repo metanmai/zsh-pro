@@ -326,6 +326,18 @@ func TestWorktreePartialPatchFailureRecovery(t *testing.T) {
 		}
 		return string(source)
 	}
+	emitOperations := func(forward, reverse []activate.Op) string {
+		t.Helper()
+		source, err := (Provider{}).EmitRuntimeTransition(
+			forward, reverse,
+			"__zp14_apply_template", "__zp14_reverse_template",
+			6, 7, strings.Repeat("0", 64),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(source)
+	}
 	runScript := func(test *testing.T, name, transition, assertions string) {
 		test.Helper()
 		common := `
@@ -381,11 +393,24 @@ _zp_worktree_invoke() {
 		}
 	}
 
-	forwardOnly := emitTransition(nil, []model.LiveIdentityState{
-		aliasState("zp14_first", "print -r -- first-secret-value"),
-		aliasState("zp14_middle", "print -r -- middle-secret-value"),
-		aliasState("zp14_final", "print -r -- final-secret-value"),
-	})
+	pathIdentity := model.Identity{Kind: model.LivePath, Name: "PATH"}
+	fpathIdentity := model.Identity{Kind: model.LiveFPath, Name: "FPATH"}
+	forwardOnly := emitOperations(
+		[]activate.Op{
+			activate.SetLiveScalar{Identity: model.Identity{Kind: model.LiveAlias, Name: "zp14_first"}, Value: "print -r -- first-secret-value"},
+			activate.SetLiveScalar{Identity: model.Identity{Kind: model.LiveFunction, Name: "zp14_hostile_fn"}, Value: "print -r -- 'hostile; $() *'\nprint -r -- second"},
+			activate.TransitionLiveList{Identity: pathIdentity, BeforePresent: true, AfterPresent: true, Before: []string{"/base", "", "/dup", "/dup"}, After: []string{"/new", "", "/dup", "/dup"}},
+			activate.TransitionLiveList{Identity: fpathIdentity, BeforePresent: true, AfterPresent: true, Before: []string{"/functions", "", "/functions"}, After: []string{"", "/new-functions", ""}},
+			activate.SetLiveScalar{Identity: model.Identity{Kind: model.LiveAlias, Name: "zp14_final"}, Value: "print -r -- final-secret-value"},
+		},
+		[]activate.Op{
+			activate.RemoveLiveScalar{Identity: model.Identity{Kind: model.LiveAlias, Name: "zp14_first"}},
+			activate.RemoveLiveScalar{Identity: model.Identity{Kind: model.LiveFunction, Name: "zp14_hostile_fn"}},
+			activate.TransitionLiveList{Identity: pathIdentity, BeforePresent: true, AfterPresent: true, Before: []string{"/new", "", "/dup", "/dup"}, After: []string{"/base", "", "/dup", "/dup"}},
+			activate.TransitionLiveList{Identity: fpathIdentity, BeforePresent: true, AfterPresent: true, Before: []string{"", "/new-functions", ""}, After: []string{"/functions", "", "/functions"}},
+			activate.RemoveLiveScalar{Identity: model.Identity{Kind: model.LiveAlias, Name: "zp14_final"}},
+		},
+	)
 	for _, failure := range []struct {
 		name   string
 		target string
@@ -397,12 +422,17 @@ _zp_worktree_invoke() {
 			body := `
 typeset -g ZP14_FAILURE_MODE=operation ZP14_FAIL_ALIAS=` + failure.target + `
 alias() { if [[ "$1" == "$ZP14_FAIL_ALIAS"=* ]]; then return 61; fi; builtin alias "$@"; }
+path=('/base' '' '/dup' '/dup')
+fpath=('/functions' '' '/functions')
+typeset ZP14_PATH_BEFORE="${(qqqq)path}" ZP14_FPATH_BEFORE="${(qqqq)fpath}"
 __zp_worktree_reverse_old_14() { : }
 typeset -g ZP_ACTIVE_REVERSE_FN=__zp_worktree_reverse_old_14
 _zp_worktree_pull_impl 999
 pull_rc=$?
 (( pull_rc != 0 && ZP_WORKTREE_APPLIED_REVISION == 5 && ${#ZP_WORKTREE_LAST_ERROR} > 0 )) || exit 20
-for managed in zp14_first zp14_middle zp14_final; do (( ${+aliases[$managed]} == 0 )) || exit 21; done
+for managed in zp14_first zp14_final; do (( ${+aliases[$managed]} == 0 )) || exit 21; done
+(( ${+functions[zp14_hostile_fn]} == 0 )) || exit 21
+[[ "${(qqqq)path}" == "$ZP14_PATH_BEFORE" && "${(qqqq)fpath}" == "$ZP14_FPATH_BEFORE" ]] || exit 21
 [[ "$ZP_ACTIVE_REVERSE_FN" == __zp_worktree_reverse_old_14 && ${+functions[__zp_worktree_reverse_old_14]} == 1 && ${+ZP_RECOVERY_REVERSE_FN} == 0 ]] || exit 22
 for generated in ${(k)functions}; do
   [[ "$generated" != __zp_worktree_apply_* ]] || exit 23
@@ -412,6 +442,79 @@ done
 print -r -- next-command-usable
 `
 			runScript(t, failure.name, forwardOnly, body)
+		})
+	}
+
+	for _, failure := range []struct {
+		name    string
+		forward []activate.Op
+		reverse []activate.Op
+	}{
+		{
+			name: "readonly-early-operation",
+			forward: []activate.Op{
+				activate.SetLiveScalar{Identity: model.Identity{Kind: model.LiveEnv, Name: "ZP14_READONLY_TARGET"}, Value: "readonly-secret-value"},
+				activate.SetLiveScalar{Identity: model.Identity{Kind: model.LiveAlias, Name: "zp14_readonly_alias"}, Value: "print -r -- readonly-secret-value"},
+			},
+			reverse: []activate.Op{
+				activate.SetLiveScalar{Identity: model.Identity{Kind: model.LiveEnv, Name: "ZP14_READONLY_TARGET"}, Value: "before-readonly"},
+				activate.RemoveLiveScalar{Identity: model.Identity{Kind: model.LiveAlias, Name: "zp14_readonly_alias"}},
+			},
+		},
+		{
+			name: "readonly-final-operation",
+			forward: []activate.Op{
+				activate.SetLiveScalar{Identity: model.Identity{Kind: model.LiveAlias, Name: "zp14_readonly_alias"}, Value: "print -r -- readonly-secret-value"},
+				activate.SetLiveScalar{Identity: model.Identity{Kind: model.LiveEnv, Name: "ZP14_READONLY_TARGET"}, Value: "readonly-secret-value"},
+			},
+			reverse: []activate.Op{
+				activate.RemoveLiveScalar{Identity: model.Identity{Kind: model.LiveAlias, Name: "zp14_readonly_alias"}},
+				activate.SetLiveScalar{Identity: model.Identity{Kind: model.LiveEnv, Name: "ZP14_READONLY_TARGET"}, Value: "before-readonly"},
+			},
+		},
+	} {
+		t.Run(failure.name, func(t *testing.T) {
+			transition := emitOperations(failure.forward, failure.reverse)
+			body := `
+PROMPT='' RPROMPT='' PS2=''
+source ` + worktreeShellQuote(loader) + ` || exit 50
+typeset -g ZP14_TRANSITION_SOURCE=` + worktreeShellQuote(transition) + `
+typeset -g ZP_WORKTREE_ATTACHED=1 ZP_WORKTREE_ATTACHED_NOW=0 ZP_WORKTREE_APPLIED_REVISION=5 ZP_WORKTREE_LAST_ERROR=''
+typeset -g ZP_WORKTREE_OPERATION_SEQUENCE=0
+typeset -ga ZP_WORKTREE_BASELINE_FIELDS=(ZP_LIVE_SNAPSHOT 1 E) ZP_WORKTREE_BASELINE_COUNTS=(2 1)
+_zp_worktree_ensure_attached() { typeset -g ZP_WORKTREE_ATTACHED_NOW=0; return 0 }
+_zp_worktree_capture() { _ZP_WORKTREE_CAPTURE_FIELDS=(ZP_LIVE_SNAPSHOT 1 E); _ZP_WORKTREE_CAPTURE_COUNTS=(2 1); return 0 }
+_zp_worktree_budget_check() { return 0 }
+_zp_worktree_invoke() {
+  local operation="$1" result_name="$2" apply_name="$9" reverse_name="${10}" response=''
+  [[ "$operation" == prepare ]] || return 75
+  response="${ZP14_TRANSITION_SOURCE//__zp14_apply_template/$apply_name}"
+  response="${response//__zp14_reverse_template/$reverse_name}"
+  : ${(P)result_name::=$response}
+}
+export ZP14_READONLY_TARGET=before-readonly
+__zp_worktree_reverse_old_readonly() { : }
+typeset -g ZP_ACTIVE_REVERSE_FN=__zp_worktree_reverse_old_readonly
+zp14_trigger_readonly() { local -r ZP14_READONLY_TARGET=before-readonly; _zp_worktree_pull_impl 999 }
+zp14_trigger_readonly
+[[ "$ZP_WORKTREE_APPLIED_REVISION" == 5 && -n "$ZP_WORKTREE_LAST_ERROR" ]] || exit 51
+[[ "$ZP_ACTIVE_REVERSE_FN" == __zp_worktree_reverse_old_readonly && -n "$ZP_RECOVERY_REVERSE_FN" && ${+functions[$ZP_RECOVERY_REVERSE_FN]} == 1 ]] || exit 52
+deactivate || exit 53
+[[ "$ZP14_READONLY_TARGET" == before-readonly && ${+aliases[zp14_readonly_alias]} == 0 ]] || exit 54
+(( ${+ZP_RECOVERY_REVERSE_FN} == 0 && ${+ZP_ACTIVE_REVERSE_FN} == 0 && ${+functions[__zp_worktree_reverse_old_readonly]} == 0 )) || exit 55
+deactivate || exit 56
+print -r -- next-command-usable
+exit
+`
+			cmd := exec.Command(zshPath, "-f", "-i")
+			cmd.Stdin = strings.NewReader(body)
+			output, runErr := cmd.CombinedOutput()
+			if bytes.Contains(output, []byte("readonly-secret-value")) {
+				t.Fatalf("readonly failure leaked a live value: %q", output)
+			}
+			if runErr != nil || !bytes.Contains(output, []byte("next-command-usable")) {
+				t.Fatalf("readonly recovery = (%v, %q)", runErr, output)
+			}
 		})
 	}
 
