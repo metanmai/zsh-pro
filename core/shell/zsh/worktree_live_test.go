@@ -891,11 +891,15 @@ zsh-pro status
 			if !strings.Contains(output, "behind: true\n") {
 				t.Fatalf("first-sync failure status is not behind: %q", output)
 			}
-			if strings.Contains(output, firstSyncCanonicalValue) || strings.Contains(shell.stderr.String(), firstSyncCanonicalValue) {
-				t.Fatalf("first-sync failure leaked a live value: output=%q stderr=%q", output, shell.stderr.String())
+			if strings.Contains(output, firstSyncCanonicalValue) {
+				t.Fatalf("first-sync failure leaked a live value: output=%q", output)
 			}
 			if next := shell.runOK(t, "print -r -- next-command-sentinel"); next != "next-command-sentinel\n" {
 				t.Fatalf("retained shell unusable after %s: %q", test.name, next)
+			}
+			shell.close()
+			if strings.Contains(shell.stderr.String(), firstSyncCanonicalValue) {
+				t.Fatalf("first-sync failure leaked a live value to stderr: %q", shell.stderr.String())
 			}
 		})
 	}
