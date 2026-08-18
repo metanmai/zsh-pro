@@ -98,6 +98,55 @@ func TestRuntimeWorktreeAttachAllocationAndCredentialForwarding(t *testing.T) {
 	}
 }
 
+func TestRuntimeAttachReplyCarriesReconcileState(t *testing.T) {
+	const valueCanary = "attach-snapshot-value-must-not-cross"
+	const capabilityCanary = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	tests := []struct {
+		name   string
+		result model.AttachResult
+		want   string
+	}{
+		{
+			name:   "exact at head",
+			result: model.AttachResult{Revision: 7, Attached: true, ReconcileRequired: false},
+			want:   "ZPWA 1 7 1 0\n",
+		},
+		{
+			name:   "clean reconcile required",
+			result: model.AttachResult{Revision: 7, Attached: true, ReconcileRequired: true},
+			want:   "ZPWA 1 7 1 1\n",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			reply, err := encodeRuntimeAttachResult(test.result)
+			if err != nil || string(reply) != test.want {
+				t.Fatalf("attach reply = %q, %v; want %q", reply, err, test.want)
+			}
+			fields := strings.Fields(string(reply))
+			if len(fields) != 5 || fields[0] != "ZPWA" || fields[1] != "1" || fields[2] != "7" || fields[3] != "1" ||
+				(fields[4] != "0" && fields[4] != "1") {
+				t.Fatalf("attach reply is not the canonical five-field record: %q", reply)
+			}
+			for _, forbidden := range []string{valueCanary, capabilityCanary, "shell-id", "verifier", "ZP_LIVE_SNAPSHOT"} {
+				if bytes.Contains(reply, []byte(forbidden)) {
+					t.Fatalf("attach reply disclosed %q: %q", forbidden, reply)
+				}
+			}
+		})
+	}
+
+	for _, invalid := range []model.AttachResult{
+		{Attached: true},
+		{Revision: 7},
+		{Revision: 7, ReconcileRequired: true},
+	} {
+		if reply, err := encodeRuntimeAttachResult(invalid); err == nil || len(reply) != 0 {
+			t.Fatalf("invalid attach result encoded a partial success: %#v => %q, %v", invalid, reply, err)
+		}
+	}
+}
+
 func TestRuntimeWorktreeFrameRejectsMalformedBeforeService(t *testing.T) {
 	root := runtimeWorktreeTestRoot(t)
 	capability := strings.Repeat("a", 64)
