@@ -183,7 +183,56 @@ func TestWorktreePortableOwnedTransport(t *testing.T) {
 	testRoot, binary := buildFirstSyncBinary(t)
 	fixture := newFirstSyncFixture(t, testRoot, binary, "portable-owned-transport")
 	shell, callLog := fixture.shell(t, "timeout")
-	command := firstSyncCredentialPrelude() + "\nsource " + worktreeShellQuote(fixture.loader) + ` || return 10
+	attached := shell.runOK(t, firstSyncCredentialPrelude()+"\nalias zp15_first_sync='print -r -- "+firstSyncCanonicalValue+"'\nsource "+worktreeShellQuote(fixture.loader)+` || return 10
+_zp_worktree_precmd || return 11
+print -r -- "$ZP_WORKTREE_ATTACHED|$ZP_WORKTREE_APPLIED_REVISION|${aliases[zp15_first_sync]-unset}|${(q)ZP_WORKTREE_LAST_ERROR}"
+`)
+	if attached != "1|2|print -r -- "+firstSyncCanonicalValue+"|''\n" {
+		calls, _ := os.ReadFile(callLog)
+		t.Fatalf("portable retained shell did not attach exactly at head: %q; calls=%q stderr=%q", attached, calls, shell.stderr.String())
+	}
+
+	stateStore, err := worktree.OpenStateStore(fixture.runtimeRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := worktree.NewService(stateStore, worktree.NewRegistry(Provider{}))
+	if err != nil {
+		_ = stateStore.Close()
+		t.Fatal(err)
+	}
+	capability, err := model.NewShellCapability(bytes.Repeat([]byte{'e'}, model.ShellCapabilityBytes))
+	if err != nil {
+		_ = stateStore.Close()
+		t.Fatal(err)
+	}
+	credential := model.ShellCredential{ShellID: strings.Repeat("e", 64), Capability: capability}
+	remote, err := service.Attach(context.Background(), model.AttachRequest{
+		OperationID: strings.Repeat("f", 64), Credential: credential,
+		Initial: model.LiveSnapshot{States: []model.LiveIdentityState{{
+			Identity: model.Identity{Kind: model.LiveAlias, Name: "zp15_first_sync"},
+			Value:    model.ScalarLiveValue("print -r -- " + firstSyncCanonicalValue),
+		}}},
+	})
+	if err != nil || remote.ReconcileRequired || remote.Revision != 2 {
+		_ = stateStore.Close()
+		t.Fatalf("remote portable publisher attach = %#v, %v", remote, err)
+	}
+	published, err := service.Publish(context.Background(), model.PublishRequest{
+		OperationID: strings.Repeat("1", 64), Credential: credential, AcknowledgedRevision: remote.Revision,
+		Delta: []model.LiveChange{{
+			Kind: model.LiveUpdate, Identity: model.Identity{Kind: model.LiveAlias, Name: "zp15_first_sync"},
+			Value: model.ScalarLiveValue("print -r -- portable-next"),
+		}},
+	})
+	if closeErr := stateStore.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil || published.SharedRevision != 3 {
+		t.Fatalf("remote portable publish = %#v, %v", published, err)
+	}
+
+	command := `
 typeset -gi portable_jobs_before=${#jobstates}
 zsh-pro sync
 timeout_rc=$?
@@ -193,7 +242,7 @@ PATH=` + worktreeShellQuote(filepath.Dir(binary)+":"+fixture.basePath) + `
 rehash
 zsh-pro sync
 valid_rc=$?
-print -r -- "result:$timeout_rc:$timeout_revision:$timeout_error:$valid_rc:$ZP_WORKTREE_APPLIED_REVISION:${#ZP_WORKTREE_LAST_ERROR}:$portable_jobs_before:${#jobstates}:${aliases[zp15_first_sync]-unset}"
+print -r -- "result:$timeout_rc:$timeout_revision:$timeout_error:$valid_rc:$ZP_WORKTREE_APPLIED_REVISION:${#ZP_WORKTREE_LAST_ERROR}:$portable_jobs_before:${#jobstates}:${aliases[zp15_first_sync]-unset}:${(q)ZP_WORKTREE_LAST_ERROR}"
 `
 	started := time.Now()
 	output, rc := shell.runWithin(t, command, 1500*time.Millisecond)
@@ -201,10 +250,11 @@ print -r -- "result:$timeout_rc:$timeout_revision:$timeout_error:$valid_rc:$ZP_W
 		t.Fatalf("portable timeout/retry flow returned %d after %s: %q", rc, time.Since(started), output)
 	}
 	fields := strings.Split(strings.TrimSpace(output), ":")
-	if len(fields) != 10 || fields[0] != "result" || fields[1] == "0" || fields[2] != "0" || fields[3] == "0" ||
-		fields[4] != "0" || fields[5] != "2" || fields[6] != "0" || fields[7] != fields[8] ||
-		fields[9] != "print -r -- "+firstSyncCanonicalValue {
-		t.Fatalf("portable timeout/retry state = %q", output)
+	if len(fields) != 11 || fields[0] != "result" || fields[1] == "0" || fields[2] != "2" || fields[3] == "0" ||
+		fields[4] != "0" || fields[5] != "3" || fields[6] != "0" || fields[7] != fields[8] ||
+		fields[9] != "print -r -- portable-next" {
+		calls, _ := os.ReadFile(callLog)
+		t.Fatalf("portable timeout/retry state = %q; calls=%q stderr=%q", output, calls, shell.stderr.String())
 	}
 	if elapsed := time.Since(started); elapsed >= 1500*time.Millisecond {
 		t.Fatalf("portable timeout/retry exceeded allowance: %s", elapsed)

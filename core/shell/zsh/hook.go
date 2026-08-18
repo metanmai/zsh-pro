@@ -829,18 +829,24 @@ _zp_worktree_close_transport_fd() {
 }
 
 _zp_worktree_close_coproc_endpoints() {
-	local baseline_name="$1" read_fd="$2" write_fd="$3" fd
-	local -a baseline current
-	[[ -d /proc/$$/fd ]] || return 1
-	baseline=("${(@P)baseline_name}")
-	current=(/proc/$$/fd/*(N:t))
-	for fd in "${current[@]}"; do
-		[[ "$fd" == <-> ]] || continue
-		(( ${baseline[(Ie)$fd]} == 0 )) || continue
-		[[ "$fd" != "$read_fd" && "$fd" != "$write_fd" ]] || continue
-		[[ -p "/proc/$$/fd/$fd" ]] || continue
-		coproc_fds+=("$fd")
+	local deadline="$1" mode="$2" sink=''
+	if [[ "$mode" == replace ]]; then
+		# Replacing the active coprocess closes zsh's special endpoints for the
+		# helper. Keep the inert child alive through an explicit one-line
+		# handshake so zsh cannot recycle the special endpoints before cleanup.
+		coproc { IFS= read -r sink }
+		closer_pid=$!
+		_zp_worktree_record_owned_pid closer_pid closer_state closer_job || return 1
+		print -r -p -- '' 2>/dev/null || return 1
+	fi
+	while (( closer_pid > 0 )); do
+		_zp_worktree_reap_exited_pid closer_pid '' closer_state closer_job || :
+		(( closer_pid == 0 )) && break
+		_zp_worktree_budget_check "$deadline" || return 124
 	done
+	# Reading EOF from the already-reaped inert coprocess releases zsh's two
+	# special coprocess endpoints without enumerating the process descriptor table.
+	IFS= read -r -p sink 2>/dev/null || :
 }
 
 _zp_worktree_close_owned_fd() {
@@ -849,42 +855,68 @@ _zp_worktree_close_owned_fd() {
 	exec {fd}>&- || :
 }
 
+_zp_worktree_record_owned_pid() {
+	local pid_name="$1" state_name="$2" job_name="$3" pid="${(P)1}" job=''
+	[[ "$pid" == <-> ]] && (( pid > 1 )) || {
+		: ${(P)pid_name::=0}
+		: ${(P)job_name::=0}
+		: ${(P)state_name::=cleared}
+		return 1
+	}
+	job="${(k)jobstates[(r)*:${pid}=*]}"
+	[[ "$job" == <-> ]] && (( job > 0 )) || job=0
+	: ${(P)job_name::=$job}
+	: ${(P)state_name::=created}
+}
+
 _zp_worktree_pid_owned() {
-	local pid="$1" children=''
-	[[ "$pid" == <-> ]] && (( pid > 1 )) || return 1
-	[[ -r "/proc/$$/task/$$/children" ]] || return 1
-	IFS= read -r children < "/proc/$$/task/$$/children" || :
-	[[ " $children " == *" $pid "* ]]
+	local pid_name="$1" state_name="$2" job_name="$3"
+	local pid="${(P)1}" state="${(P)2}" job="${(P)3}" job_state=''
+	[[ "$state" == created && "$pid" == <-> && "$job" == <-> ]] || return 1
+	(( pid > 1 && job > 0 )) || return 1
+	job_state="${jobstates[$job]-}"
+	[[ "$job_state" != done:* && "$job_state" == *":${pid}="* ]]
 }
 
 _zp_worktree_reap_exited_pid() {
-	local pid_name="$1" status_name="$2" pid="${(P)1}" child_status=0
-	[[ "$pid" == <-> ]] && (( pid > 0 )) || { : ${(P)pid_name::=0}; return 0; }
-	kill -0 "$pid" 2>/dev/null && return 1
+	local pid_name="$1" status_name="$2" state_name="$3" job_name="$4"
+	local pid="${(P)1}" child_status=0
+	if [[ "${(P)state_name}" != created || "$pid" != <-> ]] || (( pid <= 0 )); then
+		: ${(P)pid_name::=0}
+		: ${(P)job_name::=0}
+		: ${(P)state_name::=cleared}
+		return 0
+	fi
+	_zp_worktree_pid_owned "$pid_name" "$state_name" "$job_name" && return 1
 	if wait "$pid" 2>/dev/null; then child_status=0; else child_status=$?; fi
 	[[ -z "$status_name" ]] || : ${(P)status_name::=$child_status}
 	: ${(P)pid_name::=0}
+	: ${(P)job_name::=0}
+	: ${(P)state_name::=reaped}
 	return 0
 }
 
 _zp_worktree_abort_transport() {
-	local deadline="$1" termination_deadline="$2" name pid now
+	local deadline="$1" termination_deadline="$2" name pid state_name job_name now
 	local kill_deadline=$(( deadline - 0.010 ))
 	local -a pid_names=(writer_pid helper_pid closer_pid)
 	_zp_worktree_close_transport_fd write_fd
 	_zp_worktree_close_transport_fd read_fd
-	_zp_worktree_reap_exited_pid writer_pid frame_rc || :
-	_zp_worktree_reap_exited_pid helper_pid wait_rc || :
-	_zp_worktree_reap_exited_pid closer_pid '' || :
+	_zp_worktree_close_coproc_endpoints "$deadline" replace || :
+	_zp_worktree_reap_exited_pid writer_pid frame_rc writer_state writer_job || :
+	_zp_worktree_reap_exited_pid helper_pid wait_rc helper_state helper_job || :
+	_zp_worktree_reap_exited_pid closer_pid '' closer_state closer_job || :
 	for name in "${pid_names[@]}"; do
 		pid="${(P)name}"
 		(( pid > 0 )) || continue
-		_zp_worktree_pid_owned "$pid" && kill -TERM "$pid" 2>/dev/null || :
+		state_name="${name%_pid}_state"
+		job_name="${name%_pid}_job"
+		_zp_worktree_pid_owned "$name" "$state_name" "$job_name" && kill -TERM "$pid" 2>/dev/null || :
 	done
 	while true; do
-		_zp_worktree_reap_exited_pid writer_pid frame_rc || :
-		_zp_worktree_reap_exited_pid helper_pid wait_rc || :
-		_zp_worktree_reap_exited_pid closer_pid '' || :
+		_zp_worktree_reap_exited_pid writer_pid frame_rc writer_state writer_job || :
+		_zp_worktree_reap_exited_pid helper_pid wait_rc helper_state helper_job || :
+		_zp_worktree_reap_exited_pid closer_pid '' closer_state closer_job || :
 		(( writer_pid == 0 && helper_pid == 0 && closer_pid == 0 )) && return 124
 		now="${EPOCHREALTIME-0}"
 		(( now < kill_deadline )) || break
@@ -892,19 +924,21 @@ _zp_worktree_abort_transport() {
 	for name in "${pid_names[@]}"; do
 		pid="${(P)name}"
 		(( pid > 0 )) || continue
-		_zp_worktree_pid_owned "$pid" && kill -KILL "$pid" 2>/dev/null || :
+		state_name="${name%_pid}_state"
+		job_name="${name%_pid}_job"
+		_zp_worktree_pid_owned "$name" "$state_name" "$job_name" && kill -KILL "$pid" 2>/dev/null || :
 	done
 	while true; do
-		_zp_worktree_reap_exited_pid writer_pid frame_rc || :
-		_zp_worktree_reap_exited_pid helper_pid wait_rc || :
-		_zp_worktree_reap_exited_pid closer_pid '' || :
+		_zp_worktree_reap_exited_pid writer_pid frame_rc writer_state writer_job || :
+		_zp_worktree_reap_exited_pid helper_pid wait_rc helper_state helper_job || :
+		_zp_worktree_reap_exited_pid closer_pid '' closer_state closer_job || :
 		(( writer_pid == 0 && helper_pid == 0 && closer_pid == 0 )) && return 124
 		now="${EPOCHREALTIME-0}"
 		(( now < deadline )) || break
 	done
-	_zp_worktree_reap_exited_pid writer_pid frame_rc || :
-	_zp_worktree_reap_exited_pid helper_pid wait_rc || :
-	_zp_worktree_reap_exited_pid closer_pid '' || :
+	_zp_worktree_reap_exited_pid writer_pid frame_rc writer_state writer_job || :
+	_zp_worktree_reap_exited_pid helper_pid wait_rc helper_state helper_job || :
+	_zp_worktree_reap_exited_pid closer_pid '' closer_state closer_job || :
 	return 124
 }
 
@@ -915,8 +949,8 @@ _zp_worktree_invoke() {
 	local deadline="${15}"
 	local termination_deadline=$(( deadline - 0.025 ))
 	local captured='' line='' rc=1 xtrace_was_on=0 history_pushed=0 helper_pid=0 writer_pid=0 closer_pid=0
+	local helper_job=0 writer_job=0 closer_job=0 helper_state=cleared writer_state=cleared closer_state=cleared
 	local read_fd=-1 write_fd=-1 remaining wait_rc=0 frame_rc=0
-	local -a transport_base_fds coproc_fds
 	local ZP_WORKTREE_CALL_CAPABILITY=''
 	: ${(P)result_name::=}
 	{
@@ -926,8 +960,6 @@ _zp_worktree_invoke() {
 		setopt NOXTRACE 2>/dev/null || return 1
 		ZP_WORKTREE_CALL_CAPABILITY="$ZP_WORKTREE_CAPABILITY"
 		if fc -p 2>/dev/null; then history_pushed=1; else return 1; fi
-		[[ -d /proc/$$/fd ]] || return 1
-		transport_base_fds=(/proc/$$/fd/*(N:t))
 		case "$operation" in
 			attach)
 				coproc command zsh-pro runtime worktree attach 1 2>/dev/null
@@ -947,17 +979,13 @@ _zp_worktree_invoke() {
 			*) return 2 ;;
 		esac
 		helper_pid=$!
+		_zp_worktree_record_owned_pid helper_pid helper_state helper_job || return 1
 		exec {write_fd}>&p || return 1
 		exec {read_fd}<&p || return 1
-		# Starting an inert replacement closes zsh's special coprocess endpoints;
-		# the two private duplicates remain owned by this call.
-		coproc :
-		closer_pid=$!
-		_zp_worktree_close_coproc_endpoints transport_base_fds "$read_fd" "$write_fd" || return 1
-		for fd in "${coproc_fds[@]}"; do _zp_worktree_close_owned_fd "$fd"; done
-		coproc_fds=()
+		_zp_worktree_close_coproc_endpoints "$termination_deadline" replace || return $?
 		( _zp_worktree_write_frame "$operation" "$mode" "$operation_id" "$revision" "$token" "$identity_kind" "$identity_name" "$apply_name" "$reverse_name" "$baseline_fields" "$baseline_counts" "$current_fields" "$current_counts" "$deadline" ) >&$write_fd &
 		writer_pid=$!
+		_zp_worktree_record_owned_pid writer_pid writer_state writer_job || return 1
 		_zp_worktree_close_transport_fd write_fd
 		while true; do
 			remaining=$(( termination_deadline - EPOCHREALTIME ))
@@ -976,9 +1004,9 @@ _zp_worktree_invoke() {
 			return 124
 		fi
 		while (( writer_pid > 0 || helper_pid > 0 || closer_pid > 0 )); do
-			_zp_worktree_reap_exited_pid writer_pid frame_rc || :
-			_zp_worktree_reap_exited_pid helper_pid wait_rc || :
-			_zp_worktree_reap_exited_pid closer_pid '' || :
+			_zp_worktree_reap_exited_pid writer_pid frame_rc writer_state writer_job || :
+			_zp_worktree_reap_exited_pid helper_pid wait_rc helper_state helper_job || :
+			_zp_worktree_reap_exited_pid closer_pid '' closer_state closer_job || :
 			(( writer_pid == 0 && helper_pid == 0 && closer_pid == 0 )) && break
 			_zp_worktree_budget_check "$termination_deadline" || { _zp_worktree_abort_transport "$deadline" "$termination_deadline"; return 124; }
 		done
@@ -992,7 +1020,8 @@ _zp_worktree_invoke() {
 			_zp_worktree_abort_transport "$deadline" "$termination_deadline" || :
 		fi
 		captured='' line='' ZP_WORKTREE_CALL_CAPABILITY='' operation_id='' token='' deadline='' termination_deadline='' remaining=''
-		transport_base_fds=() coproc_fds=()
+		helper_pid=0 writer_pid=0 closer_pid=0 helper_job=0 writer_job=0 closer_job=0
+		helper_state=cleared writer_state=cleared closer_state=cleared
 		if (( history_pushed )); then fc -P 2>/dev/null || :; fi
     if (( xtrace_was_on )); then setopt XTRACE 2>/dev/null || :; else setopt NOXTRACE 2>/dev/null || :; fi
     unset REPLY
