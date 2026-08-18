@@ -1,6 +1,6 @@
 ---
 phase: 07-git-like-shared-working-environment
-reviewed: 2026-08-17T17:19:30Z
+reviewed: 2026-08-18T03:56:49Z
 depth: standard
 files_reviewed: 48
 files_reviewed_list:
@@ -53,91 +53,87 @@ files_reviewed_list:
   - core/worktree/state_test.go
   - scripts/perf-worktree.sh
 findings:
-  critical: 4
+  critical: 5
   warning: 1
   info: 0
-  total: 5
+  total: 6
 status: issues_found
 ---
 
 # Phase 07: Code Review Report
 
-**Reviewed:** 2026-08-17T17:19:30Z
+**Reviewed:** 2026-08-18T03:56:49Z
 **Depth:** standard
 **Files Reviewed:** 48
 **Status:** issues_found
 
 ## Summary
 
-The Phase 7 implementation has five confirmed defects. Four affect required shared-worktree correctness: admitted identities are not durable global ownership, prompt hooks are not actually bounded by the 250 ms budget, failed live patches can leave mutations without usable recovery ownership, and the first explicit `sync` can report success without synchronizing. A fifth defect loses the promised recovered-persistence marker whenever the normal one-command runtime closes its `StateStore`.
+The post-gap implementation does not yet meet the shipping bar. The durable admitted-identity authority from 07-11, descriptor-bound recovered-persistence marker from 07-12, and fail-fast/reverse-ownership mechanics from 07-14 are materially present. The 07-13 transport bound is implemented on Linux, but its production hook is unusable on the other supported Unix target and the combined command lifecycle can commit durable mutations before its bounded reconciliation fails. The 07-15 attach bit and one-call path exist, but order-sensitive equality still classifies semantically exact shells as mismatched.
 
-The complete repository test suite, relevant race suites, vet, and shell syntax check pass, but the current tests do not exercise the failing late-attach, oversized-capture, partial-worktree-apply, first-call sync, or close/reopen recovery paths described below.
+Validation was not green: `GOTOOLCHAIN=local go test -count=1 ./... -timeout=240s` failed `TestWorktreeTwoShellEndToEnd` at reset convergence, leaving durable revision 9 while the shell remained applied at revision 7 with a pending pull. A targeted three-run repetition failed the same live workflow at another convergence checkpoint. `go test -race -count=1 ./core/worktree ./core/cli` and `bash -n scripts/perf-worktree.sh` passed.
 
 ## Narrative Findings (AI reviewer)
 
 ## Critical Issues
 
-### CR-01: A globally shared admitted identity becomes permanently unacknowledgeable for later shells
+### CR-01 [BLOCKER]: The production hook disables every private worktree operation on macOS
 
-**Classification:** BLOCKER
+**File:** `core/shell/zsh/hook.go:929-956`
+**Also affected:** `core/shell/zsh/hook.go:831-857`, `core/shell/zsh/worktree_live_test.go:159-162`
 
-**Files:** `core/worktree/registry.go:111-124`, `core/worktree/registry.go:197-218`, `core/worktree/service.go:398-425`, `core/worktree/service.go:699-726`, `core/worktree/service.go:1052-1068`
+**Issue:** `_zp_worktree_invoke` requires `/proc/$$/fd` before it starts attach, publish, prepare, acknowledge, or resolve. Its endpoint discovery and child-ownership checks also depend on Linux `/proc`. macOS does not mount Linux procfs by default, yet the repository has explicit Darwin implementations and treats Linux and Darwin as supported targets. Consequently the loader sources successfully on macOS but every worktree synchronization operation returns failure. The adversarial transport test hides this regression by skipping every non-Linux platform.
 
-**Issue:** `Registry.Admit` adds a safe post-attach identity only to the current in-memory `owned` map. Every runtime operation constructs a fresh registry, and each service path calls `Seed(state.Committed.Source)`, which replaces that map with source-owned identities only. The admitted identity is persisted in `state.Shared`, but its ownership is not. If shell A publishes a new alias and shell C attaches afterward while that alias is already present, C records it as `AdmissionPresentAtAttach` instead of managed state. Pull can still apply the shared alias, but acknowledgement filters it out again in `admittedSnapshot`; its fingerprint can never match the pending fingerprint of `state.Shared`. The shell remains behind with an unacknowledgeable pending transition.
+**Fix:** Replace procfs discovery and ownership with a portable descriptor/child ownership abstraction, or emit OS-specific hook helpers with a Darwin implementation. Keep ownership exact by tracking only descriptors and PIDs created by the invocation; do not fall back to broad process killing. Add a native-Darwin real-zsh test that covers attach, publish, prepare/apply/acknowledge, timeout cleanup, and absence of surviving child processes.
 
-**Fix:** Make canonical shared ownership durable. Seed the registry from the committed source plus the exact non-secret identities already present in canonical `state.Shared` (or persist a separate value-free admitted-identity set) before attach, publish, resolve, and acknowledge. Preserve pinned/live-secret exclusions. Add an integration test in which A publishes a new identity, C starts with that identity already present, then C attaches, pulls, and acknowledges the exact shared revision.
+### CR-02 [BLOCKER]: Positional state equality reports order-only differences as reconciliation failures
 
-### CR-02: Capture, frame writing, and child reaping can exceed the 250 ms prompt-hook budget
+**File:** `core/worktree/state.go:730-739`
+**Also affected:** `core/worktree/service.go:420-427`, `core/worktree/service.go:888-890`, `core/worktree/service.go:900-910`, `core/shell/zsh/hook.go:656-700`
 
-**Classification:** BLOCKER
+**Issue:** `equalLiveStates` compares slice positions even though identity order is not semantic. Shell capture emits a fixed category/name order, while `replaceWorkflowGeneration` assigns the source-ordered projection directly to `state.Shared`; live additions are also appended rather than globally reordered. A checkout whose source lists an alias before an environment assignment, or a later event that appends a new environment assignment after an alias, therefore makes an exact shell compare unequal. Attach then returns `ReconcileRequired=true`, repair refuses an otherwise exact published revision, and the 07-15 first-sync path needlessly reports the shell behind. This contradicts `DiffSnapshot`, which already compares final values by identity.
 
-**File:** `core/shell/zsh/hook.go:541-608`, `core/shell/zsh/hook.go:701-739`
+**Fix:** Make equality semantic and order-independent, for example by validating both snapshots and treating an empty `DiffSnapshot` result as equality. Use that helper consistently for attach truth, commit/repair verification, and shell-behind calculation. Add tests with deliberately non-canonical source ordering and with a newly appended identity from an earlier category, then prove a late exact shell attaches at head and a commit/repair succeeds.
 
-**Issue:** `_zp_worktree_capture` walks and copies every exported scalar, alias, function, path element, and option without checking the absolute deadline or enforcing the 10,000-record/2 MiB snapshot limits. `_zp_worktree_write_snapshot_records` repeats that work and performs synchronous writes without deadline checks. `_zp_worktree_invoke` does not begin its timed read until the whole frame has been written, and both its error/timeout path and `always` cleanup use unbounded `wait`. Consequently a large shell or a helper that stops consuming stdin/ignores `TERM` can block `precmd`, `line-finish`, or explicit sync well beyond 250 ms even though the Go decoder later rejects the oversized frame.
+### CR-03 [BLOCKER]: Legitimate managed values can invalidate the transition footer
 
-**Fix:** Enforce record and byte caps incrementally during capture, pass the absolute deadline into capture/serialization, and check it inside every enumeration and write loop. Make frame delivery cancellable rather than synchronously waiting on a potentially full pipe. After timeout, use a bounded termination/reap sequence and never perform an unbounded `wait` on the interactive path. Add real-zsh tests with more than 10,000 records, more than 2 MiB of function/value data, a helper that stops reading stdin, and a helper that ignores `TERM`; each hook must return within the configured bound and leave the next command usable.
+**File:** `core/cli/runtime.go:624-633`
+**Also affected:** `core/shell/zsh/emit.go:226-249`
 
-### CR-03: A failed live patch can be masked or lose the reverse needed to recover partial shell mutations
+**Issue:** Footer validation counts raw occurrences of each `ZP_WORKTREE_REPLY_*=` substring across the entire emitted shell program. Managed scalar and function values are allowed to contain arbitrary quoted text, including those literal substrings. For example, an alias body containing `ZP_WORKTREE_REPLY_PROTOCOL=` is safely quoted by the emitter but makes the raw count equal two, so prepare/resolve rejects its own generated patch as an invalid footer. The shell remains pending/behind and cannot synchronize that otherwise valid value.
 
-**Classification:** BLOCKER
+**Fix:** Validate the footer structurally instead of scanning quoted payload bytes. Prefer returning the generated program and trusted footer metadata as separate values from the emitter, or parse only top-level assignments in the exact suffix. Add runtime tests for all five footer variable substrings inside environment values, aliases, and multiline function bodies.
 
-**Files:** `core/shell/zsh/emit.go:168-178`, `core/shell/zsh/hook.go:903-915`
+### CR-04 [BLOCKER]: Historical shell records permanently exhaust the 128-shell cap
 
-**Issue:** `EmitLivePatch` concatenates mutation commands into a function without fail-fast guards. In zsh, an intermediate failure such as assigning a readonly exported parameter is masked if a later mutation succeeds. If the final mutation fails, `_zp_worktree_apply_transition` returns before installing `reverse_name` in any active/recovery pointer. Either path can leave earlier operations applied; in the latter path the generated reverse exists only under an internal name that public recovery does not own, while `old_reverse` cannot reverse the new partial patch. The service correctly refuses the later acknowledgement, but the parent shell has already been mutated and may not have a usable recovery route.
+**File:** `core/worktree/service.go:398-400`
+**Also affected:** `core/worktree/state.go:680-685`
 
-**Fix:** Emit every forward mutation with explicit fail-fast status propagation. Before invoking the apply function, install the replacement reverse in a dedicated recovery pointer using the same ownership discipline as the existing profile payload path. On any apply, deadline, capture, or acknowledgement failure, keep that recovery pointer and report it; promote it to `ZP_ACTIVE_REVERSE_FN` only after successful application/verification, and remove the old reverse only after promotion succeeds. Add real-zsh tests where an early and a final operation fail after at least one successful mutation, verifying nonzero status, no masked success, and an idempotent public recovery path.
+**Issue:** Attach rejects a new shell once `state.Shells` contains 128 entries. `CanGarbageCollectShell` defines an eligibility predicate, but no production code calls it, no code deletes a shell or its receipts, and deactivate has no authenticated detach operation. Shell IDs are per terminal session, so ordinary use accumulates durable records forever; after 128 historical sessions, every future terminal is permanently locked out even when all old records are clean and have no pending/conflicted/unpublished state.
 
-### CR-04: The first explicit sync on an unattached shell reports success without reconciling
+**Fix:** Add an authenticated detach/liveness lifecycle and perform deterministic cleanup under the state lock, deleting associated receipts atomically. As a safe fallback, reclaim only records proven inactive and satisfying the existing no-pending/no-conflict/no-unpublished predicate before enforcing the cap. Test 128 clean retired sessions followed by a successful 129th attach, and prove that active, behind, pending, conflicted, or unpublished shells are never evicted.
 
-**Classification:** BLOCKER
+### CR-05 [BLOCKER]: Checkout/reset can mutate durable state and then return failure with the shell stale
 
-**Files:** `core/shell/zsh/hook.go:771-822`, `core/shell/zsh/hook.go:999-1012`, `core/worktree/service.go:417-425`
+**File:** `core/shell/zsh/hook.go:1390-1398`
 
-**Issue:** A mismatched attach is durably recorded as `AttachStateCleanReconcile` with `AppliedRevision == 0`, but the attach reply exposes only the head revision and the shell stores it as `ZP_WORKTREE_APPLIED_REVISION`. `_zp_worktree_sync` then returns 0 immediately whenever attachment happened in that call. In a freshly sourced non-interactive shell, `zsh-pro sync` can therefore claim success while none of the shared state was applied. A subsequent publication also uses the false head revision and fails with `ErrNeedsReconcile` until a later pull repairs it.
+**Issue:** The wrapper spends one 250 ms deadline on pre-mutation attachment/publication, executes the irreversible `command zsh-pro checkout/reset`, and only afterward calls `_zp_worktree_pull`. If that final pull times out or fails, the wrapper returns nonzero even though the branch/reset already committed. The current test suite reproduced exactly this split state: reset advanced durable state to revision 9, returned `worktree pull failed`, and left the shell at revision 7 with a pending transition. Users receive a failed-command signal but cannot safely assume the requested mutation did not occur.
 
-**Fix:** Do not treat attachment as synchronization. Return enough attach metadata to distinguish at-head from clean-reconcile, or have first-call sync immediately run the prepare/apply/fresh-capture/acknowledge path and skip publication until that succeeds. Add a real-zsh test that sources the loader and invokes exactly one `zsh-pro sync` without preceding hooks; on exit 0, all shared identities and the applied revision must already match canonical state.
+**Fix:** Collapse mutation and patch preparation into one authenticated core operation so the shell receives the exact resulting transition without another helper startup, and define an explicit recoverable result for an apply/ack failure after commit. At minimum, distinguish “mutation committed; reconciliation pending” from mutation failure and make a subsequent idempotent sync recover it. Add fault tests at every post-mutation boundary and require truthful branch/revision status plus deterministic recovery; keep the absolute interaction bound intact.
 
 ## Warnings
 
-### WR-01: Forensic append failures lose their recovery marker when the operation-scoped store closes
+### WR-01 [WARNING]: The exported live-capture implementation disagrees with the hook capture contract
 
-**Classification:** WARNING
+**File:** `core/shell/zsh/introspect.go:32-45`
+**Also affected:** `core/shell/zsh/hook.go:647-662`, `core/shell/zsh/introspect_test.go:162-171`
 
-**Files:** `core/worktree/atomic_unix.go:65-68`, `core/worktree/atomic_unix.go:195-200`, `core/worktree/atomic_unix.go:229-232`, `core/cli/emitter.go:106-131`
+**Issue:** `Provider.LiveCaptureSource` includes every exported scalar except PATH/FPATH, so it records volatile process-local values such as PWD, OLDPWD, SHLVL, and `_`. The production hook explicitly excludes those variables. The “no process-local records” test only searches the Go source string for NUL-delimited lower-case words and never executes the capture to assert that the identities are absent. This leaves two implementations of the same advertised capture contract with incompatible snapshots and makes future consumers vulnerable to order/churn and admission behavior that the hook path does not have.
 
-**Issue:** After canonical replacement succeeds, an `events.jsonl` append failure sets only `StateStore.pendingRecoveredPersistence`. The runtime factory creates and closes a fresh `StateStore` for each helper operation, so that boolean disappears before any later transaction can project `RecoveredPersistence` into durable shell state. The existing test reuses one store instance and therefore does not represent the production close/reopen lifecycle. Operators receive neither the promised next-transaction marker nor durable evidence that the forensic append failed.
-
-**Fix:** Persist the pending marker descriptor-relatively (for example, as a fixed-name, value-free recovery flag) or perform a second atomic canonical update that records `RecoveredPersistence` without rolling back the successful transition. Add a test that injects an append failure, closes the store, reopens it from a newly authenticated descriptor, performs the next transaction, and verifies that the recovery marker is surfaced and then cleared according to the chosen lifecycle.
-
-## Verification Performed
-
-- `GOTOOLCHAIN=local go test -count=1 ./...` — passed
-- `GOTOOLCHAIN=local go test -race -count=1 ./core/worktree ./core/store ./core/cli ./core/shell/zsh` — passed
-- `GOTOOLCHAIN=local go vet ./...` — passed
-- `bash -n scripts/perf-worktree.sh` — passed
+**Fix:** Share one capture definition or one explicit exclusion list between the provider source and hook source. Execute a real zsh capture in the test and assert the decoded snapshot contains none of PWD, OLDPWD, SHLVL, or `_` while retaining ordinary exported variables.
 
 ---
 
-_Reviewed: 2026-08-17T17:19:30Z_
+_Reviewed: 2026-08-18T03:56:49Z_
 _Reviewer: the agent (gsd-code-reviewer)_
 _Depth: standard_
