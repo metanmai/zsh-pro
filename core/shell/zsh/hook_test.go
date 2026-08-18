@@ -233,6 +233,122 @@ print -r -- survived
 	}
 }
 
+func TestWorktreeCaptureAndFrameUseOneIncrementalDeadline(t *testing.T) {
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("zsh not installed")
+	}
+	dir := t.TempDir()
+	loader := filepath.Join(dir, "loader.zsh")
+	if err := os.WriteFile(loader, []byte((Provider{}).HookScript()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const body = `
+source "$1" || exit 10
+
+# Every category iteration must consume the caller's unchanged deadline and a
+# failure must discard the partial snapshot rather than retain a trusted prefix.
+typeset -ga fake_times=()
+typeset -ga seen_deadlines=()
+typeset -gi fake_index=0 fake_limit=0
+_zp_worktree_budget_check() {
+  local deadline="$1" now
+  seen_deadlines+=("$deadline")
+  (( ++fake_index ))
+  if (( fake_limit > 0 && fake_index > fake_limit )); then return 1; fi
+  now="${fake_times[$fake_index]-0.249}"
+  (( now <= deadline ))
+}
+fake_limit=1
+_zp_worktree_capture 0.250 && exit 11
+(( ${#seen_deadlines} >= 2 )) || exit 12
+[[ "${(j: :)seen_deadlines}" != *[^0.250\ ]* ]] || exit 13
+(( ${#_ZP_WORKTREE_CAPTURE_FIELDS} == 0 && ${#_ZP_WORKTREE_CAPTURE_COUNTS} == 0 )) || exit 14
+
+# The per-record seam admits cumulative 249 ms and rejects 251 ms before data
+# is retained. Override only the clock check; the production accounting runs.
+fake_limit=0 fake_index=0 fake_times=(0.249)
+seen_deadlines=()
+typeset -gi snapshot_records=0 snapshot_bytes=20
+_ZP_WORKTREE_CAPTURE_FIELDS=(ZP_LIVE_SNAPSHOT 1)
+_ZP_WORKTREE_CAPTURE_COUNTS=(2)
+_zp_worktree_capture_append_record 0.250 R env ZP_BOUNDARY exported 1 ok || exit 15
+(( snapshot_records == 1 )) || exit 16
+[[ "${(j: :)seen_deadlines}" == 0.250 ]] || exit 17
+fake_index=0 fake_times=(0.251)
+_zp_worktree_capture_append_record 0.250 R env ZP_TOO_LATE exported 1 hidden && exit 18
+(( ${#_ZP_WORKTREE_CAPTURE_FIELDS} == 0 && ${#_ZP_WORKTREE_CAPTURE_COUNTS} == 0 )) || exit 19
+
+# Record count is checked before append: exactly 10,000 is valid and 10,001
+# clears the partial capture.
+_zp_worktree_budget_check() { return 0 }
+snapshot_records=9999 snapshot_bytes=20
+_ZP_WORKTREE_CAPTURE_FIELDS=(ZP_LIVE_SNAPSHOT 1)
+_ZP_WORKTREE_CAPTURE_COUNTS=(2)
+_zp_worktree_capture_append_record 0.250 R env ZP_RECORD_LIMIT exported 1 ok || exit 20
+(( snapshot_records == 10000 )) || exit 21
+_zp_worktree_capture_append_record 0.250 R env ZP_RECORD_OVERFLOW exported 1 hidden && exit 22
+(( ${#_ZP_WORKTREE_CAPTURE_FIELDS} == 0 && ${#_ZP_WORKTREE_CAPTURE_COUNTS} == 0 )) || exit 23
+
+# Snapshot bytes are likewise admitted exactly at 2 MiB and rejected at plus
+# one before the record is retained. The record below is 35 encoded bytes.
+snapshot_records=0 snapshot_bytes=$(( 2097152 - 35 ))
+_ZP_WORKTREE_CAPTURE_FIELDS=(ZP_LIVE_SNAPSHOT 1)
+_ZP_WORKTREE_CAPTURE_COUNTS=(2)
+_zp_worktree_capture_append_record 0.250 R env ZP_BYTE_LIMIT exported 1 x || exit 24
+(( snapshot_bytes == 2097152 )) || exit 25
+snapshot_records=0 snapshot_bytes=$(( 2097152 - 34 ))
+_ZP_WORKTREE_CAPTURE_FIELDS=(ZP_LIVE_SNAPSHOT 1)
+_ZP_WORKTREE_CAPTURE_COUNTS=(2)
+_zp_worktree_capture_append_record 0.250 R env ZP_BYTE_LIMIT exported 1 x && exit 26
+(( ${#_ZP_WORKTREE_CAPTURE_FIELDS} == 0 && ${#_ZP_WORKTREE_CAPTURE_COUNTS} == 0 )) || exit 27
+
+# Serialization uses the same absolute deadline and enforces complete private
+# frame overhead incrementally. One scalar record serializes to seven bytes.
+typeset -gi ZP_WORKTREE_FRAME_BYTES=$(( 2101248 - 7 ))
+_zp_worktree_write_scalar_record 1 x 0.250 >/dev/null || exit 28
+(( ZP_WORKTREE_FRAME_BYTES == 2101248 )) || exit 29
+ZP_WORKTREE_FRAME_BYTES=$(( 2101248 - 6 ))
+_zp_worktree_write_scalar_record 1 x 0.250 >/dev/null && exit 30
+
+typeset -ga test_fields=(ZP_LIVE_SNAPSHOT 1 E)
+typeset -ga test_counts=(2 1)
+fake_index=0 fake_times=(0.249 0.249 0.249 0.249)
+_zp_worktree_budget_check() {
+  local deadline="$1" now
+  (( ++fake_index ))
+  now="${fake_times[$fake_index]-0.251}"
+  (( now <= deadline ))
+}
+ZP_WORKTREE_FRAME_BYTES=0
+_zp_worktree_write_snapshot_records 32 test_fields test_counts 0.250 >/dev/null || exit 31
+fake_index=0 fake_times=(0.251)
+ZP_WORKTREE_FRAME_BYTES=0
+_zp_worktree_write_snapshot_records 32 test_fields test_counts 0.250 >/dev/null && exit 32
+
+print -r -- survived
+`
+	cmd := exec.Command("zsh", "-f", "-c", body, "zsh-pro-incremental-boundary", loader)
+	out, err := cmd.CombinedOutput()
+	if err != nil || string(out) != "survived\n" {
+		t.Fatalf("incremental capture/frame deadline = (%v, %q)", err, out)
+	}
+
+	script := (Provider{}).HookScript()
+	for _, name := range []string{
+		"_zp_worktree_capture_append_record", "_zp_worktree_capture", "_zp_worktree_write_snapshot_records", "_zp_worktree_write_frame",
+	} {
+		if !strings.Contains(script, name+"() {") {
+			t.Errorf("loader missing %s", name)
+		}
+	}
+	for _, caller := range []string{"_zp_worktree_ensure_attached_impl", "_zp_worktree_publish_impl", "_zp_worktree_apply_transition"} {
+		body := functionBody(script, caller)
+		if !strings.Contains(body, `_zp_worktree_capture "$deadline"`) {
+			t.Errorf("%s does not pass its original deadline to capture:\n%s", caller, body)
+		}
+	}
+}
+
 func TestWorktreeTransitionRealTime25And500MillisecondMargins(t *testing.T) {
 	if _, err := exec.LookPath("zsh"); err != nil {
 		t.Skip("zsh not installed")
