@@ -4,9 +4,9 @@ milestone: v2.0
 milestone_name: Branchable Shell Environments
 current_phase: 07
 current_phase_name: Git-Like Shared Working Environment
-status: executing
-stopped_at: Completed 07-14-PLAN.md
-last_updated: "2026-08-18T03:02:49.587Z"
+status: verifying
+stopped_at: Completed 07-15-PLAN.md
+last_updated: "2026-08-18T03:41:26.611Z"
 last_activity: 2026-08-18
 last_activity_desc: Phase 07 execution started
 progress:
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-06-25)
 
 Phase: 07 (Git-Like Shared Working Environment) — EXECUTING
 Plan: 15 of 15
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-08-18 — Phase 07 execution started
 
 Progress: [██████████] 100%
@@ -110,6 +110,7 @@ Progress: [██████████] 100%
 | Phase 07 P12 | 15min | 2 tasks | 2 files |
 | Phase 07 P13 | 67min | 3 tasks | 5 files |
 | Phase 07 P14 | 21min | 2 tasks | 5 files |
+| Phase 07 P15 | 31min | 3 tasks | 10 files |
 
 ## Accumulated Context
 
@@ -236,6 +237,8 @@ Recent decisions affecting current work:
 - [Phase 07]: Wrap every validated live operation with immediate value-free status propagation in both directions.
 - [Phase 07]: Install replacement recovery before apply and promote it before clearing recovery or removing the prior reverse.
 - [Phase 07]: Public deactivate processes pending recovery before active worktree reversal and preserves failures for retry.
+- [Phase 07]: Attach reconcile truth is derived atomically with durable shell state and preserved in replay receipts.
+- [Phase 07]: A mismatched first explicit sync skips publish and clears reconcile-required only after exact acknowledgement.
 
 ### Pending Todos
 
@@ -264,6 +267,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-08-18T03:02:49.579Z
-Stopped at: Completed 07-14-PLAN.md
+Last session: 2026-08-18T03:41:26.601Z
+Stopped at: Completed 07-15-PLAN.md
 Resume file: None
