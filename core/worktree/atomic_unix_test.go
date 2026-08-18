@@ -657,6 +657,272 @@ func TestRecoveredPersistenceMarkerClearsOnlyAfterProjection(t *testing.T) {
 	}
 }
 
+func TestRecoveredPersistenceOperationScopedLifecycle(t *testing.T) {
+	root := privateStateRoot(t)
+	rootFD, err := os.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewStateStoreFromAuthenticatedRoot(rootFD)
+	if err != nil {
+		_ = rootFD.Close()
+		t.Fatal(err)
+	}
+	if err := rootFD.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WithTransaction(context.Background(), func(state *State) error {
+		*state = validStateFixture(t)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	store.faults.forensicAppend = func(int, []byte) (int, error) {
+		return 0, errors.New("one-shot forensic append fault")
+	}
+	if err := store.WithTransaction(context.Background(), func(state *State) error {
+		advanceStateForAtomicTest(t, state, "operation-scoped-fault")
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	markerPath := filepath.Join(root, expectedRecoveredPersistenceFileName)
+	if _, err := os.Stat(markerPath); err != nil {
+		t.Fatalf("operation-scoped close lost marker: %v", err)
+	}
+
+	reopenedFD, err := os.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := NewStateStoreFromAuthenticatedRoot(reopenedFD)
+	if err != nil {
+		_ = reopenedFD.Close()
+		t.Fatal(err)
+	}
+	if err := reopenedFD.Close(); err != nil {
+		t.Fatal(err)
+	}
+	callbackSawRecovery := false
+	if err := reopened.WithTransaction(context.Background(), func(state *State) error {
+		callbackSawRecovery = state.Shells["shell-1"].LastRecoveredError == RecoveredPersistence
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !callbackSawRecovery {
+		t.Fatal("fresh operation-scoped store did not surface recovery evidence")
+	}
+	if err := reopened.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(markerPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("successful surfacing did not clear marker: %v", err)
+	}
+
+	thirdFD, err := os.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	third, err := NewStateStoreFromAuthenticatedRoot(thirdFD)
+	if err != nil {
+		_ = thirdFD.Close()
+		t.Fatal(err)
+	}
+	if err := thirdFD.Close(); err != nil {
+		t.Fatal(err)
+	}
+	state, err := third.Read(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := third.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if state.Shells["shell-1"].LastRecoveredError != RecoveredPersistence {
+		t.Fatalf("surfaced canonical evidence changed after third reopen: %#v", state.Shells["shell-1"])
+	}
+	canonical, err := os.ReadFile(filepath.Join(root, stateFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count := bytes.Count(canonical, []byte(`"last_recovered_error": "persistence-failed"`)); count != 1 {
+		t.Fatalf("canonical recovery projection count = %d, want 1", count)
+	}
+
+	t.Run("authenticated root replacement remains descriptor bound", func(t *testing.T) {
+		parent := t.TempDir()
+		path := filepath.Join(parent, "runtime")
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		firstFD, err := os.Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		freshFD, err := os.Open(path)
+		if err != nil {
+			_ = firstFD.Close()
+			t.Fatal(err)
+		}
+		first, err := NewStateStoreFromAuthenticatedRoot(firstFD)
+		if err != nil {
+			_ = firstFD.Close()
+			_ = freshFD.Close()
+			t.Fatal(err)
+		}
+		if err := firstFD.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if err := first.WithTransaction(context.Background(), func(state *State) error {
+			*state = validStateFixture(t)
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		authenticatedPath := filepath.Join(parent, "authenticated")
+		if err := os.Rename(path, authenticatedPath); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		canary := filepath.Join(parent, "outside-canary")
+		if err := os.WriteFile(canary, []byte("replacement-must-stay-unchanged"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(canary, filepath.Join(path, expectedRecoveredPersistenceFileName)); err != nil {
+			t.Fatal(err)
+		}
+		first.faults.forensicAppend = func(int, []byte) (int, error) {
+			return 0, errors.New("descriptor-bound forensic fault")
+		}
+		if err := first.WithTransaction(context.Background(), func(state *State) error {
+			advanceStateForAtomicTest(t, state, "descriptor-bound-reopen")
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := first.Close(); err != nil {
+			t.Fatal(err)
+		}
+		fresh, err := NewStateStoreFromAuthenticatedRoot(freshFD)
+		if err != nil {
+			_ = freshFD.Close()
+			t.Fatal(err)
+		}
+		if err := freshFD.Close(); err != nil {
+			t.Fatal(err)
+		}
+		state, err := fresh.Read(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := fresh.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if state.Shells["shell-1"].LastRecoveredError != RecoveredPersistence {
+			t.Fatal("descriptor-bound reopen did not surface recovery")
+		}
+		if _, err := os.Stat(filepath.Join(authenticatedPath, expectedRecoveredPersistenceFileName)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("authenticated marker was not cleared: %v", err)
+		}
+		if info, err := os.Lstat(filepath.Join(path, expectedRecoveredPersistenceFileName)); err != nil || info.Mode()&os.ModeSymlink == 0 {
+			t.Fatalf("replacement marker object changed: info=%v err=%v", info, err)
+		}
+		content, err := os.ReadFile(canary)
+		if err != nil || string(content) != "replacement-must-stay-unchanged" {
+			t.Fatalf("replacement target changed: %q err=%v", content, err)
+		}
+	})
+}
+
+func TestRecoveredPersistenceConcurrentReopen(t *testing.T) {
+	if _, ok := reflect.TypeOf(stateStoreFaults{}).FieldByName("beforeLockAcquisition"); !ok {
+		t.Fatal("deterministic pre-lock barrier seam is missing")
+	}
+	root := privateStateRoot(t)
+	seed := seedStateStore(t, root)
+	seed.faults.forensicAppend = func(int, []byte) (int, error) {
+		return 0, errors.New("concurrent reopen forensic fault")
+	}
+	if err := seed.WithTransaction(context.Background(), func(state *State) error {
+		advanceStateForAtomicTest(t, state, "concurrent-reopen-source")
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	stores := make([]*StateStore, 2)
+	for index := range stores {
+		rootFD, err := os.Open(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stores[index], err = NewStateStoreFromAuthenticatedRoot(rootFD)
+		if closeErr := rootFD.Close(); closeErr != nil {
+			t.Fatal(closeErr)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer closeStateStore(t, stores[index])
+	}
+	heldLock, err := os.OpenFile(filepath.Join(root, stateLockFileName), os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeTestFile(t, heldLock)
+	if err := syscall.Flock(int(heldLock.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+
+	type result struct {
+		state State
+		err   error
+	}
+	started := make(chan struct{}, len(stores))
+	results := make(chan result, len(stores))
+	for _, store := range stores {
+		go func(store *StateStore) {
+			started <- struct{}{}
+			state, err := store.Read(context.Background())
+			results <- result{state: state, err: err}
+		}(store)
+	}
+	for range stores {
+		<-started
+	}
+	if err := syscall.Flock(int(heldLock.Fd()), syscall.LOCK_UN); err != nil {
+		t.Fatal(err)
+	}
+	for range stores {
+		result := <-results
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		if result.state.Shells["shell-1"].LastRecoveredError != RecoveredPersistence {
+			t.Fatalf("racing store observed false clean state: %#v", result.state.Shells["shell-1"])
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, expectedRecoveredPersistenceFileName)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("serialized concurrent recovery left marker: %v", err)
+	}
+	canonical, err := os.ReadFile(filepath.Join(root, stateFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count := bytes.Count(canonical, []byte(`"last_recovered_error": "persistence-failed"`)); count != 1 {
+		t.Fatalf("concurrent canonical projection count = %d, want 1", count)
+	}
+}
+
 func TestAtomicReadersSeeOldOrCompleteNewAndIgnoreTemps(t *testing.T) {
 	root := privateStateRoot(t)
 	store := seedStateStore(t, root)
