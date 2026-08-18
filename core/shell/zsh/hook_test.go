@@ -678,6 +678,49 @@ print -r -- usable
 	}
 }
 
+func TestWorktreeRecoveryOwnerPrecedesMutation(t *testing.T) {
+	script := (Provider{}).HookScript()
+	install := functionBody(script, "_zp_worktree_install_transition")
+	if install == "" {
+		t.Fatal("loader does not define _zp_worktree_install_transition")
+	}
+	ownerIndex := strings.Index(install, `ZP_RECOVERY_REVERSE_FN="$reverse"`)
+	applyIndex := strings.Index(install, `"$apply"`)
+	if ownerIndex < 0 || applyIndex < 0 || ownerIndex >= applyIndex {
+		t.Fatalf("replacement recovery is not installed before mutation:\n%s", install)
+	}
+
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("zsh not installed")
+	}
+	dir := t.TempDir()
+	loader := filepath.Join(dir, "loader.zsh")
+	if err := os.WriteFile(loader, []byte(script), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const body = `
+source "$1" || exit 10
+__zp_worktree_reverse_old_owner() { : }
+__zp_worktree_apply_new_owner() {
+  [[ "$ZP_RECOVERY_REVERSE_FN" == __zp_worktree_reverse_new_owner ]] || return 71
+  [[ "$ZP_ACTIVE_REVERSE_FN" == __zp_worktree_reverse_old_owner ]] || return 72
+  typeset -g ZP14_OWNER_MUTATED=1
+}
+__zp_worktree_reverse_new_owner() { unset ZP14_OWNER_MUTATED }
+typeset -g ZP_ACTIVE_REVERSE_FN=__zp_worktree_reverse_old_owner
+_zp_worktree_install_transition __zp_worktree_apply_new_owner __zp_worktree_reverse_new_owner __zp_worktree_reverse_old_owner || exit 11
+[[ "$ZP14_OWNER_MUTATED" == 1 ]] || exit 12
+[[ "$ZP_ACTIVE_REVERSE_FN" == __zp_worktree_reverse_new_owner && ${+ZP_RECOVERY_REVERSE_FN} == 0 ]] || exit 13
+(( ${+functions[__zp_worktree_reverse_old_owner]} == 0 && ${+functions[__zp_worktree_apply_new_owner]} == 0 )) || exit 14
+print -r -- owner-before-mutation
+`
+	cmd := exec.Command("zsh", "-f", "-c", body, "zsh-pro-owner-before-mutation", loader)
+	output, err := cmd.CombinedOutput()
+	if err != nil || string(output) != "owner-before-mutation\n" {
+		t.Fatalf("recovery owner ordering = (%v, %q)", err, output)
+	}
+}
+
 func functionBody(script, name string) string {
 	start := strings.Index(script, name+"() {")
 	if start < 0 {

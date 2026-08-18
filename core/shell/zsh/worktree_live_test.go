@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"zsh-pro/core/activate"
+	"zsh-pro/core/model"
 	"zsh-pro/core/worktree"
 )
 
@@ -288,6 +290,198 @@ print -r -- "result:$hook_rc:$explicit_rc:$ZP_WORKTREE_APPLIED_REVISION:${#ZP_WO
 		if !strings.Contains(script, want) {
 			t.Errorf("bounded transport missing %q", want)
 		}
+	}
+}
+
+func TestWorktreePartialPatchFailureRecovery(t *testing.T) {
+	zshPath, err := exec.LookPath("zsh")
+	if err != nil {
+		t.Skip("zsh not installed")
+	}
+	dir := t.TempDir()
+	loader := filepath.Join(dir, "loader.zsh")
+	if err := os.WriteFile(loader, []byte((Provider{}).HookScript()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	aliasState := func(name, body string) model.LiveIdentityState {
+		return model.LiveIdentityState{
+			Identity: model.Identity{Kind: model.LiveAlias, Name: name},
+			Value:    model.ScalarLiveValue(body),
+		}
+	}
+	emitTransition := func(before, after []model.LiveIdentityState) string {
+		t.Helper()
+		patch, err := activate.BuildLivePatch(before, after)
+		if err != nil {
+			t.Fatal(err)
+		}
+		source, err := (Provider{}).EmitRuntimeTransition(
+			patch.Forward, patch.ReplacementReverse,
+			"__zp14_apply_template", "__zp14_reverse_template",
+			6, 7, strings.Repeat("0", 64),
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(source)
+	}
+	runScript := func(test *testing.T, name, transition, assertions string) {
+		test.Helper()
+		common := `
+source "$1" || exit 10
+typeset -g ZP14_TRANSITION_SOURCE=` + worktreeShellQuote(transition) + `
+typeset -g ZP_WORKTREE_ATTACHED=1 ZP_WORKTREE_ATTACHED_NOW=0 ZP_WORKTREE_APPLIED_REVISION=5
+typeset -g ZP_WORKTREE_LAST_ERROR='' ZP_WORKTREE_OPERATION_SEQUENCE=0
+typeset -ga ZP_WORKTREE_BASELINE_FIELDS=(ZP_LIVE_SNAPSHOT 1 E)
+typeset -ga ZP_WORKTREE_BASELINE_COUNTS=(2 1)
+typeset -gi ZP14_CAPTURE_COUNT=0
+_zp_worktree_ensure_attached() { typeset -g ZP_WORKTREE_ATTACHED_NOW=0; return 0 }
+_zp_worktree_capture() {
+  (( ++ZP14_CAPTURE_COUNT ))
+  if [[ "$ZP14_FAILURE_MODE" == capture && $ZP14_CAPTURE_COUNT -ge 2 ]]; then return 73; fi
+  _ZP_WORKTREE_CAPTURE_FIELDS=(ZP_LIVE_SNAPSHOT 1 E)
+  _ZP_WORKTREE_CAPTURE_COUNTS=(2 1)
+  return 0
+}
+_zp_worktree_budget_check() {
+  if [[ "$ZP14_FAILURE_MODE" == deadline && "${aliases[zp14_post]-}" == 'print -r -- after-post-secret' ]]; then return 1; fi
+  return 0
+}
+_zp_worktree_invoke() {
+  local operation="$1" result_name="$2" apply_name="$9" reverse_name="${10}" response=''
+  case "$operation" in
+    prepare)
+      response="${ZP14_TRANSITION_SOURCE//__zp14_apply_template/$apply_name}"
+      response="${response//__zp14_reverse_template/$reverse_name}"
+      : ${(P)result_name::=$response}
+      return 0
+      ;;
+    acknowledge)
+      case "$ZP14_FAILURE_MODE" in
+        acknowledgement) return 74 ;;
+        malformed-reply) : ${(P)result_name::=malformed}; return 0 ;;
+        *) : ${(P)result_name::='ZPWK 1 6 1'}; return 0 ;;
+      esac
+      ;;
+    *) return 75 ;;
+  esac
+}
+` + assertions
+		cmd := exec.Command(zshPath, "-f", "-c", common, "zsh-pro-partial-"+name, loader)
+		output, runErr := cmd.CombinedOutput()
+		if bytes.Contains(output, []byte("secret-value")) || bytes.Contains(output, []byte("after-post-secret")) {
+			test.Fatalf("%s leaked a live value in diagnostics: %q", name, output)
+		}
+		if runErr != nil {
+			test.Fatalf("%s partial-patch recovery: %v\n%s", name, runErr, output)
+		}
+		if !bytes.Contains(output, []byte("next-command-usable\n")) {
+			test.Fatalf("%s did not leave the next command usable: %q", name, output)
+		}
+	}
+
+	forwardOnly := emitTransition(nil, []model.LiveIdentityState{
+		aliasState("zp14_first", "print -r -- first-secret-value"),
+		aliasState("zp14_middle", "print -r -- middle-secret-value"),
+		aliasState("zp14_final", "print -r -- final-secret-value"),
+	})
+	for _, failure := range []struct {
+		name   string
+		target string
+	}{
+		{name: "early-operation", target: "zp14_first"},
+		{name: "final-operation", target: "zp14_final"},
+	} {
+		t.Run(failure.name, func(t *testing.T) {
+			body := `
+typeset -g ZP14_FAILURE_MODE=operation ZP14_FAIL_ALIAS=` + failure.target + `
+alias() { if [[ "$1" == "$ZP14_FAIL_ALIAS"=* ]]; then return 61; fi; builtin alias "$@"; }
+__zp_worktree_reverse_old_14() { : }
+typeset -g ZP_ACTIVE_REVERSE_FN=__zp_worktree_reverse_old_14
+_zp_worktree_pull_impl 999
+pull_rc=$?
+(( pull_rc != 0 && ZP_WORKTREE_APPLIED_REVISION == 5 && ${#ZP_WORKTREE_LAST_ERROR} > 0 )) || exit 20
+for managed in zp14_first zp14_middle zp14_final; do (( ${+aliases[$managed]} == 0 )) || exit 21; done
+[[ "$ZP_ACTIVE_REVERSE_FN" == __zp_worktree_reverse_old_14 && ${+functions[__zp_worktree_reverse_old_14]} == 1 && ${+ZP_RECOVERY_REVERSE_FN} == 0 ]] || exit 22
+for generated in ${(k)functions}; do
+  [[ "$generated" != __zp_worktree_apply_* ]] || exit 23
+  [[ "$generated" != __zp_worktree_reverse_* || "$generated" == __zp_worktree_reverse_old_14 ]] || exit 24
+done
+(( ${+ZP_WORKTREE_REPLY_COMPLETE} == 0 )) || exit 25
+print -r -- next-command-usable
+`
+			runScript(t, failure.name, forwardOnly, body)
+		})
+	}
+
+	t.Run("failed-compensation-public-retry", func(t *testing.T) {
+		transition := emitTransition(
+			[]model.LiveIdentityState{aliasState("zp14_changed", "print -r -- before-secret-value")},
+			[]model.LiveIdentityState{
+				aliasState("zp14_changed", "print -r -- after-secret-value"),
+				aliasState("zp14_stop", "print -r -- stop-secret-value"),
+			},
+		)
+		body := `
+typeset -g ZP14_FAILURE_MODE=operation ZP14_BLOCK_REVERSE=1
+alias zp14_changed='print -r -- before-secret-value'
+alias() {
+  [[ "$1" == zp14_stop=* ]] && return 61
+  [[ "$ZP14_BLOCK_REVERSE" == 1 && "$1" == zp14_changed=*before-secret-value* ]] && return 62
+  builtin alias "$@"
+}
+__zp_worktree_reverse_old_14() { : }
+typeset -g ZP_ACTIVE_REVERSE_FN=__zp_worktree_reverse_old_14
+_zp_worktree_pull_impl 999
+pull_rc=$?
+(( pull_rc != 0 && ZP_WORKTREE_APPLIED_REVISION == 5 && ${#ZP_WORKTREE_LAST_ERROR} > 0 )) || exit 30
+[[ "${aliases[zp14_changed]}" == 'print -r -- after-secret-value' && ${+aliases[zp14_stop]} == 0 ]] || exit 31
+[[ "$ZP_ACTIVE_REVERSE_FN" == __zp_worktree_reverse_old_14 && -n "$ZP_RECOVERY_REVERSE_FN" && ${+functions[$ZP_RECOVERY_REVERSE_FN]} == 1 ]] || exit 32
+typeset -g ZP14_BLOCK_REVERSE=0
+deactivate || exit 33
+[[ "${aliases[zp14_changed]}" == 'print -r -- before-secret-value' && ${+aliases[zp14_stop]} == 0 ]] || exit 34
+(( ${+ZP_RECOVERY_REVERSE_FN} == 0 && ${+ZP_ACTIVE_REVERSE_FN} == 0 && ${+functions[__zp_worktree_reverse_old_14]} == 0 )) || exit 35
+for generated in ${(k)functions}; do
+  [[ "$generated" != __zp_worktree_apply_* && "$generated" != __zp_worktree_reverse_* ]] || exit 36
+done
+for residue in ZP_WORKTREE_REPLY_PROTOCOL ZP_WORKTREE_REPLY_REVISION ZP_WORKTREE_REPLY_TOKEN ZP_WORKTREE_REPLY_FINGERPRINT ZP_WORKTREE_REPLY_COMPLETE; do (( ${+parameters[$residue]} == 0 )) || exit 37; done
+deactivate || exit 38
+print -r -- next-command-usable
+`
+		runScript(t, "failed-compensation-public-retry", transition, body)
+	})
+
+	postTransition := emitTransition(
+		[]model.LiveIdentityState{aliasState("zp14_post", "print -r -- before-post")},
+		[]model.LiveIdentityState{aliasState("zp14_post", "print -r -- after-post-secret")},
+	)
+	for _, mode := range []string{"deadline", "capture", "malformed-reply", "acknowledgement"} {
+		t.Run("post-apply-"+mode, func(t *testing.T) {
+			body := `
+typeset -g ZP14_FAILURE_MODE=` + mode + `
+alias zp14_post='print -r -- before-post'
+__zp_worktree_reverse_old_14() { : }
+typeset -g ZP_ACTIVE_REVERSE_FN=__zp_worktree_reverse_old_14
+_zp_worktree_pull_impl 999
+pull_rc=$?
+(( pull_rc != 0 && ZP_WORKTREE_APPLIED_REVISION == 5 && ${#ZP_WORKTREE_LAST_ERROR} > 0 )) || exit 40
+[[ "${aliases[zp14_post]}" == 'print -r -- after-post-secret' ]] || exit 41
+[[ "$ZP_ACTIVE_REVERSE_FN" == __zp_worktree_reverse_* && "$ZP_ACTIVE_REVERSE_FN" != __zp_worktree_reverse_old_14 && ${+functions[$ZP_ACTIVE_REVERSE_FN]} == 1 ]] || exit 42
+(( ${+functions[__zp_worktree_reverse_old_14]} == 0 && ${+ZP_RECOVERY_REVERSE_FN} == 0 )) || exit 43
+for reply in ZP_WORKTREE_REPLY_PROTOCOL ZP_WORKTREE_REPLY_REVISION ZP_WORKTREE_REPLY_TOKEN ZP_WORKTREE_REPLY_FINGERPRINT ZP_WORKTREE_REPLY_COMPLETE; do (( ${+parameters[$reply]} == 0 )) || exit 44; done
+print -r -- pre-deactivate-usable
+deactivate || exit 45
+[[ "${aliases[zp14_post]}" == 'print -r -- before-post' ]] || exit 46
+(( ${+ZP_ACTIVE_REVERSE_FN} == 0 && ${+ZP_RECOVERY_REVERSE_FN} == 0 )) || exit 47
+for generated in ${(k)functions}; do
+  [[ "$generated" != __zp_worktree_apply_* && "$generated" != __zp_worktree_reverse_* ]] || exit 48
+done
+deactivate || exit 49
+print -r -- next-command-usable
+`
+			runScript(t, "post-apply-"+mode, postTransition, body)
+		})
 	}
 }
 
