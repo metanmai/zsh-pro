@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"zsh-pro/core/activate"
 	"zsh-pro/core/model"
 	"zsh-pro/core/shell/zsh"
 	"zsh-pro/core/store"
@@ -278,6 +279,114 @@ func TestRuntimeWorktreeReplyOutputIsWholeAndNoOpIsEmpty(t *testing.T) {
 	if code != 0 || stdout != "" || stderr != "" {
 		t.Fatalf("prepare at-head no-op = (%d, %q, %q)", code, stdout, stderr)
 	}
+}
+
+func TestRuntimeTransitionFooterAllowsMarkerTextInManagedPayload(t *testing.T) {
+	zshPath, err := exec.LookPath("zsh")
+	if err != nil {
+		t.Fatal("zsh is required for structural runtime-footer validation")
+	}
+	markers := []string{
+		"ZP_WORKTREE_REPLY_PROTOCOL=",
+		"ZP_WORKTREE_REPLY_REVISION=",
+		"ZP_WORKTREE_REPLY_TOKEN=",
+		"ZP_WORKTREE_REPLY_FINGERPRINT=",
+		"ZP_WORKTREE_REPLY_COMPLETE=",
+	}
+	markerText := strings.Join(markers, "|")
+	fingerprint := [32]byte{1, 2, 3, 4}
+	metadata := RuntimePatchMetadata{Revision: 7, Token: 11, Fingerprint: fingerprint}
+	forward := []activate.Op{
+		activate.SetLiveScalar{Identity: model.Identity{Kind: model.LiveEnv, Name: "CR03_ENV"}, Value: markerText},
+		activate.SetLiveScalar{Identity: model.Identity{Kind: model.LiveAlias, Name: "cr03_alias"}, Value: "print -r -- " + markerText},
+		activate.SetLiveScalar{Identity: model.Identity{Kind: model.LiveFunction, Name: "cr03_function"}, Value: "print -r -- line-one\nprint -r -- '" + markerText + "'"},
+	}
+	reverse := []activate.Op{
+		activate.RemoveLiveScalar{Identity: model.Identity{Kind: model.LiveEnv, Name: "CR03_ENV"}},
+		activate.RemoveLiveScalar{Identity: model.Identity{Kind: model.LiveAlias, Name: "cr03_alias"}},
+		activate.RemoveLiveScalar{Identity: model.Identity{Kind: model.LiveFunction, Name: "cr03_function"}},
+	}
+	source, err := (zsh.Provider{}).EmitRuntimeTransition(
+		forward, reverse, "__zp_cr03_apply", "__zp_cr03_reverse",
+		metadata.Revision, metadata.Token, fmt.Sprintf("%x", metadata.Fingerprint),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	validated, err := validateRuntimePatchPayload(context.Background(), runtimePatchPayload{
+		transition: true, source: source, metadata: metadata,
+	})
+	if err != nil {
+		t.Fatalf("valid generated transition with managed marker text: %v", err)
+	}
+	if !bytes.Equal(validated, source) {
+		t.Fatal("runtime validator changed the accepted transition bytes")
+	}
+
+	payloadPath := filepath.Join(t.TempDir(), "transition.zsh")
+	if err := os.WriteFile(payloadPath, validated, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(zshPath, "-f", "-c", `
+source "$1" || exit 10
+__zp_cr03_apply || exit 11
+[[ "$CR03_ENV" == "$2" && "${aliases[cr03_alias]}" == "print -r -- $2" ]] || exit 12
+[[ "$(cr03_function)" == $'line-one\n'$2 ]] || exit 13
+[[ "$ZP_WORKTREE_REPLY_PROTOCOL|$ZP_WORKTREE_REPLY_REVISION|$ZP_WORKTREE_REPLY_TOKEN|$ZP_WORKTREE_REPLY_FINGERPRINT|$ZP_WORKTREE_REPLY_COMPLETE" == "1|7|11|$3|1" ]] || exit 14
+`, "zsh-pro-runtime-footer-test", payloadPath, markerText, fmt.Sprintf("%x", metadata.Fingerprint))
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("accepted transition did not execute: %v\n%s", err, output)
+	}
+
+	footer := fmt.Sprintf(
+		"typeset -g ZP_WORKTREE_REPLY_PROTOCOL='1'\n"+
+			"typeset -g ZP_WORKTREE_REPLY_REVISION='%d'\n"+
+			"typeset -g ZP_WORKTREE_REPLY_TOKEN='%d'\n"+
+			"typeset -g ZP_WORKTREE_REPLY_FINGERPRINT='%x'\n"+
+			"typeset -g ZP_WORKTREE_REPLY_COMPLETE='1'\n",
+		metadata.Revision, metadata.Token, metadata.Fingerprint,
+	)
+	body := strings.TrimSuffix(string(source), footer)
+	lines := strings.Split(strings.TrimSuffix(footer, "\n"), "\n")
+	mutations := map[string][]byte{
+		"protocol changed":        []byte(body + strings.Replace(footer, "PROTOCOL='1'", "PROTOCOL='2'", 1)),
+		"revision changed":        []byte(body + strings.Replace(footer, "REVISION='7'", "REVISION='8'", 1)),
+		"token changed":           []byte(body + strings.Replace(footer, "TOKEN='11'", "TOKEN='12'", 1)),
+		"fingerprint changed":     []byte(body + strings.Replace(footer, fmt.Sprintf("FINGERPRINT='%x'", metadata.Fingerprint), "FINGERPRINT='"+strings.Repeat("0", 64)+"'", 1)),
+		"complete changed":        []byte(body + strings.Replace(footer, "COMPLETE='1'", "COMPLETE='0'", 1)),
+		"missing field":           []byte(body + strings.Join([]string{lines[0], lines[1], lines[3], lines[4]}, "\n") + "\n"),
+		"reordered fields":        []byte(body + strings.Join([]string{lines[0], lines[2], lines[1], lines[3], lines[4]}, "\n") + "\n"),
+		"duplicated field":        []byte(body + strings.Join([]string{lines[0], lines[0], lines[1], lines[2], lines[3], lines[4]}, "\n") + "\n"),
+		"trailing bytes":          append(append([]byte(nil), source...), []byte("# trailer\n")...),
+		"invalid zsh with footer": []byte("if then\n" + footer),
+	}
+	for name, mutated := range mutations {
+		t.Run(name, func(t *testing.T) {
+			if _, err := validateRuntimePatchPayload(context.Background(), runtimePatchPayload{
+				transition: true, source: mutated, metadata: metadata,
+			}); err == nil {
+				t.Fatal("structurally invalid runtime transition was accepted")
+			}
+		})
+	}
+	t.Run("metadata mismatch", func(t *testing.T) {
+		mismatch := metadata
+		mismatch.Revision++
+		if _, err := validateRuntimePatchPayload(context.Background(), runtimePatchPayload{
+			transition: true, source: source, metadata: mismatch,
+		}); err == nil {
+			t.Fatal("source footer mismatched from trusted metadata was accepted")
+		}
+	})
+	t.Run("incomplete transition", func(t *testing.T) {
+		incomplete := metadata
+		incomplete.Token = 0
+		if _, err := validateRuntimePatchPayload(context.Background(), runtimePatchPayload{
+			transition: true, source: source, metadata: incomplete,
+		}); err == nil {
+			t.Fatal("incomplete runtime transition was accepted")
+		}
+	})
 }
 
 func TestRuntimeWorktreePublishResponseIsBoundedValueFreeAndOrdered(t *testing.T) {
