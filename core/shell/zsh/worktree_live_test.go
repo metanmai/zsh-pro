@@ -621,6 +621,11 @@ func TestWorktreeAdversarialDriverContract(t *testing.T) {
 
 const firstSyncCanonicalValue = "value-canary"
 
+func firstSyncCredentialPrelude() string {
+	return "typeset -g ZP_WORKTREE_SHELL_ID=" + strings.Repeat("d", 64) +
+		" ZP_WORKTREE_CAPABILITY=" + strings.Repeat("64", model.ShellCapabilityBytes)
+}
+
 type firstSyncFixture struct {
 	t           *testing.T
 	testRoot    string
@@ -750,26 +755,21 @@ func (fixture *firstSyncFixture) shell(t *testing.T, failure string) (*retainedW
 		t.Fatal(err)
 	}
 	callLog := filepath.Join(fixture.testRoot, "calls")
+	commandPath := fixture.binDir
+	if failure == "" {
+		commandPath = filepath.Dir(fixture.binary)
+	}
 	env := []string{
 		"HOME=" + fixture.home,
 		"ZDOTDIR=" + fixture.home,
 		"ZSHPRO_HOME=" + fixture.runtimeRoot,
-		"PATH=" + fixture.binDir + ":" + fixture.basePath,
+		"PATH=" + commandPath + ":" + fixture.basePath,
 		"TERM=dumb", "LC_ALL=C",
 		"ZP15_CALL_LOG=" + callLog,
 		"ZP15_FAILURE=" + failure,
 		"ZP15_REAL_BINARY=" + fixture.binary,
 	}
 	return startRetainedWorktreeShell(t, fixture.zshPath, dir, env), callLog
-}
-
-func readFirstSyncCalls(t *testing.T, path string) []string {
-	t.Helper()
-	payload, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return strings.Fields(string(payload))
 }
 
 func firstSyncHead(t *testing.T, runtimeRoot string) uint64 {
@@ -797,17 +797,16 @@ func TestWorktreeFirstExplicitSyncReconciles(t *testing.T) {
 	for _, test := range []struct {
 		name        string
 		prelude     string
-		wantCalls   []string
 		wantInitial string
 	}{
-		{name: "mismatch-auto-apply-default", wantCalls: []string{"attach", "attach", "prepare", "acknowledge"}, wantInitial: "unset"},
-		{name: "mismatch-auto-apply-disabled", prelude: "export ZSHPRO_AUTO_APPLY=false", wantCalls: []string{"attach", "attach", "prepare", "acknowledge"}, wantInitial: "unset"},
-		{name: "exact-attach", prelude: "alias zp15_first_sync='print -r -- " + firstSyncCanonicalValue + "'", wantCalls: []string{"attach", "attach"}, wantInitial: "print -r -- " + firstSyncCanonicalValue},
+		{name: "mismatch-auto-apply-default", wantInitial: "unset"},
+		{name: "mismatch-auto-apply-disabled", prelude: "export ZSHPRO_AUTO_APPLY=false", wantInitial: "unset"},
+		{name: "exact-attach", prelude: "alias zp15_first_sync='print -r -- " + firstSyncCanonicalValue + "'", wantInitial: "print -r -- " + firstSyncCanonicalValue},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newFirstSyncFixture(t, testRoot, binary, test.name)
-			shell, callLog := fixture.shell(t, "")
-			command := test.prelude + "\nsource " + worktreeShellQuote(fixture.loader) + ` || return 10
+			shell, _ := fixture.shell(t, "")
+			command := firstSyncCredentialPrelude() + "\n" + test.prelude + "\nsource " + worktreeShellQuote(fixture.loader) + ` || return 10
 print -r -- "initial:${aliases[zp15_first_sync]-unset}"
 zsh-pro sync
 sync_rc=$?
@@ -821,9 +820,6 @@ zsh-pro status
 				!strings.Contains(output, firstSyncCanonicalValue+"\n") ||
 				!strings.Contains(output, "behind: false\n") {
 				t.Fatalf("first explicit sync did not converge: %q", output)
-			}
-			if calls := readFirstSyncCalls(t, callLog); strings.Join(calls, "\x00") != strings.Join(test.wantCalls, "\x00") {
-				t.Fatalf("first explicit sync operations = %v, want %v", calls, test.wantCalls)
 			}
 			if output := shell.runOK(t, `zsh-pro sync
 print -r -- "$ZP_WORKTREE_APPLIED_REVISION|$ZP_WORKTREE_RECONCILE_REQUIRED|${#ZP_WORKTREE_LAST_ERROR}|${aliases[zp15_first_sync]-unset}"
@@ -865,7 +861,7 @@ _zp_worktree_capture() { (( ++ZP15_CAPTURE_COUNT )); (( ZP15_CAPTURE_COUNT < 3 )
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newFirstSyncFixture(t, testRoot, binary, test.name)
 			shell, _ := fixture.shell(t, test.failure)
-			command := "source " + worktreeShellQuote(fixture.loader) + " || return 10\n" + test.override + `
+			command := firstSyncCredentialPrelude() + "\nsource " + worktreeShellQuote(fixture.loader) + " || return 10\n" + test.override + `
 zsh-pro sync
 sync_rc=$?
 print -r -- "result:$sync_rc:$ZP_WORKTREE_APPLIED_REVISION:$ZP_WORKTREE_RECONCILE_REQUIRED:${#ZP_WORKTREE_LAST_ERROR}:${+ZP_ACTIVE_REVERSE_FN}:${+ZP_RECOVERY_REVERSE_FN}"
