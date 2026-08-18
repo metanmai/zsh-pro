@@ -170,6 +170,70 @@ func TestAttachResultTruthfullyReportsCleanReconcile(t *testing.T) {
 	})
 }
 
+func TestSemanticEqualityDrivesAttachRepairAndBehind(t *testing.T) {
+	ctx := context.Background()
+	baseOID := strings.Repeat("a", 40)
+	repairedOID := strings.Repeat("b", 40)
+	environment := serviceState("EDITOR", "value")
+	alias := model.LiveIdentityState{
+		Identity: model.Identity{Kind: model.LiveAlias, Name: "demo.live"},
+		Value:    model.ScalarLiveValue("print ok"),
+	}
+	canonical := model.NewCommittedWorktree(
+		model.Profile{Entries: []model.Entry{materializedAssignment("EDITOR", model.CatEnvironment), materializedAlias("demo.live")}},
+		model.LiveProjection{States: []model.LiveIdentityState{environment, alias}},
+	)
+	reordered := model.NewCommittedWorktree(canonical.Source, model.LiveProjection{States: []model.LiveIdentityState{alias, environment}})
+
+	harness := newServiceHarness(t, fakeLiveSecretPolicy{})
+	repository := &workflowRepository{
+		branches: map[string]string{"main": baseOID},
+		documents: map[string]model.CommittedWorktree{
+			baseOID:     canonical,
+			repairedOID: reordered,
+		},
+	}
+	service, err := NewService(harness.store, NewRegistry(fakeLiveSecretPolicy{}), repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	harness.service = service
+	if err := service.Materialize(ctx, "main", baseOID, canonical); err != nil {
+		t.Fatal(err)
+	}
+
+	credential := serviceCredential(t, "semantic-shell", 'S')
+	attached, err := service.Attach(ctx, model.AttachRequest{
+		OperationID: "semantic-attach", Credential: credential,
+		Initial: serviceSnapshot(alias, environment),
+	})
+	if err != nil || !attached.Attached || attached.ReconcileRequired || attached.Revision != 1 {
+		t.Fatalf("order-only attach = %#v, %v", attached, err)
+	}
+	if shell := harness.state(t).Shells[credential.ShellID]; shell.Behind || shell.AppliedRevision != 1 {
+		t.Fatalf("order-only attach was marked behind: %#v", shell)
+	}
+
+	repository.branches["main"] = repairedOID
+	status, err := service.WorkflowStatus(ctx, credential.ShellID)
+	if err != nil || status.Worktree.BaseOID != repairedOID {
+		t.Fatalf("order-only exact-OID repair = %#v, %v", status, err)
+	}
+	repaired := harness.state(t)
+	if repaired.BaseOID != repairedOID || !reflect.DeepEqual(repaired.Committed.Projection.States, reordered.Projection.States) {
+		t.Fatalf("order-only repair did not retain exact repository document: %#v", repaired)
+	}
+
+	if err := service.ResetHard(ctx); err != nil {
+		t.Fatalf("order-only generation replacement: %v", err)
+	}
+	after := harness.state(t)
+	shell := after.Shells[credential.ShellID]
+	if after.HeadRevision != 1 || shell.Behind || shell.AppliedRevision != 1 {
+		t.Fatalf("order-only generation replacement invented change or behind state: %#v", shell)
+	}
+}
+
 func TestAttachFiltersInheritedAndSecretValuesWhilePostAttachAdmissionWorks(t *testing.T) {
 	secret := serviceIdentity("CREATED_API_TOKEN")
 	harness := materializedServiceHarness(t, fakeLiveSecretPolicy{secret: true})

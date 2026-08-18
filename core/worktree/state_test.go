@@ -426,3 +426,78 @@ func TestFingerprintSnapshotCanonicalIdentityOrder(t *testing.T) {
 	fpathOrderChanged[2].Value = model.ListLiveValue([]string{"", "/functions/two", "/functions/one"})
 	assertDifferent("FPATH element order", fpathOrderChanged)
 }
+
+func TestEqualLiveStatesIsOrderIndependentAndValueExact(t *testing.T) {
+	environment := model.LiveIdentityState{
+		Identity: model.Identity{Kind: model.LiveEnv, Name: "EDITOR"},
+		Value:    model.ScalarLiveValue("shared"),
+	}
+	alias := model.LiveIdentityState{
+		Identity: model.Identity{Kind: model.LiveAlias, Name: "demo.live"},
+		Value:    model.ScalarLiveValue("print -- live"),
+	}
+	function := model.LiveIdentityState{
+		Identity: model.Identity{Kind: model.LiveFunction, Name: "demo_live"},
+		Value:    model.ScalarLiveValue("print -- function"),
+	}
+	path := model.LiveIdentityState{
+		Identity: model.Identity{Kind: model.LivePath, Name: "PATH"},
+		Value:    model.ListLiveValue([]string{"", "/one", "/one", "/two"}),
+	}
+	fpath := model.LiveIdentityState{
+		Identity: model.Identity{Kind: model.LiveFPath, Name: "FPATH"},
+		Value:    model.ListLiveValue([]string{"/functions", "", "/functions"}),
+	}
+	option := model.LiveIdentityState{
+		Identity: model.Identity{Kind: model.LiveOption, Name: "EXTENDED_GLOB"},
+		Value:    model.OptionLiveValue(true),
+	}
+	canonical := []model.LiveIdentityState{environment, alias, function, path, fpath, option}
+	reordered := []model.LiveIdentityState{alias, function, path, fpath, option, environment}
+	if !equalLiveStates(canonical, reordered) {
+		t.Fatal("moving an earlier-category identity late changed semantic equality")
+	}
+
+	assertUnequal := func(name string, mutate func([]model.LiveIdentityState) []model.LiveIdentityState) {
+		t.Helper()
+		candidate := mutate(model.CloneLiveStates(reordered))
+		if equalLiveStates(canonical, candidate) {
+			t.Errorf("%s was treated as semantically equal", name)
+		}
+	}
+	assertUnequal("presence", func(states []model.LiveIdentityState) []model.LiveIdentityState {
+		states[5].Value = model.RemovedLiveValue()
+		return states
+	})
+	assertUnequal("scalar value", func(states []model.LiveIdentityState) []model.LiveIdentityState {
+		states[0].Value = model.ScalarLiveValue("print -- changed")
+		return states
+	})
+	assertUnequal("identity kind", func(states []model.LiveIdentityState) []model.LiveIdentityState {
+		states[0].Identity.Kind = model.LiveFunction
+		return states
+	})
+	assertUnequal("identity name", func(states []model.LiveIdentityState) []model.LiveIdentityState {
+		states[0].Identity.Name = "demo.other"
+		return states
+	})
+	assertUnequal("option value", func(states []model.LiveIdentityState) []model.LiveIdentityState {
+		states[4].Value = model.OptionLiveValue(false)
+		return states
+	})
+	assertUnequal("PATH duplicate and empty order", func(states []model.LiveIdentityState) []model.LiveIdentityState {
+		states[2].Value = model.ListLiveValue([]string{"/one", "", "/one", "/two"})
+		return states
+	})
+	assertUnequal("FPATH duplicate and empty order", func(states []model.LiveIdentityState) []model.LiveIdentityState {
+		states[3].Value = model.ListLiveValue([]string{"", "/functions", "/functions"})
+		return states
+	})
+	assertUnequal("duplicate identity", func(states []model.LiveIdentityState) []model.LiveIdentityState {
+		return append(states, model.CloneLiveStates(states[:1])...)
+	})
+	assertUnequal("invalid identity", func(states []model.LiveIdentityState) []model.LiveIdentityState {
+		states[0].Identity.Name = "bad alias name"
+		return states
+	})
+}
