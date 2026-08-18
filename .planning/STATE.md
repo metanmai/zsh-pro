@@ -5,8 +5,8 @@ milestone_name: Branchable Shell Environments
 current_phase: 07
 current_phase_name: Git-Like Shared Working Environment
 status: executing
-stopped_at: Completed 07-12-PLAN.md
-last_updated: "2026-08-18T01:27:23.971Z"
+stopped_at: Completed 07-13-PLAN.md
+last_updated: "2026-08-18T02:37:54.178Z"
 last_activity: 2026-08-18
 last_activity_desc: Phase 07 execution started
 progress:
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-06-25)
 ## Current Position
 
 Phase: 07 (Git-Like Shared Working Environment) — EXECUTING
-Plan: 13 of 15
+Plan: 14 of 15
 Status: Ready to execute
 Last activity: 2026-08-18 — Phase 07 execution started
 
@@ -108,6 +108,7 @@ Progress: [██████████] 100%
 | Phase 07 P10 | 59min | 2 tasks | 16 files |
 | Phase 07 P11 | 17min | 2 tasks | 6 files |
 | Phase 07 P12 | 15min | 2 tasks | 2 files |
+| Phase 07 P13 | 67min | 3 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -229,6 +230,8 @@ Recent decisions affecting current work:
 - [Phase 07]: Recovered forensic persistence uses one constant descriptor-relative marker; Store memory is not causal authority.
 - [Phase 07]: Recovery evidence is projected canonically before marker unlink and directory sync.
 - [Phase 07]: Fresh-Store recovery races use the existing advisory lock with a deterministic pre-lock fault barrier.
+- [Phase ?]: Reserve the final 25 ms of the original shell deadline for verified owned-child shutdown, KILL, and reap.
+- [Phase ?]: Use incremental pre-admission for every live-state record and frame byte under the unchanged safe-boundary deadline.
 
 ### Pending Todos
 
@@ -257,6 +260,6 @@ Items acknowledged and carried forward from previous milestone close:
 
 ## Session Continuity
 
-Last session: 2026-08-18T01:26:43.754Z
-Stopped at: Completed 07-12-PLAN.md
+Last session: 2026-08-18T02:37:54.169Z
+Stopped at: Completed 07-13-PLAN.md
 Resume file: None
