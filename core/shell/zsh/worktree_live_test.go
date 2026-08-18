@@ -276,6 +276,37 @@ print -r -- "result:$hook_rc:$explicit_rc:$ZP_WORKTREE_APPLIED_REVISION:${#ZP_WO
 	}
 }
 
+func TestWorktreeAdversarialDriverContract(t *testing.T) {
+	scriptPath := filepath.Join(liveTestRepositoryRoot(t), "scripts", "perf-worktree.sh")
+	payload, err := os.ReadFile(scriptPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(payload)
+	for _, mode := range []string{"oversized-capture", "blocked-reader", "term-ignoring-helper"} {
+		if !strings.Contains(script, "mode="+mode) {
+			t.Errorf("adversarial driver missing %s mode", mode)
+		}
+	}
+	for _, field := range []string{
+		"elapsed_ms=", "return_class=", "survivors=", "pipe_delta=",
+		"applied_revision_unchanged=", "behind_error=", "continuation=",
+	} {
+		if !strings.Contains(script, field) {
+			t.Errorf("adversarial driver missing value-free %s field", field)
+		}
+	}
+	for _, contract := range []string{
+		"TestWorktreeAbsoluteDeadlineAdversarialTransport",
+		"ZP_WORKTREE_ADVERSARIAL_REPORT",
+		"-count=2",
+	} {
+		if !strings.Contains(script, contract) {
+			t.Errorf("adversarial driver missing repeated cleanup contract %q", contract)
+		}
+	}
+}
+
 func TestWorktreeTwoShellEndToEnd(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")
