@@ -149,6 +149,22 @@ func emitLiveOperation(operation activate.Op) ([]byte, error) {
 	}
 }
 
+// emitCheckedLiveOperation preserves one already-validated mutation as the
+// emitter's smallest execution unit. The status is captured immediately so a
+// later successful mutation can never mask a failed scalar, list, alias,
+// function, option, or tombstone operation.
+func emitCheckedLiveOperation(operation activate.Op) ([]byte, error) {
+	operationSource, err := emitLiveOperation(operation)
+	if err != nil {
+		return nil, err
+	}
+	checked := make([]byte, 0, len(operationSource)+128)
+	checked = append(checked, operationSource...)
+	checked = append(checked, "  typeset -i __zp_live_operation_status=$?\n"...)
+	checked = append(checked, "  (( __zp_live_operation_status == 0 )) || return \"$__zp_live_operation_status\"\n"...)
+	return checked, nil
+}
+
 // EmitLivePatch validates the complete shell-neutral patch before returning a
 // byte. The caller owns the private function names; zsh owns every byte of the
 // executable source.
@@ -225,7 +241,7 @@ func validateAndEmitLiveOperations(operations []activate.Op) ([][]byte, error) {
 		if reservedWorktreeReplyName(identity.Name) {
 			return nil, fmt.Errorf("live identity %q uses the reserved acknowledgement namespace", identity.Name)
 		}
-		emitted, err := emitLiveOperation(operation)
+		emitted, err := emitCheckedLiveOperation(operation)
 		if err != nil {
 			return nil, err
 		}

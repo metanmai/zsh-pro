@@ -293,6 +293,22 @@ func TestEmitLivePatchRejectsMalformedOrReservedInputWithoutSource(t *testing.T)
 	}
 }
 
+func TestEmitRuntimeTransitionRejectsMalformedInput(t *testing.T) {
+	malformed := activate.TransitionLiveList{
+		Identity:      model.Identity{Kind: model.LivePath, Name: "PATH"},
+		BeforePresent: false,
+		Before:        []string{"must-not-escape"},
+	}
+	source, err := (Provider{}).EmitRuntimeTransition(
+		[]activate.Op{malformed}, nil,
+		"__zp14_apply", "__zp14_reverse",
+		1, 1, strings.Repeat("a", 64),
+	)
+	if err == nil || len(source) != 0 {
+		t.Fatalf("malformed runtime transition escaped: source=%q err=%v", source, err)
+	}
+}
+
 func TestEmitStaticDynamicAndSyntax(t *testing.T) {
 	p := activate.Plan{Activate: []activate.Op{
 		activate.SetScalar{Name: "EDITOR", Applied: "it's; echo bad", Dynamic: false},
