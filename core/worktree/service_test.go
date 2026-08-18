@@ -3,6 +3,7 @@ package worktree
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	"zsh-pro/core/model"
@@ -122,6 +124,127 @@ func TestAttachFiltersInheritedAndSecretValuesWhilePostAttachAdmissionWorks(t *t
 	}
 }
 
+func TestFreshServiceLateShellUsesDurableAdmission(t *testing.T) {
+	ctx := context.Background()
+	root := privateStateRoot(t)
+	secret := serviceIdentity("CREATED_API_TOKEN")
+	policy := fakeLiveSecretPolicy{secret: true}
+	storeA, err := OpenStateStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceA, err := NewService(storeA, NewRegistry(policy))
+	if err != nil {
+		_ = storeA.Close()
+		t.Fatal(err)
+	}
+	if err := serviceA.Materialize(ctx, "main", strings.Repeat("a", 40), serviceCommitted("shared")); err != nil {
+		_ = storeA.Close()
+		t.Fatal(err)
+	}
+	a := serviceCredential(t, "shell-a", 'A')
+	if _, err := serviceA.Attach(ctx, model.AttachRequest{
+		OperationID: "attach-a-durable", Credential: a,
+		Initial: serviceSnapshot(serviceState("EDITOR", "shared")),
+	}); err != nil {
+		_ = storeA.Close()
+		t.Fatal(err)
+	}
+	alias := model.Identity{Kind: model.LiveAlias, Name: "late-c-alias"}
+	const aliasValue = "print -- durable-late-c"
+	const secretCanary = "secret-value-must-not-persist"
+	publish := model.PublishRequest{
+		OperationID: "publish-durable-alias", Credential: a, AcknowledgedRevision: 1,
+		Delta: []model.LiveChange{
+			{Kind: model.LiveAdd, Identity: alias, Value: model.ScalarLiveValue(aliasValue)},
+			{Kind: model.LiveAdd, Identity: secret, Value: model.ScalarLiveValue(secretCanary)},
+		},
+	}
+	published, err := serviceA.Publish(ctx, publish)
+	if err != nil {
+		_ = storeA.Close()
+		t.Fatal(err)
+	}
+	if got, want := published.Accepted, []model.Identity{alias}; !reflect.DeepEqual(got, want) || published.SharedRevision != 2 {
+		_ = storeA.Close()
+		t.Fatalf("published = %#v, want revision 2 and %#v", published, want)
+	}
+	if err := storeA.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	serviceReplay := reopenService(t, root, policy)
+	replayed, err := serviceReplay.Publish(ctx, publish)
+	if err != nil || !reflect.DeepEqual(replayed, published) {
+		t.Fatalf("fresh-service publish replay = %#v, %v; want %#v", replayed, err, published)
+	}
+
+	serviceC := reopenService(t, root, policy)
+	c := serviceCredential(t, "shell-c", 'C')
+	attached, err := serviceC.Attach(ctx, model.AttachRequest{
+		OperationID: "attach-late-c", Credential: c,
+		Initial: serviceSnapshot(
+			serviceState("EDITOR", "shared"),
+			model.LiveIdentityState{Identity: alias, Value: model.ScalarLiveValue("stale-local")},
+			serviceState("AMBIENT_ONLY", "ambient-value-must-not-persist"),
+			serviceState(secret.Name, "late-secret-must-not-persist"),
+		),
+	})
+	if err != nil || !attached.Attached || attached.Revision != published.SharedRevision {
+		t.Fatalf("late C attach = %#v, %v", attached, err)
+	}
+	pending, err := serviceC.PreparePull(ctx, model.PreparePullRequest{
+		OperationID: "prepare-late-c", Credential: c, AppliedRevision: 0,
+	})
+	if err != nil || pending.PendingRevision != published.SharedRevision || pending.Token == "" || len(pending.Changes) != 1 {
+		t.Fatalf("late C prepare = %#v, %v", pending, err)
+	}
+	target := serviceSnapshot(
+		serviceState("EDITOR", "shared"),
+		model.LiveIdentityState{Identity: alias, Value: model.ScalarLiveValue(aliasValue)},
+	)
+	acknowledged, err := serviceC.Acknowledge(ctx, model.AcknowledgeRequest{
+		OperationID: "ack-late-c", Credential: c, Revision: pending.PendingRevision,
+		Token: pending.Token, Snapshot: target,
+	})
+	if err != nil || !acknowledged.Acknowledged || acknowledged.AppliedRevision != published.SharedRevision {
+		t.Fatalf("late C acknowledge = %#v, %v", acknowledged, err)
+	}
+
+	state, err := serviceC.store.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.HeadRevision != 2 || !reflect.DeepEqual(state.AdmittedIdentities, []model.Identity{alias}) || state.Shells[c.ShellID].Behind {
+		t.Fatalf("durable late-C state = %#v", state)
+	}
+	payload, err := os.ReadFile(filepath.Join(root, stateFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &raw); err != nil {
+		t.Fatal(err)
+	}
+	admitted := raw["admitted_identities"]
+	for _, forbidden := range [][]byte{[]byte(aliasValue), []byte(secret.Name), []byte(secretCanary)} {
+		if bytes.Contains(admitted, forbidden) {
+			t.Fatalf("forbidden data reached durable admission metadata: %q", forbidden)
+		}
+	}
+	for _, forbidden := range [][]byte{
+		[]byte(secretCanary), []byte("late-secret-must-not-persist"), []byte("ambient-value-must-not-persist"),
+		bytes.Repeat([]byte{'A'}, model.ShellCapabilityBytes), bytes.Repeat([]byte{'C'}, model.ShellCapabilityBytes),
+	} {
+		if bytes.Contains(payload, forbidden) {
+			t.Fatalf("forbidden value or credential reached canonical state: %q", forbidden)
+		}
+	}
+	if !bytes.Contains(admitted, []byte(alias.Name)) {
+		t.Fatalf("durable admission metadata missing alias: %s", admitted)
+	}
+}
+
 func TestPrivateCredentialSpoofCrossShellReplayAndReceiptGuessAreValueFree(t *testing.T) {
 	harness := materializedServiceHarness(t, fakeLiveSecretPolicy{})
 	credentialA := serviceCredential(t, "shell-a", 'A')
@@ -175,6 +298,105 @@ func TestPublishDisjointStaleChangesCompose(t *testing.T) {
 	if !serviceStateHas(state.Shared, serviceIdentity("A_ONLY"), "a") || !serviceStateHas(state.Shared, serviceIdentity("B_ONLY"), "b") {
 		t.Fatalf("disjoint changes did not compose: %#v", state.Shared)
 	}
+}
+
+func TestConcurrentDurableAdmissionsAreDeterministic(t *testing.T) {
+	t.Run("disjoint", func(t *testing.T) {
+		harness := materializedServiceHarness(t, fakeLiveSecretPolicy{})
+		a := serviceCredential(t, "shell-a", 'A')
+		b := serviceCredential(t, "shell-b", 'B')
+		harness.attach(t, a, "attach-a-durable-disjoint")
+		harness.attach(t, b, "attach-b-durable-disjoint")
+
+		alias := model.Identity{Kind: model.LiveAlias, Name: "a-disjoint"}
+		environment := serviceIdentity("B_DISJOINT")
+		requests := []model.PublishRequest{
+			{OperationID: "publish-a-durable-disjoint", Credential: a, AcknowledgedRevision: 1, Delta: []model.LiveChange{{Kind: model.LiveAdd, Identity: alias, Value: model.ScalarLiveValue("print -- a")}}},
+			{OperationID: "publish-b-durable-disjoint", Credential: b, AcknowledgedRevision: 1, Delta: []model.LiveChange{{Kind: model.LiveAdd, Identity: environment, Value: model.ScalarLiveValue("b")}}},
+		}
+		services := []*Service{
+			reopenService(t, harness.root, fakeLiveSecretPolicy{}),
+			reopenService(t, harness.root, fakeLiveSecretPolicy{}),
+		}
+		results := make([]model.PublishResult, len(requests))
+		errs := make([]error, len(requests))
+		start := make(chan struct{})
+		var group sync.WaitGroup
+		for index := range requests {
+			group.Add(1)
+			go func(index int) {
+				defer group.Done()
+				<-start
+				results[index], errs[index] = services[index].Publish(context.Background(), requests[index])
+			}(index)
+		}
+		close(start)
+		group.Wait()
+		for index, err := range errs {
+			if err != nil || len(results[index].Accepted) != 1 || len(results[index].Conflicts) != 0 {
+				t.Fatalf("disjoint result %d = %#v, %v", index, results[index], err)
+			}
+		}
+		state := harness.state(t)
+		want := []model.Identity{alias, environment}
+		if state.HeadRevision != 3 || !reflect.DeepEqual(state.AdmittedIdentities, want) ||
+			!serviceStateHas(state.Shared, alias, "print -- a") || !serviceStateHas(state.Shared, environment, "b") {
+			t.Fatalf("concurrent disjoint durable state = %#v, want admissions %#v", state, want)
+		}
+
+		replayed, err := reopenService(t, harness.root, fakeLiveSecretPolicy{}).Publish(context.Background(), requests[0])
+		if err != nil || !reflect.DeepEqual(replayed, results[0]) {
+			t.Fatalf("disjoint replay = %#v, %v; want %#v", replayed, err, results[0])
+		}
+		if after := harness.state(t); after.HeadRevision != 3 || !reflect.DeepEqual(after.AdmittedIdentities, want) {
+			t.Fatalf("replay duplicated durable admission: %#v", after)
+		}
+	})
+
+	t.Run("same identity", func(t *testing.T) {
+		harness := materializedServiceHarness(t, fakeLiveSecretPolicy{})
+		a := serviceCredential(t, "shell-a", 'A')
+		b := serviceCredential(t, "shell-b", 'B')
+		harness.attach(t, a, "attach-a-durable-overlap")
+		harness.attach(t, b, "attach-b-durable-overlap")
+		identity := model.Identity{Kind: model.LiveAlias, Name: "same-admission"}
+		requests := []model.PublishRequest{
+			{OperationID: "publish-a-durable-overlap", Credential: a, AcknowledgedRevision: 1, Delta: []model.LiveChange{{Kind: model.LiveAdd, Identity: identity, Value: model.ScalarLiveValue("print -- a")}}},
+			{OperationID: "publish-b-durable-overlap", Credential: b, AcknowledgedRevision: 1, Delta: []model.LiveChange{{Kind: model.LiveAdd, Identity: identity, Value: model.ScalarLiveValue("print -- b")}}},
+		}
+		services := []*Service{
+			reopenService(t, harness.root, fakeLiveSecretPolicy{}),
+			reopenService(t, harness.root, fakeLiveSecretPolicy{}),
+		}
+		results := make([]model.PublishResult, len(requests))
+		errs := make([]error, len(requests))
+		start := make(chan struct{})
+		var group sync.WaitGroup
+		for index := range requests {
+			group.Add(1)
+			go func(index int) {
+				defer group.Done()
+				<-start
+				results[index], errs[index] = services[index].Publish(context.Background(), requests[index])
+			}(index)
+		}
+		close(start)
+		group.Wait()
+		accepted := 0
+		conflicted := 0
+		for index, err := range errs {
+			if err != nil {
+				t.Fatalf("same-identity result %d error = %v", index, err)
+			}
+			accepted += len(results[index].Accepted)
+			conflicted += len(results[index].Conflicts)
+		}
+		state := harness.state(t)
+		if accepted != 1 || conflicted != 1 || state.HeadRevision != 2 ||
+			!reflect.DeepEqual(state.AdmittedIdentities, []model.Identity{identity}) {
+			t.Fatalf("same-identity arbitration results=%#v state=%#v", results, state)
+		}
+	})
 }
 
 func TestConcurrentOverlapFirstPublicationWinsAndLoserRemainsUnpublished(t *testing.T) {
