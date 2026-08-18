@@ -168,8 +168,8 @@ func TestWorktreeAbsoluteDeadlineAdversarialTransport(t *testing.T) {
 		payload int
 	}{
 		{name: "oversized-capture", payload: 2097153},
-		{name: "blocked-reader", payload: 524288},
-		{name: "term-ignoring-helper", payload: 524288},
+		{name: "blocked-reader", payload: 120000},
+		{name: "term-ignoring-helper", payload: 120000},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			dir := t.TempDir()

@@ -756,22 +756,114 @@ _zp_worktree_write_frame() {
   (( ZP_WORKTREE_FRAME_RECORDS_WRITTEN == record_count ))
 }
 
+_zp_worktree_close_transport_fd() {
+	local name="$1" fd="${(P)1}"
+	: ${(P)name::=-1}
+	if [[ "$fd" == <-> ]] && (( fd >= 0 )); then
+		exec {fd}>&- || :
+	fi
+}
+
+_zp_worktree_close_coproc_endpoints() {
+	local baseline_name="$1" read_fd="$2" write_fd="$3" fd
+	local -a baseline current
+	[[ -d /proc/$$/fd ]] || return 1
+	baseline=("${(@P)baseline_name}")
+	current=(/proc/$$/fd/*(N:t))
+	for fd in "${current[@]}"; do
+		[[ "$fd" == <-> ]] || continue
+		(( ${baseline[(Ie)$fd]} == 0 )) || continue
+		[[ "$fd" != "$read_fd" && "$fd" != "$write_fd" ]] || continue
+		[[ -p "/proc/$$/fd/$fd" ]] || continue
+		coproc_fds+=("$fd")
+	done
+}
+
+_zp_worktree_close_owned_fd() {
+	local fd="$1"
+	[[ "$fd" == <-> ]] && (( fd >= 0 )) || return 0
+	exec {fd}>&- || :
+}
+
+_zp_worktree_pid_owned() {
+	local pid="$1" children=''
+	[[ "$pid" == <-> ]] && (( pid > 1 )) || return 1
+	[[ -r "/proc/$$/task/$$/children" ]] || return 1
+	IFS= read -r children < "/proc/$$/task/$$/children" || :
+	[[ " $children " == *" $pid "* ]]
+}
+
+_zp_worktree_reap_exited_pid() {
+	local pid_name="$1" status_name="$2" pid="${(P)1}" child_status=0
+	[[ "$pid" == <-> ]] && (( pid > 0 )) || { : ${(P)pid_name::=0}; return 0; }
+	kill -0 "$pid" 2>/dev/null && return 1
+	if wait "$pid" 2>/dev/null; then child_status=0; else child_status=$?; fi
+	[[ -z "$status_name" ]] || : ${(P)status_name::=$child_status}
+	: ${(P)pid_name::=0}
+	return 0
+}
+
+_zp_worktree_abort_transport() {
+	local deadline="$1" termination_deadline="$2" name pid now
+	local kill_deadline=$(( deadline - 0.010 ))
+	local -a pid_names=(writer_pid helper_pid closer_pid)
+	_zp_worktree_close_transport_fd write_fd
+	_zp_worktree_close_transport_fd read_fd
+	_zp_worktree_reap_exited_pid writer_pid frame_rc || :
+	_zp_worktree_reap_exited_pid helper_pid wait_rc || :
+	_zp_worktree_reap_exited_pid closer_pid '' || :
+	for name in "${pid_names[@]}"; do
+		pid="${(P)name}"
+		(( pid > 0 )) || continue
+		_zp_worktree_pid_owned "$pid" && kill -TERM "$pid" 2>/dev/null || :
+	done
+	while true; do
+		_zp_worktree_reap_exited_pid writer_pid frame_rc || :
+		_zp_worktree_reap_exited_pid helper_pid wait_rc || :
+		_zp_worktree_reap_exited_pid closer_pid '' || :
+		(( writer_pid == 0 && helper_pid == 0 && closer_pid == 0 )) && return 124
+		now="${EPOCHREALTIME-0}"
+		(( now < kill_deadline )) || break
+	done
+	for name in "${pid_names[@]}"; do
+		pid="${(P)name}"
+		(( pid > 0 )) || continue
+		_zp_worktree_pid_owned "$pid" && kill -KILL "$pid" 2>/dev/null || :
+	done
+	while true; do
+		_zp_worktree_reap_exited_pid writer_pid frame_rc || :
+		_zp_worktree_reap_exited_pid helper_pid wait_rc || :
+		_zp_worktree_reap_exited_pid closer_pid '' || :
+		(( writer_pid == 0 && helper_pid == 0 && closer_pid == 0 )) && return 124
+		now="${EPOCHREALTIME-0}"
+		(( now < deadline )) || break
+	done
+	_zp_worktree_reap_exited_pid writer_pid frame_rc || :
+	_zp_worktree_reap_exited_pid helper_pid wait_rc || :
+	_zp_worktree_reap_exited_pid closer_pid '' || :
+	return 124
+}
+
 _zp_worktree_invoke() {
   local operation="$1" result_name="$2" mode="$3" operation_id="$4" revision="$5" token="$6"
   local identity_kind="$7" identity_name="$8" apply_name="$9" reverse_name="${10}"
   local baseline_fields="${11}" baseline_counts="${12}" current_fields="${13}" current_counts="${14}"
 	local deadline="${15}"
-	local captured='' line='' rc=1 xtrace_was_on=0 history_pushed=0 helper_pid=0 closer_pid=0
+	local termination_deadline=$(( deadline - 0.025 ))
+	local captured='' line='' rc=1 xtrace_was_on=0 history_pushed=0 helper_pid=0 writer_pid=0 closer_pid=0
 	local read_fd=-1 write_fd=-1 remaining wait_rc=0 frame_rc=0
+	local -a transport_base_fds coproc_fds
 	local ZP_WORKTREE_CALL_CAPABILITY=''
 	: ${(P)result_name::=}
 	{
 		[[ -n "$deadline" ]] || return 1
-		_zp_worktree_budget_check "$deadline" || return 124
+		_zp_worktree_budget_check "$termination_deadline" || return 124
 		[[ -o xtrace ]] && xtrace_was_on=1
 		setopt NOXTRACE 2>/dev/null || return 1
 		ZP_WORKTREE_CALL_CAPABILITY="$ZP_WORKTREE_CAPABILITY"
 		if fc -p 2>/dev/null; then history_pushed=1; else return 1; fi
+		[[ -d /proc/$$/fd ]] || return 1
+		transport_base_fds=(/proc/$$/fd/*(N:t))
 		case "$operation" in
 			attach)
 				coproc command zsh-pro runtime worktree attach 1 2>/dev/null
@@ -797,46 +889,46 @@ _zp_worktree_invoke() {
 		# the two private duplicates remain owned by this call.
 		coproc :
 		closer_pid=$!
-		( _zp_worktree_write_frame "$operation" "$mode" "$operation_id" "$revision" "$token" "$identity_kind" "$identity_name" "$apply_name" "$reverse_name" "$baseline_fields" "$baseline_counts" "$current_fields" "$current_counts" "$deadline" ) >&$write_fd || frame_rc=$?
-		exec {write_fd}>&-
-		write_fd=-1
-		if (( frame_rc != 0 )); then
-			exec {read_fd}<&-
-			read_fd=-1
-			if wait "$helper_pid" 2>/dev/null; then wait_rc=0; else wait_rc=$?; fi
-			wait "$closer_pid" 2>/dev/null || :
-			helper_pid=0 closer_pid=0
-			(( wait_rc != 0 )) && return "$wait_rc"
-			return "$frame_rc"
-		fi
+		_zp_worktree_close_coproc_endpoints transport_base_fds "$read_fd" "$write_fd" || return 1
+		for fd in "${coproc_fds[@]}"; do _zp_worktree_close_owned_fd "$fd"; done
+		coproc_fds=()
+		( _zp_worktree_write_frame "$operation" "$mode" "$operation_id" "$revision" "$token" "$identity_kind" "$identity_name" "$apply_name" "$reverse_name" "$baseline_fields" "$baseline_counts" "$current_fields" "$current_counts" "$deadline" ) >&$write_fd &
+		writer_pid=$!
+		_zp_worktree_close_transport_fd write_fd
 		while true; do
-			remaining=$(( deadline - EPOCHREALTIME ))
+			remaining=$(( termination_deadline - EPOCHREALTIME ))
 			if (( remaining <= 0 )); then rc=124; break; fi
 			if IFS= read -r -t "$remaining" line <&$read_fd; then
 				captured+="$line"$'\n'
 				(( ${#captured} <= 2101248 )) || { rc=1; break; }
 				continue
 			fi
-			if _zp_worktree_budget_check "$deadline"; then rc=0; else rc=124; fi
+			if _zp_worktree_budget_check "$termination_deadline"; then rc=0; else rc=124; fi
 			break
 		done
-		exec {read_fd}<&-
-		read_fd=-1
-		if (( rc == 124 )); then kill -TERM "$helper_pid" 2>/dev/null || :; fi
-		if wait "$helper_pid" 2>/dev/null; then wait_rc=0; else wait_rc=$?; fi
-		if (( rc != 124 && wait_rc != 0 )); then rc=$wait_rc; fi
-		wait "$closer_pid" 2>/dev/null || :
-		helper_pid=0 closer_pid=0
+		_zp_worktree_close_transport_fd read_fd
+		if (( rc != 0 )); then
+			_zp_worktree_abort_transport "$deadline" "$termination_deadline"
+			return 124
+		fi
+		while (( writer_pid > 0 || helper_pid > 0 || closer_pid > 0 )); do
+			_zp_worktree_reap_exited_pid writer_pid frame_rc || :
+			_zp_worktree_reap_exited_pid helper_pid wait_rc || :
+			_zp_worktree_reap_exited_pid closer_pid '' || :
+			(( writer_pid == 0 && helper_pid == 0 && closer_pid == 0 )) && break
+			_zp_worktree_budget_check "$termination_deadline" || { _zp_worktree_abort_transport "$deadline" "$termination_deadline"; return 124; }
+		done
+		if (( wait_rc != 0 )); then rc=$wait_rc; elif (( frame_rc != 0 )); then rc=$frame_rc; fi
 		if (( rc == 0 )); then
 			captured="${captured%$'\n'}"
 			: ${(P)result_name::=$captured}
 		fi
 	} always {
-		if (( write_fd >= 0 )); then exec {write_fd}>&- 2>/dev/null || :; fi
-		if (( read_fd >= 0 )); then exec {read_fd}<&- 2>/dev/null || :; fi
-		if (( helper_pid > 0 )); then kill -TERM "$helper_pid" 2>/dev/null || :; wait "$helper_pid" 2>/dev/null || :; fi
-		if (( closer_pid > 0 )); then wait "$closer_pid" 2>/dev/null || :; fi
-		captured='' line='' ZP_WORKTREE_CALL_CAPABILITY='' operation_id='' token='' deadline='' remaining=''
+		if (( write_fd >= 0 || read_fd >= 0 || helper_pid > 0 || writer_pid > 0 || closer_pid > 0 )); then
+			_zp_worktree_abort_transport "$deadline" "$termination_deadline" || :
+		fi
+		captured='' line='' ZP_WORKTREE_CALL_CAPABILITY='' operation_id='' token='' deadline='' termination_deadline='' remaining=''
+		transport_base_fds=() coproc_fds=()
 		if (( history_pushed )); then fc -P 2>/dev/null || :; fi
     if (( xtrace_was_on )); then setopt XTRACE 2>/dev/null || :; else setopt NOXTRACE 2>/dev/null || :; fi
     unset REPLY
