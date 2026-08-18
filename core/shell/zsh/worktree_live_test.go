@@ -156,6 +156,91 @@ func processAlive(pid int) bool {
 	return pid > 0 && syscall.Kill(pid, 0) == nil
 }
 
+func TestWorktreePortableOwnedTransport(t *testing.T) {
+	script := (Provider{}).HookScript()
+	if strings.Contains(script, "/proc/") {
+		t.Fatal("portable transport still has a procfs ownership gate")
+	}
+	for _, want := range []string{
+		"writer_state", "helper_state", "closer_state",
+		"writer_job", "helper_job", "closer_job",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("portable transport does not record %q", want)
+		}
+	}
+	if t.Failed() {
+		return
+	}
+
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Fatal("git is required for the portable retained-zsh contract")
+	}
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Fatal("zsh is required for the portable retained-zsh contract")
+	}
+
+	testRoot, binary := buildFirstSyncBinary(t)
+	fixture := newFirstSyncFixture(t, testRoot, binary, "portable-owned-transport")
+	shell, callLog := fixture.shell(t, "timeout")
+	command := firstSyncCredentialPrelude() + "\nsource " + worktreeShellQuote(fixture.loader) + ` || return 10
+typeset -gi portable_jobs_before=${#jobstates}
+zsh-pro sync
+timeout_rc=$?
+timeout_revision=$ZP_WORKTREE_APPLIED_REVISION
+timeout_error=${#ZP_WORKTREE_LAST_ERROR}
+PATH=` + worktreeShellQuote(filepath.Dir(binary)+":"+fixture.basePath) + `
+rehash
+zsh-pro sync
+valid_rc=$?
+print -r -- "result:$timeout_rc:$timeout_revision:$timeout_error:$valid_rc:$ZP_WORKTREE_APPLIED_REVISION:${#ZP_WORKTREE_LAST_ERROR}:$portable_jobs_before:${#jobstates}:${aliases[zp15_first_sync]-unset}"
+`
+	started := time.Now()
+	output, rc := shell.runWithin(t, command, 1500*time.Millisecond)
+	if rc != 0 {
+		t.Fatalf("portable timeout/retry flow returned %d after %s: %q", rc, time.Since(started), output)
+	}
+	fields := strings.Split(strings.TrimSpace(output), ":")
+	if len(fields) != 10 || fields[0] != "result" || fields[1] == "0" || fields[2] != "0" || fields[3] == "0" ||
+		fields[4] != "0" || fields[5] != "2" || fields[6] != "0" || fields[7] != fields[8] ||
+		fields[9] != "print -r -- "+firstSyncCanonicalValue {
+		t.Fatalf("portable timeout/retry state = %q", output)
+	}
+	if elapsed := time.Since(started); elapsed >= 1500*time.Millisecond {
+		t.Fatalf("portable timeout/retry exceeded allowance: %s", elapsed)
+	}
+	calls, err := os.ReadFile(callLog)
+	if err != nil || !strings.Contains(string(calls), "attach\n") || !strings.Contains(string(calls), "prepare\n") {
+		t.Fatalf("portable flow did not exercise attach and prepare: %q, %v", calls, err)
+	}
+
+	sentinel := filepath.Join(fixture.testRoot, "unrelated-signalled")
+	ownership := shell.runOK(t, `
+trap 'print -r -- signalled > `+worktreeShellQuote(sentinel)+`' TERM
+sleep 5 & unrelated_pid=$!
+typeset -gi writer_pid=$unrelated_pid helper_pid=0 closer_pid=0
+typeset -gi writer_job=0 helper_job=0 closer_job=0
+typeset writer_state='' helper_state='' closer_state=''
+typeset -gi write_fd=-1 read_fd=-1 frame_rc=0 wait_rc=0
+deadline=$(( EPOCHREALTIME + 0.050 ))
+_zp_worktree_abort_transport "$deadline" "$(( deadline - 0.025 ))" || :
+kill -0 "$unrelated_pid" 2>/dev/null || return 30
+[[ ! -e `+worktreeShellQuote(sentinel)+` ]] || return 31
+kill -TERM "$unrelated_pid" 2>/dev/null || :
+wait "$unrelated_pid" 2>/dev/null || :
+print -r -- unrelated-unsignalled
+`)
+	if ownership != "unrelated-unsignalled\n" {
+		t.Fatalf("transport signalled an unrecorded or PID-reused process: %q", ownership)
+	}
+	if _, err := os.Stat(sentinel); !os.IsNotExist(err) {
+		t.Fatalf("unrelated process observed a transport signal: %v", err)
+	}
+	if next := shell.runOK(t, "print -r -- next-command-sentinel"); next != "next-command-sentinel\n" {
+		t.Fatalf("retained shell unusable after portable ownership probe: %q", next)
+	}
+}
+
 func TestWorktreeAbsoluteDeadlineAdversarialTransport(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("requires Linux /proc process and descriptor evidence")
