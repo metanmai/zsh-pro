@@ -356,7 +356,7 @@ __zp_cr03_apply || exit 11
 		"complete changed":        []byte(body + strings.Replace(footer, "COMPLETE='1'", "COMPLETE='0'", 1)),
 		"missing field":           []byte(body + strings.Join([]string{lines[0], lines[1], lines[3], lines[4]}, "\n") + "\n"),
 		"reordered fields":        []byte(body + strings.Join([]string{lines[0], lines[2], lines[1], lines[3], lines[4]}, "\n") + "\n"),
-		"duplicated field":        []byte(body + strings.Join([]string{lines[0], lines[0], lines[1], lines[2], lines[3], lines[4]}, "\n") + "\n"),
+		"duplicated field":        []byte(body + strings.Join([]string{lines[0], lines[1], lines[1], lines[2], lines[3], lines[4]}, "\n") + "\n"),
 		"trailing bytes":          append(append([]byte(nil), source...), []byte("# trailer\n")...),
 		"invalid zsh with footer": []byte("if then\n" + footer),
 	}

@@ -629,7 +629,8 @@ func validateRuntimePatchPayload(ctx context.Context, payload runtimePatchPayloa
 			"typeset -g ZP_WORKTREE_REPLY_COMPLETE='1'\n",
 		payload.metadata.Revision, payload.metadata.Token, payload.metadata.Fingerprint,
 	)
-	if !bytes.HasSuffix(payload.source, []byte(wantFooter)) || bytes.Count(payload.source, []byte("ZP_WORKTREE_REPLY_PROTOCOL=")) != 1 || bytes.Count(payload.source, []byte("ZP_WORKTREE_REPLY_REVISION=")) != 1 || bytes.Count(payload.source, []byte("ZP_WORKTREE_REPLY_TOKEN=")) != 1 || bytes.Count(payload.source, []byte("ZP_WORKTREE_REPLY_FINGERPRINT=")) != 1 || bytes.Count(payload.source, []byte("ZP_WORKTREE_REPLY_COMPLETE=")) != 1 {
+	footer := []byte(wantFooter)
+	if len(payload.source) < len(footer) || !bytes.Equal(payload.source[len(payload.source)-len(footer):], footer) {
 		return nil, errors.New("runtime worktree transition footer is invalid")
 	}
 	if err := validateRuntimeSource(ctx, bytes.NewReader(payload.source)); err != nil {
