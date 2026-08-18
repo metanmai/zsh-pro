@@ -841,9 +841,6 @@ func TestRecoveredPersistenceOperationScopedLifecycle(t *testing.T) {
 }
 
 func TestRecoveredPersistenceConcurrentReopen(t *testing.T) {
-	if _, ok := reflect.TypeOf(stateStoreFaults{}).FieldByName("beforeLockAcquisition"); !ok {
-		t.Fatal("deterministic pre-lock barrier seam is missing")
-	}
 	root := privateStateRoot(t)
 	seed := seedStateStore(t, root)
 	seed.faults.forensicAppend = func(int, []byte) (int, error) {
@@ -874,34 +871,37 @@ func TestRecoveredPersistenceConcurrentReopen(t *testing.T) {
 		}
 		defer closeStateStore(t, stores[index])
 	}
-	heldLock, err := os.OpenFile(filepath.Join(root, stateLockFileName), os.O_RDWR, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer closeTestFile(t, heldLock)
-	if err := syscall.Flock(int(heldLock.Fd()), syscall.LOCK_EX); err != nil {
-		t.Fatal(err)
+	ready := make(chan struct{}, len(stores))
+	release := make(chan struct{})
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
+	for _, store := range stores {
+		store.faults.beforeLockAcquisition = func() {
+			ready <- struct{}{}
+			<-release
+		}
 	}
 
 	type result struct {
 		state State
 		err   error
 	}
-	started := make(chan struct{}, len(stores))
 	results := make(chan result, len(stores))
 	for _, store := range stores {
 		go func(store *StateStore) {
-			started <- struct{}{}
 			state, err := store.Read(context.Background())
 			results <- result{state: state, err: err}
 		}(store)
 	}
 	for range stores {
-		<-started
+		<-ready
 	}
-	if err := syscall.Flock(int(heldLock.Fd()), syscall.LOCK_UN); err != nil {
-		t.Fatal(err)
-	}
+	close(release)
 	for range stores {
 		result := <-results
 		if result.err != nil {

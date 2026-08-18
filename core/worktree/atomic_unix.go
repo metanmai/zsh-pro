@@ -46,14 +46,15 @@ type stateRootMetadata struct {
 }
 
 type stateStoreFaults struct {
-	write          func(int, []byte) (int, error)
-	fileSync       func(int) error
-	rename         func(int, string, int, string) error
-	dirSync        func(int) error
-	forensicAppend func(int, []byte) (int, error)
-	beforeRename   func() error
-	afterRename    func() error
-	afterDirSync   func() error
+	write                 func(int, []byte) (int, error)
+	fileSync              func(int) error
+	rename                func(int, string, int, string) error
+	dirSync               func(int) error
+	forensicAppend        func(int, []byte) (int, error)
+	beforeLockAcquisition func()
+	beforeRename          func() error
+	afterRename           func() error
+	afterDirSync          func() error
 }
 
 // StateStore owns a duplicate of one authenticated private runtime-root
@@ -173,6 +174,9 @@ func (s *StateStore) WithTransaction(ctx context.Context, mutate func(*State) er
 		return err
 	}
 	defer func() { _ = lock.Close() }()
+	if s.faults.beforeLockAcquisition != nil {
+		s.faults.beforeLockAcquisition()
+	}
 	if err := acquireStateLock(ctx, int(lock.Fd())); err != nil {
 		return err
 	}
