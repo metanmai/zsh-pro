@@ -124,6 +124,35 @@ func (registry *Registry) Seed(profile model.Profile) error {
 	return nil
 }
 
+// RestoreAdmitted merges durable value-free admissions into source ownership
+// after re-running the same live-value policy. Restoration is all-or-nothing
+// and never changes SecretRef pinning established by Seed.
+func (registry *Registry) RestoreAdmitted(identities []model.Identity) error {
+	if registry == nil {
+		return errors.New("live registry is unavailable")
+	}
+	seen := make(map[model.Identity]struct{}, len(identities))
+	for _, identity := range identities {
+		if _, duplicate := seen[identity]; duplicate {
+			return errors.New("durable admitted identity list contains a duplicate")
+		}
+		seen[identity] = struct{}{}
+		if registry.exclusionReason(identity) != "" {
+			return errors.New("durable admitted identity is unsafe")
+		}
+	}
+
+	owned := make(map[model.Identity]struct{}, len(registry.owned)+len(identities))
+	for identity := range registry.owned {
+		owned[identity] = struct{}{}
+	}
+	for _, identity := range identities {
+		owned[identity] = struct{}{}
+	}
+	registry.owned = owned
+	return nil
+}
+
 func (registry *Registry) Owns(identity model.Identity) bool {
 	if registry == nil {
 		return false

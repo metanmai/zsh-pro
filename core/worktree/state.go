@@ -134,12 +134,15 @@ type State struct {
 	Committed          model.CommittedWorktree
 	HeadRevision       uint64
 	AutoApplyDefault   bool
+	AdmittedIdentities []model.Identity
 	Shared             []model.LiveIdentityState
 	CompactionFloor    uint64
 	CompactionBaseline []model.LiveIdentityState
 	Events             []StateEvent
 	Shells             map[string]ShellState
 	OperationReceipts  []OperationReceipt
+
+	admittedIdentitiesMissing bool
 }
 
 type stateDTO struct {
@@ -150,6 +153,7 @@ type stateDTO struct {
 	Committed          model.CommittedWorktree   `json:"committed"`
 	HeadRevision       uint64                    `json:"head_revision"`
 	AutoApplyDefault   bool                      `json:"auto_apply_default"`
+	AdmittedIdentities *[]model.Identity         `json:"admitted_identities,omitempty"`
 	Shared             []model.LiveIdentityState `json:"shared"`
 	CompactionFloor    uint64                    `json:"compaction_floor"`
 	CompactionBaseline []model.LiveIdentityState `json:"compaction_baseline"`
@@ -225,6 +229,13 @@ func UnmarshalState(payload []byte) (State, error) {
 	if err := requireStateEOF(decoder); err != nil {
 		return State{}, err
 	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &fields); err != nil {
+		return State{}, fmt.Errorf("decode worktree state fields: %w", err)
+	}
+	if admitted, present := fields["admitted_identities"]; present && bytes.Equal(bytes.TrimSpace(admitted), []byte("null")) {
+		return State{}, errors.New("admitted identities cannot be null")
+	}
 	state, err := fromStateDTO(dto)
 	if err != nil {
 		return State{}, err
@@ -251,7 +262,7 @@ func ValidateState(state State) error {
 		return fmt.Errorf("worktree state schema %d is unsupported", state.SchemaVersion)
 	}
 	if !state.Materialized {
-		if state.Branch != "" || state.BaseOID != "" || state.HeadRevision != 0 || len(state.Shared) != 0 || len(state.Events) != 0 || len(state.Shells) != 0 || len(state.OperationReceipts) != 0 {
+		if state.Branch != "" || state.BaseOID != "" || state.HeadRevision != 0 || len(state.AdmittedIdentities) != 0 || len(state.Shared) != 0 || len(state.Events) != 0 || len(state.Shells) != 0 || len(state.OperationReceipts) != 0 {
 			return errors.New("unmaterialized worktree state carries causal data")
 		}
 		return nil
@@ -263,6 +274,9 @@ func ValidateState(state State) error {
 		return errors.New("worktree revision bounds are invalid")
 	}
 	if err := validateCommitted(state.Committed); err != nil {
+		return err
+	}
+	if err := validateAdmittedIdentities(state.AdmittedIdentities); err != nil {
 		return err
 	}
 	if err := validatePresentStates(state.Shared); err != nil {
@@ -575,6 +589,40 @@ func validateIdentityList(identities []model.Identity) error {
 	return nil
 }
 
+func validateAdmittedIdentities(identities []model.Identity) error {
+	if len(identities) > model.MaxSnapshotRecords {
+		return errors.New("admitted identity record limit exceeded")
+	}
+	var semanticBytes uint64
+	for index, identity := range identities {
+		if err := model.ValidateIdentity(identity); err != nil {
+			return errors.New("admitted identity is invalid")
+		}
+		semanticBytes += uint64(len(identity.Kind)) + uint64(len(identity.Name)) + 2
+		if semanticBytes > model.MaxSnapshotBytes {
+			return errors.New("admitted identity payload limit exceeded")
+		}
+		if index == 0 {
+			continue
+		}
+		previous := identities[index-1]
+		if previous == identity {
+			return errors.New("admitted identity list contains a duplicate")
+		}
+		if !admittedIdentityLess(previous, identity) {
+			return errors.New("admitted identity list is not canonical")
+		}
+	}
+	return nil
+}
+
+func admittedIdentityLess(left, right model.Identity) bool {
+	if left.Kind != right.Kind {
+		return left.Kind < right.Kind
+	}
+	return left.Name < right.Name
+}
+
 func CompactStateHistory(state *State) error {
 	if state == nil || state.CompactionFloor > state.HeadRevision {
 		return errors.New("worktree state cannot be compacted")
@@ -713,6 +761,13 @@ func validTransitionValue(value ShellTransition) bool {
 
 func toStateDTO(state State) stateDTO {
 	dto := stateDTO{SchemaVersion: state.SchemaVersion, Materialized: state.Materialized, Branch: state.Branch, BaseOID: state.BaseOID, Committed: cloneCommitted(state.Committed), HeadRevision: state.HeadRevision, AutoApplyDefault: state.AutoApplyDefault, Shared: model.CloneLiveStates(state.Shared), CompactionFloor: state.CompactionFloor, CompactionBaseline: model.CloneLiveStates(state.CompactionBaseline), Events: cloneEvents(state.Events), Shells: make(map[string]shellStateDTO, len(state.Shells)), OperationReceipts: make([]operationReceiptDTO, len(state.OperationReceipts))}
+	if !state.admittedIdentitiesMissing {
+		admitted := cloneIdentities(state.AdmittedIdentities)
+		if admitted == nil {
+			admitted = make([]model.Identity, 0)
+		}
+		dto.AdmittedIdentities = &admitted
+	}
 	for id, shell := range state.Shells {
 		dto.Shells[id] = toShellDTO(shell)
 	}
@@ -726,7 +781,10 @@ func toStateDTO(state State) stateDTO {
 }
 
 func fromStateDTO(dto stateDTO) (State, error) {
-	state := State{SchemaVersion: dto.SchemaVersion, Materialized: dto.Materialized, Branch: dto.Branch, BaseOID: dto.BaseOID, Committed: cloneCommitted(dto.Committed), HeadRevision: dto.HeadRevision, AutoApplyDefault: dto.AutoApplyDefault, Shared: model.CloneLiveStates(dto.Shared), CompactionFloor: dto.CompactionFloor, CompactionBaseline: model.CloneLiveStates(dto.CompactionBaseline), Events: cloneEvents(dto.Events), Shells: make(map[string]ShellState, len(dto.Shells)), OperationReceipts: make([]OperationReceipt, len(dto.OperationReceipts))}
+	state := State{SchemaVersion: dto.SchemaVersion, Materialized: dto.Materialized, Branch: dto.Branch, BaseOID: dto.BaseOID, Committed: cloneCommitted(dto.Committed), HeadRevision: dto.HeadRevision, AutoApplyDefault: dto.AutoApplyDefault, Shared: model.CloneLiveStates(dto.Shared), CompactionFloor: dto.CompactionFloor, CompactionBaseline: model.CloneLiveStates(dto.CompactionBaseline), Events: cloneEvents(dto.Events), Shells: make(map[string]ShellState, len(dto.Shells)), OperationReceipts: make([]OperationReceipt, len(dto.OperationReceipts)), admittedIdentitiesMissing: dto.AdmittedIdentities == nil}
+	if dto.AdmittedIdentities != nil {
+		state.AdmittedIdentities = cloneIdentities(*dto.AdmittedIdentities)
+	}
 	for id, shellDTO := range dto.Shells {
 		shell, err := fromShellDTO(shellDTO)
 		if err != nil {
