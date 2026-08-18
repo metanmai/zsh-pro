@@ -9,9 +9,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"zsh-pro/core/worktree"
 )
@@ -96,6 +99,180 @@ func (shell *retainedWorktreeShell) close() {
 	_ = shell.stdin.Close()
 	if err := shell.cmd.Wait(); err != nil && shell.cmd.ProcessState == nil {
 		_ = shell.cmd.Process.Kill()
+	}
+}
+
+func (shell *retainedWorktreeShell) runWithin(t *testing.T, source string, limit time.Duration) (string, int) {
+	t.Helper()
+	type result struct {
+		output string
+		rc     int
+	}
+	done := make(chan result, 1)
+	go func() {
+		output, rc := shell.run(t, source)
+		done <- result{output: output, rc: rc}
+	}()
+	select {
+	case completed := <-done:
+		return completed.output, completed.rc
+	case <-time.After(limit):
+		_ = shell.cmd.Process.Kill()
+		_ = shell.stdin.Close()
+		_ = shell.cmd.Wait()
+		t.Fatalf("retained shell exceeded absolute-deadline allowance %s", limit)
+		return "", -1
+	}
+}
+
+func processPipeCount(t *testing.T, pid int) int {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join("/proc", strconv.Itoa(pid), "fd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, entry := range entries {
+		target, err := os.Readlink(filepath.Join("/proc", strconv.Itoa(pid), "fd", entry.Name()))
+		if err == nil && strings.HasPrefix(target, "pipe:[") {
+			count++
+		}
+	}
+	return count
+}
+
+func processChildren(t *testing.T, pid int) []string {
+	t.Helper()
+	payload, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "task", strconv.Itoa(pid), "children"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.Fields(string(payload))
+}
+
+func processAlive(pid int) bool {
+	return pid > 0 && syscall.Kill(pid, 0) == nil
+}
+
+func TestWorktreeAbsoluteDeadlineAdversarialTransport(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("requires Linux /proc process and descriptor evidence")
+	}
+	zshPath, err := exec.LookPath("zsh")
+	if err != nil {
+		t.Skip("zsh not installed")
+	}
+
+	for _, test := range []struct {
+		name    string
+		payload int
+	}{
+		{name: "oversized-capture", payload: 2097153},
+		{name: "blocked-reader", payload: 524288},
+		{name: "term-ignoring-helper", payload: 524288},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			loader := filepath.Join(dir, "loader.zsh")
+			if err := os.WriteFile(loader, []byte((Provider{}).HookScript()), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			shim := filepath.Join(dir, "zsh-pro")
+			shimSource := `#!/bin/sh
+printf '%s\n' "$$" > "$ZP_WORKTREE_TEST_DIR/helper-pid"
+case "$ZP_WORKTREE_ADVERSARY" in
+  oversized-capture) exit 99 ;;
+  blocked-reader) while :; do :; done ;;
+  term-ignoring-helper)
+    cat >/dev/null
+    trap '' TERM
+    while :; do :; done
+    ;;
+  *) exit 98 ;;
+esac
+`
+			if err := os.WriteFile(shim, []byte(shimSource), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			home := filepath.Join(dir, "home")
+			if err := os.Mkdir(home, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			env := []string{
+				"HOME=" + home,
+				"ZDOTDIR=" + home,
+				"ZSHPRO_HOME=" + filepath.Join(dir, "runtime"),
+				"PATH=" + dir + ":/usr/bin:/bin",
+				"TERM=dumb",
+				"LC_ALL=C",
+				"ZP_WORKTREE_TEST_DIR=" + dir,
+				"ZP_WORKTREE_ADVERSARY=" + test.name,
+			}
+			shell := startRetainedWorktreeShell(t, zshPath, dir, env)
+			pidFile := filepath.Join(dir, "helper-pid")
+			t.Cleanup(func() {
+				payload, readErr := os.ReadFile(pidFile)
+				if readErr != nil {
+					return
+				}
+				pid, _ := strconv.Atoi(strings.TrimSpace(string(payload)))
+				if processAlive(pid) {
+					_ = syscall.Kill(pid, syscall.SIGKILL)
+				}
+			})
+
+			beforePipes := processPipeCount(t, shell.cmd.Process.Pid)
+			setup := fmt.Sprintf(`
+source %s || return 10
+typeset -g ZP_WORKTREE_ATTACHED=1 ZP_WORKTREE_ATTACHED_NOW=0 ZP_WORKTREE_APPLIED_REVISION=1
+typeset -g ZP_WORKTREE_SHELL_ID=${(l:64::a:)} ZP_WORKTREE_CAPABILITY=${(l:64::b:)}
+seed_deadline=$(( EPOCHREALTIME + 1 ))
+_zp_worktree_capture "$seed_deadline" || return 11
+ZP_WORKTREE_BASELINE_FIELDS=("${_ZP_WORKTREE_CAPTURE_FIELDS[@]}")
+ZP_WORKTREE_BASELINE_COUNTS=("${_ZP_WORKTREE_CAPTURE_COUNTS[@]}")
+_ZP_WORKTREE_CAPTURE_FIELDS=() _ZP_WORKTREE_CAPTURE_COUNTS=()
+export ZP_DEADLINE_CANARY=${(l:%d::q:)}
+_zp_worktree_precmd
+hook_rc=$?
+zsh-pro sync
+explicit_rc=$?
+print -r -- "result:$hook_rc:$explicit_rc:$ZP_WORKTREE_APPLIED_REVISION:${#ZP_WORKTREE_LAST_ERROR}:${#_ZP_WORKTREE_CAPTURE_FIELDS}:${#_ZP_WORKTREE_CAPTURE_COUNTS}:${+ZP_WORKTREE_REPLY_COMPLETE}:${#jobstates}"
+`, worktreeShellQuote(loader), test.payload)
+			started := time.Now()
+			output, rc := shell.runWithin(t, setup, 1200*time.Millisecond)
+			elapsed := time.Since(started)
+			if rc != 0 {
+				t.Fatalf("adversarial operation returned %d after %s: %q", rc, elapsed, output)
+			}
+			fields := strings.Split(strings.TrimSpace(output), ":")
+			if len(fields) != 9 || fields[0] != "result" || fields[1] != "0" || fields[2] == "0" || fields[3] != "1" || fields[5] != "0" || fields[6] != "0" || fields[7] != "0" || fields[8] != "0" {
+				t.Fatalf("fail-open state after %s = %q", test.name, output)
+			}
+			if sentinel := shell.runOK(t, "print -r -- next-command-sentinel"); sentinel != "next-command-sentinel\n" {
+				t.Fatalf("next command after %s = %q", test.name, sentinel)
+			}
+			if children := processChildren(t, shell.cmd.Process.Pid); len(children) != 0 {
+				t.Fatalf("%s retained child processes: %v", test.name, children)
+			}
+			if afterPipes := processPipeCount(t, shell.cmd.Process.Pid); afterPipes != beforePipes {
+				t.Fatalf("%s pipe descriptors = %d, want baseline %d", test.name, afterPipes, beforePipes)
+			}
+			if payload, readErr := os.ReadFile(pidFile); readErr == nil {
+				pid, parseErr := strconv.Atoi(strings.TrimSpace(string(payload)))
+				if parseErr != nil || processAlive(pid) {
+					t.Fatalf("%s helper was not reaped: pid=%q", test.name, payload)
+				}
+			} else if test.name != "oversized-capture" {
+				t.Fatalf("%s helper did not start: %v", test.name, readErr)
+			}
+		})
+	}
+
+	script := (Provider{}).HookScript()
+	for _, want := range []string{"_zp_worktree_abort_transport() {", "writer_pid", "kill -KILL", "termination_deadline"} {
+		if !strings.Contains(script, want) {
+			t.Errorf("bounded transport missing %q", want)
+		}
 	}
 }
 
