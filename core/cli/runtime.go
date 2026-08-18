@@ -579,7 +579,11 @@ func encodeRuntimeAttachResult(result model.AttachResult) ([]byte, error) {
 	if result.Revision == 0 || !result.Attached {
 		return nil, errors.New("runtime worktree attach result is invalid")
 	}
-	return []byte(fmt.Sprintf("ZPWA %d %d 1\n", WorktreeRuntimeFrameVersion, result.Revision)), nil
+	reconcileRequired := 0
+	if result.ReconcileRequired {
+		reconcileRequired = 1
+	}
+	return []byte(fmt.Sprintf("ZPWA %d %d 1 %d\n", WorktreeRuntimeFrameVersion, result.Revision, reconcileRequired)), nil
 }
 
 func encodeRuntimePublishResult(result model.PublishResult) ([]byte, error) {

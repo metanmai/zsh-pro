@@ -85,7 +85,7 @@ func TestRuntimeWorktreeAttachAllocationAndCredentialForwarding(t *testing.T) {
 		runtimeTestRecord{tag: 32, payload: snapshot},
 	)
 	code, stdout, stderr = runRuntimeWorktreeWithStdin(t, program, root, commit, "attach")
-	if code != 0 || stdout != "ZPWA 1 1 1\n" || stderr != "" {
+	if code != 0 || stdout != "ZPWA 1 1 1 0\n" || stderr != "" {
 		t.Fatalf("attach commit = (%d, %q, %q)", code, stdout, stderr)
 	}
 	called := authority.runtime.(*runtimeTestWorktree)
@@ -213,7 +213,7 @@ func TestRuntimeWorktreeFrameExactByteAndRecordBounds(t *testing.T) {
 	}
 	authority := &runtimeTestAuthority{runtime: &runtimeTestWorktree{}}
 	program := NewWithWorktree(nil, nil, NotReadyEmitter(), authority, nil)
-	if code, stdout, stderr := runRuntimeWorktreeWithStdin(t, program, root, exact, "attach"); code != 0 || stdout != "ZPWA 1 1 1\n" || stderr != "" {
+	if code, stdout, stderr := runRuntimeWorktreeWithStdin(t, program, root, exact, "attach"); code != 0 || stdout != "ZPWA 1 1 1 0\n" || stderr != "" {
 		t.Fatalf("exact byte-bound frame = (%d, %q, %q)", code, stdout, stderr)
 	}
 
@@ -227,7 +227,7 @@ func TestRuntimeWorktreeFrameExactByteAndRecordBounds(t *testing.T) {
 	}
 	authority = &runtimeTestAuthority{runtime: &runtimeTestWorktree{}}
 	program = NewWithWorktree(nil, nil, NotReadyEmitter(), authority, nil)
-	if code, stdout, stderr := runRuntimeWorktreeWithStdin(t, program, root, runtimeTestFrame(t, records...), "attach"); code != 0 || stdout != "ZPWA 1 1 1\n" || stderr != "" {
+	if code, stdout, stderr := runRuntimeWorktreeWithStdin(t, program, root, runtimeTestFrame(t, records...), "attach"); code != 0 || stdout != "ZPWA 1 1 1 0\n" || stderr != "" {
 		t.Fatalf("exact record-bound frame = (%d, %q, %q)", code, stdout, stderr)
 	}
 
