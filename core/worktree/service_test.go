@@ -245,6 +245,54 @@ func TestFreshServiceLateShellUsesDurableAdmission(t *testing.T) {
 	}
 }
 
+func TestLegacyAdmissionMigrationUsesCanonicalSharedOnly(t *testing.T) {
+	harness := materializedServiceHarness(t, fakeLiveSecretPolicy{})
+	a := serviceCredential(t, "shell-a", 'A')
+	harness.attach(t, a, "attach-a-legacy-migration")
+	alias := model.Identity{Kind: model.LiveAlias, Name: "legacy-admitted"}
+	harness.publish(t, a, "publish-legacy-admission", 1, model.LiveChange{
+		Kind: model.LiveAdd, Identity: alias, Value: model.ScalarLiveValue("print -- legacy"),
+	})
+	if err := harness.store.WithTransaction(context.Background(), func(state *State) error {
+		state.AdmittedIdentities = nil
+		state.admittedIdentitiesMissing = true
+		shell := state.Shells[a.ShellID]
+		shell.PresentAtAttach = append(shell.PresentAtAttach, serviceIdentity("AMBIENT_NOT_SHARED"))
+		state.Shells[a.ShellID] = shell
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if raw := harness.bytes(t); bytes.Contains(raw, []byte("admitted_identities")) {
+		t.Fatalf("legacy fixture retained admitted identity field: %s", raw)
+	}
+
+	fresh := reopenService(t, harness.root, fakeLiveSecretPolicy{})
+	c := serviceCredential(t, "shell-c", 'C')
+	if _, err := fresh.Attach(context.Background(), model.AttachRequest{
+		OperationID: "attach-c-legacy-migration", Credential: c,
+		Initial: serviceSnapshot(
+			serviceState("EDITOR", "shared"),
+			model.LiveIdentityState{Identity: alias, Value: model.ScalarLiveValue("stale")},
+			serviceState("AMBIENT_NOT_SHARED", "ambient"),
+		),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	state, err := fresh.store.Read(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.admittedIdentitiesMissing || !reflect.DeepEqual(state.AdmittedIdentities, []model.Identity{alias}) {
+		t.Fatalf("legacy migration = missing %v admissions %#v", state.admittedIdentitiesMissing, state.AdmittedIdentities)
+	}
+	for _, identity := range state.AdmittedIdentities {
+		if identity == serviceIdentity("AMBIENT_NOT_SHARED") {
+			t.Fatal("shell-local present-at-attach identity migrated into canonical ownership")
+		}
+	}
+}
+
 func TestPrivateCredentialSpoofCrossShellReplayAndReceiptGuessAreValueFree(t *testing.T) {
 	harness := materializedServiceHarness(t, fakeLiveSecretPolicy{})
 	credentialA := serviceCredential(t, "shell-a", 'A')

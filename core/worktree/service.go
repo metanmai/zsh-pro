@@ -125,12 +125,14 @@ func (s *Service) Commit(ctx context.Context, message string) (model.WorktreeCom
 			result.RecoveryRequired = true
 			return nil
 		}
-		if seedErr := s.registry.Seed(exact.Source); seedErr != nil {
+		candidate := cloneState(*state)
+		candidate.BaseOID = result.OID
+		candidate.Committed = model.NewCommittedWorktree(exact.Source, exact.Projection)
+		if seedErr := seedRegistryFromState(s.registry, &candidate); seedErr != nil {
 			result.RecoveryRequired = true
 			return nil
 		}
-		state.BaseOID = result.OID
-		state.Committed = model.NewCommittedWorktree(exact.Source, exact.Projection)
+		*state = candidate
 		return nil
 	})
 	if err != nil {
@@ -325,6 +327,7 @@ func (s *Service) Materialize(ctx context.Context, branch, oid string, committed
 		Committed:          canonical,
 		HeadRevision:       1,
 		AutoApplyDefault:   true,
+		AdmittedIdentities: make([]model.Identity, 0),
 		Shared:             shared,
 		CompactionFloor:    0,
 		CompactionBaseline: nil,
@@ -341,15 +344,15 @@ func (s *Service) Materialize(ctx context.Context, branch, oid string, committed
 			if state.Branch != branch || state.BaseOID != oid || !reflect.DeepEqual(state.Committed, canonical) {
 				return ErrRecoveryRequired
 			}
-			if err := s.registry.Seed(state.Committed.Source); err != nil {
+			if err := seedRegistryFromState(s.registry, state); err != nil {
 				return ErrRecoveryRequired
 			}
 			return nil
 		}
-		if err := s.registry.Seed(canonical.Source); err != nil {
+		*state = cloneState(candidate)
+		if err := seedRegistryFromState(s.registry, state); err != nil {
 			return ErrRecoveryRequired
 		}
-		*state = cloneState(candidate)
 		return nil
 	})
 }
@@ -395,7 +398,7 @@ func (s *Service) Attach(ctx context.Context, request model.AttachRequest) (mode
 		if len(state.Shells) >= MaxShellRecords {
 			return errors.New("worktree shell limit reached")
 		}
-		if err := s.registry.Seed(state.Committed.Source); err != nil {
+		if err := seedRegistryFromState(s.registry, state); err != nil {
 			return ErrRecoveryRequired
 		}
 		attachment, attachErr := s.registry.Attach(initial)
@@ -467,13 +470,16 @@ func (s *Service) Publish(ctx context.Context, request model.PublishRequest) (mo
 		if shell.Conflict != nil || len(shell.UnpublishedDelta) != 0 {
 			return ErrConflictRequiresResolution
 		}
-		if err := s.registry.Seed(state.Committed.Source); err != nil {
+		if err := seedRegistryFromState(s.registry, state); err != nil {
 			return ErrRecoveryRequired
 		}
 		if err := validateChanges(delta); err != nil {
 			return err
 		}
-		admitted := s.admittedChanges(shell, delta)
+		admitted, admitErr := s.admittedChanges(state, shell, delta)
+		if admitErr != nil {
+			return admitErr
+		}
 		observed, applyErr := applyStateChanges(shell.CaptureBaseline, admitted)
 		if applyErr != nil {
 			return applyErr
@@ -629,10 +635,10 @@ func (s *Service) ResolveShared(ctx context.Context, request model.ResolveShared
 		if authErr != nil {
 			return authErr
 		}
-		if err := s.registry.Seed(state.Committed.Source); err != nil {
+		if err := seedRegistryFromState(s.registry, state); err != nil {
 			return ErrRecoveryRequired
 		}
-		observed, filterErr := s.admittedSnapshot(shell, snapshot)
+		observed, filterErr := s.admittedSnapshot(state, shell, snapshot)
 		if filterErr != nil {
 			return filterErr
 		}
@@ -696,10 +702,10 @@ func (s *Service) Acknowledge(ctx context.Context, request model.AcknowledgeRequ
 		if authErr != nil {
 			return authErr
 		}
-		if err := s.registry.Seed(state.Committed.Source); err != nil {
+		if err := seedRegistryFromState(s.registry, state); err != nil {
 			return ErrRecoveryRequired
 		}
-		observed, filterErr := s.admittedSnapshot(shell, snapshot)
+		observed, filterErr := s.admittedSnapshot(state, shell, snapshot)
 		if filterErr != nil {
 			return filterErr
 		}
@@ -880,7 +886,7 @@ func (s *Service) repairPublishedState(ctx context.Context, state *State) error 
 	}
 	state.BaseOID = observed
 	state.Committed = model.NewCommittedWorktree(exact.Source, exact.Projection)
-	if err := s.registry.Seed(state.Committed.Source); err != nil {
+	if err := seedRegistryFromState(s.registry, state); err != nil {
 		return ErrRecoveryRequired
 	}
 	return nil
@@ -896,7 +902,7 @@ func (s *Service) replaceWorkflowGeneration(state *State, branch, oid string, do
 	state.BaseOID = oid
 	state.Committed = model.NewCommittedWorktree(document.Source, document.Projection)
 	state.Shared = target
-	if err := s.registry.Seed(state.Committed.Source); err != nil {
+	if err := seedRegistryFromState(s.registry, state); err != nil {
 		return ErrRecoveryRequired
 	}
 	if len(changes) != 0 {
@@ -1026,6 +1032,67 @@ func presentIdentities(snapshot model.LiveSnapshot) []model.Identity {
 	return identities
 }
 
+// seedRegistryFromState reconstructs the complete ownership view from the
+// canonical generation. Legacy schema-v1 documents migrate only safe
+// non-source identities already present in Shared; no shell-local snapshot is
+// consulted.
+func seedRegistryFromState(registry *Registry, state *State) error {
+	if registry == nil || state == nil {
+		return errors.New("worktree registry state is unavailable")
+	}
+	if err := registry.Seed(state.Committed.Source); err != nil {
+		return err
+	}
+	if !state.admittedIdentitiesMissing {
+		if err := validateAdmittedIdentities(state.AdmittedIdentities); err != nil {
+			return err
+		}
+		return registry.RestoreAdmitted(state.AdmittedIdentities)
+	}
+
+	admitted := make([]model.Identity, 0)
+	for _, shared := range state.Shared {
+		if registry.Owns(shared.Identity) || registry.exclusionReason(shared.Identity) != "" {
+			continue
+		}
+		admitted = append(admitted, shared.Identity)
+	}
+	sort.Slice(admitted, func(left, right int) bool {
+		return admittedIdentityLess(admitted[left], admitted[right])
+	})
+	if err := validateAdmittedIdentities(admitted); err != nil {
+		return err
+	}
+	if err := registry.RestoreAdmitted(admitted); err != nil {
+		return err
+	}
+	state.AdmittedIdentities = admitted
+	state.admittedIdentitiesMissing = false
+	return nil
+}
+
+func appendAdmittedIdentity(state *State, identity model.Identity) error {
+	if state == nil || model.ValidateIdentity(identity) != nil {
+		return errors.New("durable admitted identity is invalid")
+	}
+	for _, existing := range state.AdmittedIdentities {
+		if existing == identity {
+			state.admittedIdentitiesMissing = false
+			return nil
+		}
+	}
+	candidate := append(cloneIdentities(state.AdmittedIdentities), identity)
+	sort.Slice(candidate, func(left, right int) bool {
+		return admittedIdentityLess(candidate[left], candidate[right])
+	})
+	if err := validateAdmittedIdentities(candidate); err != nil {
+		return err
+	}
+	state.AdmittedIdentities = candidate
+	state.admittedIdentitiesMissing = false
+	return nil
+}
+
 func attachmentFromShell(registry *Registry, shell ShellState) AttachmentResult {
 	present := make(map[model.Identity]struct{}, len(shell.PresentAtAttach))
 	for _, identity := range shell.PresentAtAttach {
@@ -1037,33 +1104,43 @@ func attachmentFromShell(registry *Registry, shell ShellState) AttachmentResult 
 	}
 }
 
-func (s *Service) admittedChanges(shell ShellState, changes []model.LiveChange) []model.LiveChange {
+func (s *Service) admittedChanges(state *State, shell ShellState, changes []model.LiveChange) ([]model.LiveChange, error) {
 	attachment := attachmentFromShell(s.registry, shell)
 	out := make([]model.LiveChange, 0, len(changes))
 	for _, change := range changes {
-		if !s.registry.AllowsLiveValue(change.Identity) && !s.registry.Admit(attachment, change.Identity).Admitted {
-			continue
+		if !s.registry.AllowsLiveValue(change.Identity) {
+			if !s.registry.Admit(attachment, change.Identity).Admitted {
+				continue
+			}
+			if err := appendAdmittedIdentity(state, change.Identity); err != nil {
+				return nil, err
+			}
 		}
 		out = append(out, model.LiveChange{Kind: change.Kind, Identity: change.Identity, Value: model.CloneLiveValue(change.Value)})
 	}
-	return out
+	return out, nil
 }
 
-func (s *Service) admittedSnapshot(shell ShellState, snapshot model.LiveSnapshot) ([]model.LiveIdentityState, error) {
+func (s *Service) admittedSnapshot(canonical *State, shell ShellState, snapshot model.LiveSnapshot) ([]model.LiveIdentityState, error) {
 	normalized, err := model.NormalizeLiveStates(snapshot.States)
 	if err != nil {
 		return nil, err
 	}
 	attachment := attachmentFromShell(s.registry, shell)
 	out := make([]model.LiveIdentityState, 0, len(normalized))
-	for _, state := range normalized {
-		if !state.Value.Present {
+	for _, observed := range normalized {
+		if !observed.Value.Present {
 			continue
 		}
-		if !s.registry.AllowsLiveValue(state.Identity) && !s.registry.Admit(attachment, state.Identity).Admitted {
-			continue
+		if !s.registry.AllowsLiveValue(observed.Identity) {
+			if !s.registry.Admit(attachment, observed.Identity).Admitted {
+				continue
+			}
+			if err := appendAdmittedIdentity(canonical, observed.Identity); err != nil {
+				return nil, err
+			}
 		}
-		out = append(out, model.LiveIdentityState{Identity: state.Identity, Value: model.CloneLiveValue(state.Value)})
+		out = append(out, model.LiveIdentityState{Identity: observed.Identity, Value: model.CloneLiveValue(observed.Value)})
 	}
 	return out, nil
 }
