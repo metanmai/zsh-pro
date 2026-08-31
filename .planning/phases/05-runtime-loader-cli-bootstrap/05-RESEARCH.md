@@ -6,7 +6,7 @@
 
 ## Summary
 
-Phase 5 has **no design ambiguity that blocks planning** — the SPEC (7 reqs), CONTEXT (D-01..D-20), and OQ-05-01..10 already lock nearly every fork with a safe reversible default. This research **verifies those defaults are correct** by running the actual zsh/Go behavior they depend on, and enumerates the few remaining real forks (validation site, emit-subcommand shape, last-good payload, store-injection shape, hook seam) with trade-offs so the adversarial panel has concrete material. Every load-bearing claim below is tagged `[VERIFIED: ran it]` with the experiment, or `[ASSERTED]` with the experiment that would settle it.
+Phase 5 has **no design ambiguity that blocks planning**. The SPEC (7 reqs), CONTEXT (D-01..D-20), reviewed remediation plans, and OQ-05-01..18 now record either an adopted decision or a bounded execution-time gate. This research verifies the underlying zsh/Go semantics and records the exact gates where a live Phase 4 interface or optional CI tool is the source of truth. Every load-bearing claim below is tagged `[VERIFIED: ran it]` with the experiment, or `[ASSERTED]` with the experiment that would settle it.
 
 The five sub-areas reduce to one architectural spine: **a child process cannot mutate its parent shell** (verified: a `$(...)` subshell's `cd`/`export` do not escape to the parent, but `eval` of the same body does) — therefore the mutating verbs (`checkout`/`activate`/`deactivate`) MUST be **sourced zsh functions** that `eval "$(zsh-pro emit …)"`, and the loader that defines them MUST be embedded zsh living as a `const` in `core/shell/zsh` (mirroring `introspectScript`), fetched across a provider seam and printed by a pure `hook` verb. The hot path stays zero-subprocess by sourcing a **cached loader file** written at `install` time (never `eval "$(zsh-pro hook)"` per start); measured overhead of sourcing the pure-function-def loader is **~0.03 ms/shell-start** — three orders of magnitude under the < 10 ms budget (OQ-05-04).
 
@@ -379,9 +379,9 @@ hyperfine --warmup 3 \
 | A3 | Phase 4's emitted code does not surface an unresolved `SecretRef` at the apply boundary (may be resolved earlier in the builder) | OQ-05-02 | If it does, Phase 5 must drive `store.KeychainDriver` at apply time; **Medium** — confirm against `emit.go` at plan time; end-to-end PROF-03 is Phase 6 regardless. |
 | A4 | The < 10 ms `hyperfine` budget is comfortably met (proxy shows ~0.03 ms) | (e) / OQ-05-04 | Real `hyperfine` on a slow CI box could differ; **Low** — proxy is 380× under budget; structural grep is the true guard. Confirm with real `hyperfine` when the tool is present. |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-All Phase-5 forks are already captured in `05-OPEN-QUESTIONS.md` (OQ-05-01..10) with safe reversible defaults, and this research confirmed each default is sound. **Two new low-confidence items** are appended there as OQ-05-11 and OQ-05-12 (see that file). No open question blocks planning.
+`05-OPEN-QUESTIONS.md` records OQ-05-01..18 with `open_count: 0`. Interface-dependent items are explicit execution-time gates: Task 1 of 05-01 must reconcile the helper/state and CLI-to-emit surfaces against the completed Phase 4 output before phase exit, and the optional `hyperfine` result runs only where the executable is present while the structural start-path gate always runs. Sol review findings are adopted by 05-03 through 05-05: safe installer targeting/cache promotion, portable runtime deadlines and ERR_EXIT/ERR_RETURN-safe reporting, complete active-profile transitions, SecretRef resolution, and typed-nil normalization. No unresolved question remains.
 
 ## Sources
 
@@ -414,4 +414,4 @@ All Phase-5 forks are already captured in `05-OPEN-QUESTIONS.md` (OQ-05-01..10) 
 
 ## RESEARCH COMPLETE
 
-Phase 5's design is fully de-risked: every load-bearing zsh semantic (eval-persistence, subshell isolation, `${(P)+var}` unset-vs-empty, `${slot+x}` shadow set-test, PATH rebuild-from-base zero-residue, once-captured `ZP_BASE_PATH`, slot-name sanitize-or-inject, `ZSHPRO_DISABLE`/`command -v`/`[[ -r ]]` fail-open, `zsh -n`-rejects-without-executing) plus the Go idempotent-installer algorithm and the ~0.03 ms zero-subprocess startup cost were **executed and confirmed** on zsh 5.9 / go 1.25.7. The one remaining gate is a plan-time reconciliation of the loader's `zp_*` helper signatures against Phase 4's not-yet-on-disk `emit.go` bare-call surface (OQ-05-05) — a localized, low-risk edit, not a blocker.
+Phase 5's design is fully de-risked: every load-bearing zsh semantic (eval-persistence, subshell isolation, `${(P)+var}` unset-vs-empty, `${slot+x}` shadow set-test, PATH rebuild-from-base zero-residue, once-captured `ZP_BASE_PATH`, slot-name sanitize-or-inject, `ZSHPRO_DISABLE`/`command -v`/`[[ -r ]]` fail-open, `zsh -n` rejection without execution) plus the Go idempotent-installer algorithm and the ~0.03 ms zero-subprocess startup cost were **executed and confirmed** on zsh 5.9 / go 1.25.7. The remaining work is fully planned and gated: the Task-1 Phase 4 surface reconciliation is blocking, the structural start-path check is mandatory in every environment, and the optional `hyperfine` timing backstop is a CI/tool-available check. Sol review remediations are covered by 05-03 through 05-05; none is an unresolved planning question.

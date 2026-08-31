@@ -32,9 +32,9 @@ helpers.
 
 | Surface | Provider | Reconciled behavior |
 | --- | --- | --- |
-| `zp_capture_env <var>` | loader | Loader-owned compatibility helper. It captures a live export prior once into a sanitized derived slot or the unset sentinel. |
-| `zp_restore_env <var> <applied>` | loader | Loader-owned, drift-guarded compatibility helper. It reverses only when the applied value is still live. |
-| `ZP_UNSET_SENTINEL` | loader | Global marker distinguishing an unset prior from an empty prior. |
+| `zp_capture_env <var>` | loader | Loader-owned compatibility helper. It captures a live export prior once into a sanitized derived value slot and a separate `*_PRESENT` slot. |
+| `zp_restore_env <var> <applied>` | loader | Loader-owned, drift-guarded compatibility helper. It reverses only when the applied value is still live; presence metadata selects unset versus restoring an empty or non-empty value. |
+| `__ZP_ORIG_<safe>_PRESENT` | loader | Presence metadata for the matching original-value slot. `1` means restore the captured value; `0` means restore the unset state. No value sentinel is used. |
 | `ZP_BASE_PATH` | loader shared eval path | Captured once before a path-mutating emitted block; `emit.go` reads it for PATH list rendering. |
 | `ZP_BASE_FPATH` and `*_PRESENT` slots | emitted block | `emit.go` initializes these itself when a list delta needs them. Loader must preserve them across the block. |
 | `ZP_ORIGINAL_*`, `ZP_PRESENT_*`, `ZP_EXPORTED_*`, `ZP_APPLIED_*`, `ZP_WAS_ON_OPTION_*` | emitted block | Actual Phase 4 state slots. `emit.go` derives identifier-safe names with hex encoding and reads/writes them through its embedded helpers. |

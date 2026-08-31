@@ -61,9 +61,11 @@ func secureRuntimeRoot(root string) (*RuntimeRoot, error) {
 		if err != nil {
 			return nil, fmt.Errorf("open runtime root component: %w", err)
 		}
-		if err := syscall.Close(fd); err != nil {
+		closeErr := syscall.Close(fd)
+		fd = -1
+		if closeErr != nil {
 			_ = syscall.Close(next)
-			return nil, fmt.Errorf("close runtime root parent: %w", err)
+			return nil, fmt.Errorf("close runtime root parent: %w", closeErr)
 		}
 		fd = next
 

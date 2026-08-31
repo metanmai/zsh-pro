@@ -34,9 +34,10 @@ func TestEntryDeclarationRepresentability(t *testing.T) {
 		name string
 		cmd  string
 	}{
-		{name: "integer", cmd: "typeset"},
+		{name: "typeset integer", cmd: "typeset"},
 		{name: "readonly", cmd: "readonly"},
-		{name: "tied list", cmd: "typeset"},
+		{name: "typeset tied list", cmd: "typeset"},
+		{name: "declare", cmd: "declare"},
 		{name: "local", cmd: "local"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

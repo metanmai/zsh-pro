@@ -4,11 +4,11 @@
 
 - ✅ **v1.0 Trustworthy Line Numbers** — Phase 1 (shipped 2026-06-24) — detail: [milestones/v1.0-ROADMAP.md](milestones/v1.0-ROADMAP.md)
 - ⏸️ **v1.1 Trustworthy PATH Analysis** — parked 2026-06-25 (Phase 2 shipped; 3-4 re-scoped into v2.0 ingest) — detail: [milestones/v1.1-ROADMAP.md](milestones/v1.1-ROADMAP.md)
-- 🚧 **v2.0 Branchable Shell Environments** — Phases 1-6 (in progress)
+- 🚧 **v2.0 Branchable Shell Environments** — Phases 1-7 (in progress)
 
 ## Overview
 
-v2.0 turns the shipped read-only analyze engine into a **branchable shell-environment manager**: ingest `~/.zshrc` into a categorized, regenerable store, make each git branch an environment profile, and let `checkout <branch>` live-reload an already-open terminal into that profile with **zero residue**. This is a brownfield integration — the existing parse → classify → introspect front-end is reused as-is through the `Provider` seam, and the new manager surface bolts on without rewriting anything.
+v2.0 turns the shipped read-only analyze engine into a **branchable shell-environment manager**: ingest `~/.zshrc` into a categorized, regenerable store, make each git branch an environment profile, and let `checkout <branch>` live-reload an already-open terminal into that profile with **zero residue**. This is a brownfield integration — the existing parse → classify → introspect front-end is reused as-is through the `Provider` seam, and the new manager surface bolts on without rewriting anything. Phase 7 completes the Git mental model by turning ingest into bootstrap, materializing one shared working profile, and treating supported live shell changes as the unstaged-free worktree diff that independent terminals can observe and synchronize.
 
 The journey opens with a throwaway **spike** that de-risks the one genuine unknown (reversing aliases/functions/options live, not just env) before any plumbing is built — because if zero-residue hot-switch is infeasible, the product scope must change first. It then proceeds in strict dependency order: the **IR is the spine** (everything serializes a `model.Profile`), so it lands next, carrying the declarative/imperative split and the static/dynamic portability tag. The **git store** follows (you can't `checkout` between profiles that don't exist), then the **manifest + emit** layer (the single place zsh syntax is generated, turning a profile into a reversible record), then the **runtime loader + CLI + bootstrap** (the live-terminal wiring, fail-open and fast). The polished **ingest on-ramp** comes last so it targets the final IR shape rather than chasing a moving target.
 
@@ -134,7 +134,7 @@ Plans:
   3. Restore is ownership-aware: deactivate removes only what this profile added (drift guard — restore a value only if the live value still equals what was applied) and never strips base/unmanaged state a profile merely also added (e.g. `/usr/local/bin`).
   4. A shadowed prior alias/function is captured before override and re-established on deactivate; PATH is stored as a delta against the captured base, never a wholesale overwrite.
 
-**Plans**: 18/19 plans executed
+**Plans**: 19/19 plans executed
 
 Plans:
 
@@ -284,7 +284,7 @@ Plans:
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
+Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
@@ -294,10 +294,11 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6
 | 4. Manifest Builder + Emit | 19/19 | Complete    | 2026-07-27 |
 | 5. Runtime Loader + CLI + Bootstrap | 8/8 | Complete    | 2026-07-30 |
 | 6. Ingest End-to-End | 5/5 | Verification pending | — |
+| 7. Git-Like Shared Working Environment | 0/10 | Planned | — |
 
 ## Requirement Coverage
 
-All 11 milestone requirements mapped to exactly one phase (11/11, no orphans, no duplicates).
+All 16 milestone requirements have phase coverage (16/16, no orphans); PROF-03 spans its store, runtime, and end-to-end phases.
 
 | Phase | Requirements |
 |-------|--------------|
@@ -307,6 +308,7 @@ All 11 milestone requirements mapped to exactly one phase (11/11, no orphans, no
 | 4. Manifest Builder + Emit | SW-01, SW-02 |
 | 5. Runtime Loader + CLI + Bootstrap | BOOT-01, BOOT-02 |
 | 6. Ingest End-to-End | PROF-03 |
+| 7. Git-Like Shared Working Environment | WORK-01, WORK-02, WORK-03, SYNC-01, SYNC-02 |
 
 ## Research Flags
 
@@ -315,5 +317,71 @@ Phases likely needing a deeper research pass during planning (`/gsd:plan-phase -
 - **Phase 1 (SPIKE):** This *is* the research — plan it as a real spike with explicit kill-criteria. The unproven delta (reversing aliases/functions/**options** + any completion/keybinding/hook state live) has no direct prior-art guarantee; surface whatever zsh state turns out to be un-cleanly-reversible early.
 - **Phase 4 (Manifest + Emit):** Shell-code emission is where quoting/escaping bugs become shell-injection bugs. The `${aliases[name]}` / `functions`-assoc-array body extraction and the exact deactivate ordering warrant verification against the zsh manual + the shadowenv source; the codegen round-trip oracle (`parse(generate(parse(src))) == parse(src)`) needs a design.
 - **Phase 5 (Loader):** The fail-open stub, `ZSHPRO_DISABLE` recovery, idempotent BEGIN/END block writer, base-capture placement/re-capture guard, and the hot-path performance budget (`hyperfine`) are each subtle.
+- **Phase 7 (Shared worktree):** Research and the approved live-state-capture and multi-terminal-sync spike are complete. Planning incorporates validated hook timing, semantic delta capture, atomic shared writes, stale-shell handling, same-identity races, and a prompt-path performance budget without turning zsh-pro into a terminal multiplexer.
 
 Phases with standard patterns (skip research-phase): **Phase 2** (reuses the shipped parser/classifier + the `render.go` codegen pattern; static-only partial-eval is well-specified), **Phase 3** (shelling out to `git` mirrors the `zsh -f` subprocess exactly; machine-format parsing is documented and stable), **Phase 6** (composes already-built pieces along a known data flow; the only subtlety is the idempotent managed-block, covered in Pitfall 6).
+
+### Phase 7: Git-Like Shared Working Environment
+
+**Goal:** Make a live zsh environment feel like a single local Git worktree: ingest once, automatically capture supported shell-state changes as a categorized shared diff, commit them to the current profile branch, create and check out branches with dirty-worktree protection, and keep independent terminals converged through default-on configurable auto-apply.
+**Requirements**: WORK-01, WORK-02, WORK-03, SYNC-01, SYNC-02
+**Depends on:** Phase 6 (bootstrap ingest and complete persisted profile), Phase 5 (sourced current-shell loader), Phase 4 (manifest/diff/emit), Phase 3 (Git-backed branches)
+**Success Criteria** (what must be TRUE):
+
+  1. After one `zsh-pro ingest`, changing a supported environment variable, alias, function, PATH/FPATH entry, or option in the current shell makes the shared worktree dirty without another ingest; volatile process noise and unsupported/imperative state do not appear as profile changes, and secrets retain the existing reference/redaction boundary.
+  2. `zsh-pro status` and a categorized `zsh-pro diff` show the same uncommitted state from two independent terminals. `zsh-pro commit -m <message>` commits all supported changes directly to the current branch with no staging layer, and a clean status follows.
+  3. Branch list/create and checkout follow the basic Git model: a new branch forks current committed state, the last checked-out branch remains current, dirty checkout is blocked, and an explicit reset command is required to discard the shared diff. Merge/rebase/remotes and multiple worktrees are absent.
+  4. With auto-apply enabled by default, a second independent terminal applies a newer shared profile only at a safe between-command boundary before its next command observes managed state. Disabling auto-apply leaves that shell unchanged and visibly behind until `zsh-pro sync` is run; neither mode touches `PWD`, jobs, command buffers, history, or other process-local state.
+  5. Shared updates are atomic, revision-aware, fail-open, and covered by real two-shell tests. Concurrent unrelated deltas compose without whole-profile clobbering; same-identity races have deterministic visible handling; hooks never interrupt a foreground command or introduce an unbounded prompt-path subprocess cost.
+
+**Plans:** 15 plans
+
+Plans:
+
+**Wave 1**
+
+- [ ] 07-01-PLAN.md — Define the lossless shell-neutral worktree contract and deterministic semantic diff
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 07-02-PLAN.md — Establish the production admission and live-secret boundary before persistence
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 07-03-PLAN.md — Persist the shared worktree and complete per-shell causal lifecycle under one authenticated transaction boundary
+- [ ] 07-04-PLAN.md — Make live effective state faithfully reversible and commit-ready
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [ ] 07-05-PLAN.md — Persist and publish exact committed worktree projections through the hardened Git Store
+- [ ] 07-08-PLAN.md — Capture exact current-shell state and emit exact reversible live patches through the existing concrete zsh boundaries
+
+**Wave 5** *(blocked on Wave 4 completion)*
+
+- [ ] 07-06-PLAN.md — Expose the shared materialized worktree as a truthful basic local Git workflow
+
+**Wave 6** *(blocked on Wave 5 completion)*
+
+- [ ] 07-07-PLAN.md — Turn ingest into exact one-time bootstrap and wire the real production durable authority contract
+
+**Wave 7** *(blocked on Wave 6 completion)*
+
+- [ ] 07-09-PLAN.md — Install bounded lazy attachment, exact sourced routing, publication, convergence, and conflict resolution
+
+**Wave 8** *(blocked on Wave 7 completion)*
+
+- [ ] 07-10-PLAN.md — Prove the shared-worktree contract through exact installed syntax, independent shells, and adversarial failures
+
+**Wave 9** *(gap closure; blocked on Wave 8 completion)*
+
+- [ ] 07-11-PLAN.md — Persist canonical value-free admitted-identity ownership across fresh services
+- [ ] 07-12-PLAN.md — Preserve recovered-persistence evidence across operation-scoped store reopen
+- [ ] 07-13-PLAN.md — Bound capture, frame delivery, termination, and reap under one absolute deadline
+
+**Wave 10** *(gap closure; blocked on Wave 9 completion)*
+
+- [ ] 07-14-PLAN.md — Make partial live-patch failure fail-fast and publicly recoverable
+
+**Wave 11** *(gap closure; blocked on Wave 10 completion)*
+
+- [ ] 07-15-PLAN.md — Make the first explicit sync reconcile fully or fail truthfully

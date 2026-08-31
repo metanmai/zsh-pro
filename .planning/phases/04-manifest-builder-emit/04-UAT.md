@@ -14,8 +14,10 @@ source:
   - 04-10-SUMMARY.md
   - 04-11-SUMMARY.md
   - 04-12-SUMMARY.md
+  - 04-14-SUMMARY.md
+  - 04-16-SUMMARY.md
 started: 2026-07-27T01:08:55Z
-updated: 2026-07-27T08:09:40Z
+updated: 2026-08-09T05:48:45Z
 ---
 
 ## Current Test
@@ -45,8 +47,8 @@ coverage_id: D3
 ### 4. Emitted Apply and Deactivate Blocks
 expected: A plan renders to plain zsh apply/deactivate blocks that pass zsh -n and preserve option changes outside function scope.
 result: pass
+source: automated
 coverage_id: E1
-checkpoint_reason: validation_failed
 
 ### 5. Injection Safety and Exact Restoration
 expected: Static and dynamic values remain injection-safe, shadowed definitions and options restore exactly, drift guards preserve user edits, and internal slots are cleaned.
@@ -210,10 +212,24 @@ result: pass
 source: automated
 coverage_id: D3
 
+### 32. Persisted PATH and FPATH List Fidelity
+expected: Persisted legacy and semantic PATH/FPATH list forms retain source order and restore exact captured state through emitted zsh.
+result: pass
+source: automated
+coverage_id: D1
+evidence: TestPipelineStoreRoundTripLegacy and TestResidueStoreRoundTripLegacy passed uncached.
+
+### 33. Persisted Structural-Fidelity Admission
+expected: Indexed and declaration-flagged entries retain source metadata through parsing and DTO persistence, remain verbatim when forced managed, and produce no activation intent.
+result: pass
+source: automated
+coverage_id: D2
+evidence: TestParseCapturesIndexedAndDeclarationFlags, TestStructuralFidelityDTOCompatibilityMatrix, TestRegenerateForcedManagedStructuralShapesStayVerbatim, and TestBuildRejectsOverrideManagedDeclarations passed uncached.
+
 ## Summary
 
-total: 31
-passed: 31
+total: 33
+passed: 33
 issues: 0
 pending: 0
 skipped: 0

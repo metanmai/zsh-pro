@@ -309,7 +309,15 @@ func TestEmitRuntimeTransitionRejectsMalformedInput(t *testing.T) {
 	}
 }
 
+func requireZsh(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("zsh not available")
+	}
+}
+
 func TestEmitStaticDynamicAndSyntax(t *testing.T) {
+	requireZsh(t)
 	p := activate.Plan{Activate: []activate.Op{
 		activate.SetScalar{Name: "EDITOR", Applied: "it's; echo bad", Dynamic: false},
 		activate.SetScalar{Name: "GOPATH", Applied: "$HOME/go", Dynamic: true, Exported: true},
@@ -345,6 +353,7 @@ func TestEmitStaticDynamicAndSyntax(t *testing.T) {
 }
 
 func TestEmitRuntimeAvoidsStaticAppliedSecretCopiesButKeepsDynamicReversal(t *testing.T) {
+	requireZsh(t)
 	p := activate.Plan{Activate: []activate.Op{
 		activate.SetScalar{Name: "ZP_RUNTIME_STATIC", Applied: "phase5-static-secret", Exported: true},
 		activate.SetScalar{Name: "ZP_RUNTIME_DYNAMIC", Applied: "$HOME/runtime", Dynamic: true, Exported: true},
@@ -405,6 +414,7 @@ func TestEmitRejectsHostileNamesWithoutOutput(t *testing.T) {
 }
 
 func TestEmitAppliesAndRestoresShadowAndOption(t *testing.T) {
+	requireZsh(t)
 	base := activate.Plan{Activate: []activate.Op{
 		activate.SetScalar{Name: "ZP_DEMO_VALUE", Applied: "changed"},
 		activate.AddAlias{Name: "ll", Body: "new alias"},
@@ -479,6 +489,7 @@ func TestEncodeSlotIsInjectiveAndIdentifierSafe(t *testing.T) {
 }
 
 func TestEmitRestoresPresenceSentinelAndExportState(t *testing.T) {
+	requireZsh(t)
 	p := activate.Plan{Activate: []activate.Op{
 		activate.SetScalar{Name: "ZP04_UNSET", Applied: "plain", Exported: false},
 		activate.SetScalar{Name: "ZP04_EMPTY_PLAIN", Applied: "exported", Exported: true},
@@ -518,6 +529,7 @@ func TestEmitRestoresPresenceSentinelAndExportState(t *testing.T) {
 }
 
 func TestEmitRepeatedScalarTracksFinalAppliedValue(t *testing.T) {
+	requireZsh(t)
 	p := activate.Plan{Activate: []activate.Op{
 		activate.SetScalar{Name: "ZP04_REPEATED", Applied: "one"},
 		activate.SetScalar{Name: "ZP04_REPEATED", Applied: "two"},

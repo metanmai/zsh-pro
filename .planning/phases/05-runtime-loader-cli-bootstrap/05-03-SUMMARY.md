@@ -66,9 +66,9 @@ coverage:
     verification:
       - kind: manual_procedural
         ref: ZSHPRO_BIN=<built-binary> scripts/perf-hyperfine.sh
-        status: unknown
+        status: pass
     human_judgment: true
-    rationale: "hyperfine is absent in this execution environment; the harness now skips explicitly, but an equipped CI or developer host must record the timing result."
+    rationale: "Follow-up evidence recorded the real Hyperfine branch with Hyperfine 1.18.0 and a freshly built absolute binary: the harness verified activate was sourced and measured -6.734 ms, below the 10 ms budget."
 metrics:
   duration: 19min
   completed: 2026-07-29
@@ -150,7 +150,7 @@ None - the only new filesystem and subprocess surfaces are the installer/cache b
 ## Next Phase Readiness
 
 - Plans 05-04 and 05-05 can rely on non-destructive installer boundaries, validated cached-loader replacement, and a portable performance harness.
-- The <10 ms measurement remains pending on a host with `hyperfine`; this is an allowed optional-tool evidence gap, not a failed structural gate.
+- Follow-up timing evidence ran the real Hyperfine branch with a freshly built absolute binary and measured -6.734 ms, satisfying the <10 ms budget.
 
 ## User Setup Required
 

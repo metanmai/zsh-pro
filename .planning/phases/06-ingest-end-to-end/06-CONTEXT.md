@@ -113,4 +113,4 @@ Five deliverables remain in scope:
 
 *Phase: 06-ingest-end-to-end*
 *Context corrected: 2026-08-02 — complete Profile persistence, non-destructive startup adoption, one filesystem promotion, and three-linked-assertion proof are locked.*
-*Next step: close the final CodeRabbit convergence gate, then record Phase 6 completion from its already-passed implementation, verification, and exact-SHA native evidence.*
+*Next step: close the final CodeRabbit convergence gate for P6-011, P6-012, and P6-013, then record Phase 6 completion from its already-passed implementation, verification, and exact-SHA native evidence.*

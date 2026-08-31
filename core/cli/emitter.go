@@ -482,6 +482,9 @@ func (r runtimeEmitter) listFromRuntimeRoot(ctx context.Context, root *RuntimeRo
 	if err != nil {
 		return nil, err
 	}
+	if isNilLike(s) {
+		return nil, errors.New("profile store unavailable")
+	}
 	return s.Branches(ctx)
 }
 

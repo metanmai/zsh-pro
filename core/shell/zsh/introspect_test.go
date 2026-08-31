@@ -327,7 +327,7 @@ func TestIntrospectCapturesBodies(t *testing.T) {
 }
 
 func TestParseIntrospectBodyBoundary(t *testing.T) {
-	s := "##ALIASBODIES##\ngs\x00git status\x00##FUNCTIONBODIES##\nfoo\x00\tprint hi\n## not a header\x00##END##\n"
+	s := "##OPTIONS##\n\x00##ALIASBODIES##\ngs\x00git status\x00\x00##FUNCTIONBODIES##\nfoo\x00\tprint hi\n## not a header\x00\x00##END##\n"
 	ids := (Provider{}).parseIntrospect(s)
 	if ids.FunctionBodies["foo"] != "\tprint hi\n## not a header" {
 		t.Fatalf("body=%q", ids.FunctionBodies["foo"])
@@ -336,9 +336,20 @@ func TestParseIntrospectBodyBoundary(t *testing.T) {
 
 func TestParseIntrospectSentinelBodyDoesNotPolluteIdentityPrefix(t *testing.T) {
 	body := "##ALIASES##\n##FUNCTIONS##\n##ENV##\n##PATH##\n##OPTIONS##\n##ALIASBODIES##\n##FUNCTIONBODIES##\n##END##"
-	s := "##ALIASES##\na\n##FUNCTIONS##\nf\n##ALIASBODIES##\na\x00\x00##FUNCTIONBODIES##\nf\x00" + body + "\x00##END##\n"
+	s := "##ALIASES##\na\n##FUNCTIONS##\nf\n##OPTIONS##\n\x00##ALIASBODIES##\na\x00\x00\x00##FUNCTIONBODIES##\nf\x00" + body + "\x00\x00##END##\n"
 	ids := (Provider{}).parseIntrospect(s)
 	if ids.FunctionBodies["f"] != body || !ids.Aliases["a"] || !ids.Functions["f"] || len(ids.Env) != 0 || len(ids.Path) != 0 || len(ids.Options) != 0 {
 		t.Fatalf("%#v", ids)
+	}
+}
+
+func TestParseIntrospectIgnoresBodyTextThatLooksLikeSectionHeaders(t *testing.T) {
+	s := "##ALIASES##\na\n##FUNCTIONS##\nf\n##OPTIONS##\n\x00##ALIASBODIES##\na\x00##FUNCTIONBODIES##\ninside alias\x00\x00##FUNCTIONBODIES##\nf\x00##ALIASBODIES##\ninside function\x00\x00##END##\n"
+	ids := (Provider{}).parseIntrospect(s)
+	if ids.AliasBodies["a"] != "##FUNCTIONBODIES##\ninside alias" {
+		t.Fatalf("alias body=%q", ids.AliasBodies["a"])
+	}
+	if ids.FunctionBodies["f"] != "##ALIASBODIES##\ninside function" {
+		t.Fatalf("function body=%q", ids.FunctionBodies["f"])
 	}
 }

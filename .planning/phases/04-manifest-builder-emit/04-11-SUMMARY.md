@@ -25,7 +25,7 @@ coverage:
     requirement: SW-01
     verification:
       - kind: unit
-        ref: tests/core/store/secret_test.go#TestPrepareSecretsIsPureAndCoalescesLastWrite
+        ref: core/store/secret_test.go#TestPrepareSecretsIsPureAndCoalescesLastWrite
         status: pass
     human_judgment: false
   - id: D2
@@ -33,10 +33,10 @@ coverage:
     requirement: SW-01
     verification:
       - kind: integration
-        ref: tests/core/store/secret_test.go#TestCommitRollsBackSecretWritesBeforeMovingRef
+        ref: core/store/secret_test.go#TestCommitRollsBackSecretWritesBeforeMovingRef
         status: pass
       - kind: integration
-        ref: tests/core/store/secret_test.go#TestCommitCompensatesAmbiguousRefFailure
+        ref: core/store/secret_test.go#TestCommitCompensatesAmbiguousRefFailure
         status: pass
     human_judgment: false
 duration: 16min

@@ -28,7 +28,10 @@ const (
 	ErrSecretBackendUnavailable errStore = "zsh-pro: no secret backend available; using vault file"
 	// ErrSecretNotFound distinguishes an absent key from an operational backend
 	// failure, including when a present key stores the empty string.
-	ErrSecretNotFound    errStore = "zsh-pro: secret not found"
+	ErrSecretNotFound errStore = "zsh-pro: secret not found"
+	// ErrKeychainTransport distinguishes an unreadable legacy or unknown stored
+	// value from a keychain backend that could not be reached.
+	ErrKeychainTransport errStore = "zsh-pro: unrecognized keychain secret transport"
 	ErrSecretRollback    errStore = "zsh-pro: secret rollback failed"
 	ErrSecretRefConflict errStore = "zsh-pro: profile ref changed concurrently"
 	// ErrUnsafeSecretShape is returned when a CatSecrets assignment cannot be safely

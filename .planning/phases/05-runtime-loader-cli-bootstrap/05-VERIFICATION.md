@@ -108,7 +108,7 @@ All listed artifacts passed existence, substantive-content, and wiring inspectio
 
 ## Probe Execution
 
-No declared or conventional `scripts/*/tests/probe-*.sh` probes exist for this phase. The only phase timing harness was run directly and skipped only because `hyperfine` is not installed.
+No declared or conventional `scripts/*/tests/probe-*.sh` probes exist for this phase. The phase timing harness ran directly: its real Hyperfine branch used staged Hyperfine 1.18.0 and measured -6.734 ms.
 
 ## Requirements Coverage
 
@@ -128,7 +128,7 @@ No orphaned Phase 5 requirements were found. Phase 6 addresses end-to-end ingest
 | Resolver loss does not strand secret-bearing state after a successful activation | Stateful resolver and native-zsh retained-reverse tests passed. | ✓ VERIFIED |
 | Shared writable TMPDIR cannot substitute or read staged source | Non-sticky shared-directory and sticky symlink-replacement regressions passed. | ✓ VERIFIED |
 
-Plan 01's old literal `ZP_UNSET_SENTINEL` detail is intentionally superseded by Plan 07's stronger presence-metadata design. `hook.go` no longer encodes absence in a value sentinel, and `TestLiveTerminalEnvRestorePreservesPresenceAndLegacyMarkerData` proves literal legacy-marker, empty, and unset values remain distinct. This improves rather than reduces the roadmap's zero-residue behavior; it is not a functional gap. `05-CONTRACT.md` still describes the retired sentinel and should be refreshed as planning-document hygiene, but source and tests follow the later, safer contract.
+Plan 01's old literal `ZP_UNSET_SENTINEL` detail is intentionally superseded by Plan 07's stronger presence-metadata design. `hook.go` no longer encodes absence in a value sentinel, and `TestLiveTerminalEnvRestorePreservesPresenceAndLegacyMarkerData` proves literal legacy-marker, empty, and unset values remain distinct. This improves rather than reduces the roadmap's zero-residue behavior; it is not a functional gap. `05-CONTRACT.md` records the current presence-metadata mechanism, consistent with source and tests.
 
 ## Anti-Patterns Found
 

@@ -677,6 +677,29 @@ func (runtime *runtimeTestWorktree) serviceCalls() int {
 	return runtime.attachCalls + runtime.publishCalls + runtime.prepareCalls + runtime.ackCalls + runtime.resolveCalls
 }
 
+func TestRuntimeListRejectsTypedNilStore(t *testing.T) {
+	var store *typedNilRuntimeStore
+	emitter := runtimeEmitter{runtimeStore: func(*RuntimeRoot) (Store, SecretResolver, error) {
+		return store, nil, nil
+	}}
+
+	branches, err := emitter.listFromRuntimeRoot(context.Background(), nil)
+	if err == nil || err.Error() != "profile store unavailable" {
+		t.Fatalf("listFromRuntimeRoot() = (%v, %v), want unavailable-store error", branches, err)
+	}
+}
+
+type typedNilRuntimeStore struct{}
+
+func (*typedNilRuntimeStore) Branches(context.Context) ([]string, error) {
+	panic("typed nil store used")
+}
+func (*typedNilRuntimeStore) Current() string                        { return "" }
+func (*typedNilRuntimeStore) Checkout(context.Context, string) error { return nil }
+func (*typedNilRuntimeStore) Read(context.Context, string) (model.Profile, error) {
+	return model.Profile{}, nil
+}
+
 func TestRuntimeCaptureUsesPrivatePipeAndRejectsUnsafeRoots(t *testing.T) {
 	emitter := NewRuntimeEmitterWithRuntimeStore(nil, zsh.Provider{}, nil, func(*RuntimeRoot) (Store, SecretResolver, error) {
 		return fakeStore{}, nil, nil

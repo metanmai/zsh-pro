@@ -246,10 +246,13 @@ print -r -- '##PATH##'
 for p in $path; do print -r -- "$p"; done
 print -r -- '##OPTIONS##'
 for k in "${(@k)options}"; do [[ "${options[$k]}" == on ]] && print -r -- "$k"; done
+print -rN -- ''
 print -r -- '##ALIASBODIES##'
 for k in "${(@ok)aliases}"; do print -rN -- "$k" "${aliases[$k]}"; done
+print -rN -- ''
 print -r -- '##FUNCTIONBODIES##'
 for k in "${(@ok)functions}"; do print -rN -- "$k" "${functions[$k]}"; done
+print -rN -- ''
 print -r -- '##END##'
 `
 
@@ -277,7 +280,7 @@ func (Provider) parseIntrospect(s string) model.IdentitySet {
 		AliasBodies: map[string]string{}, FunctionBodies: map[string]string{},
 		Available: true,
 	}
-	bodyAt := strings.Index(s, "##ALIASBODIES##\n")
+	bodyAt := strings.Index(s, "\n\x00##ALIASBODIES##\n")
 	prefix := s
 	if bodyAt >= 0 {
 		prefix = s[:bodyAt]
@@ -316,20 +319,19 @@ func (Provider) parseIntrospect(s string) model.IdentitySet {
 	return ids
 }
 
-// parseBodies reads NUL-framed name/body pairs. The section boundary is a NUL
-// followed by the next newline-framed sentinel, so body lines beginning ## are safe.
+// parseBodies reads NUL-framed name/body pairs. A dedicated NUL delimiter
+// precedes each following sentinel, so body text that begins with ## is safe.
 func parseBodies(s, start, end string, dst map[string]string) {
-	startAt := strings.Index(s, start)
+	startMarker := "\x00\x00" + start + "\n"
+	if start == "##ALIASBODIES##" {
+		startMarker = "\n\x00" + start + "\n"
+	}
+	startAt := strings.Index(s, startMarker)
 	if startAt < 0 {
 		return
 	}
-	startAt = strings.IndexByte(s[startAt:], '\n')
-	if startAt < 0 {
-		return
-	}
-	startAt += strings.Index(s, start)
-	data := s[startAt+1:]
-	marker := "\x00" + end
+	data := s[startAt+len(startMarker):]
+	marker := "\x00\x00" + end
 	if i := strings.Index(data, marker); i >= 0 {
 		data = data[:i]
 	}

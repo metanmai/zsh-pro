@@ -146,6 +146,21 @@ func TestOSKeychainTransportRoundTripsWithFakeExecutables(t *testing.T) {
 	}
 }
 
+func TestDecodeKeychainTransportRejectsUnknownRepresentations(t *testing.T) {
+	for _, transport := range []string{
+		"legacy plaintext\n",
+		keychainTransportPrefix + "not-base64!\n",
+	} {
+		_, err := decodeKeychainTransport([]byte(transport))
+		if !errors.Is(err, ErrKeychainTransport) {
+			t.Fatalf("decodeKeychainTransport(%q) = %v, want ErrKeychainTransport", transport, err)
+		}
+		if errors.Is(err, ErrSecretBackendUnavailable) {
+			t.Fatalf("decodeKeychainTransport(%q) misreported backend availability", transport)
+		}
+	}
+}
+
 func installFakeOSKeychain(t *testing.T, binary string) fakeOSKeychain {
 	t.Helper()
 	root := t.TempDir()

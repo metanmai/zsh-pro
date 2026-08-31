@@ -43,7 +43,7 @@ end-to-end apply/deactivate behavior exercised under sandboxed `zsh -f` inside t
 
 ## How a verifier runs this plan
 
-Preconditions (all automated, run from repo root `/home/metanmai/Code/zsh-pro`):
+Preconditions (all automated; run from the repository root):
 
 - `GOTOOLCHAIN=auto go build ./...` succeeds.
 - `GOTOOLCHAIN=auto go test ./...` passes (`-count=1` to defeat cache for the property test).

@@ -214,11 +214,11 @@ func decodeKeychainTransport(output []byte) (string, error) {
 	transport := strings.TrimSuffix(string(output), "\n")
 	transport = strings.TrimSuffix(transport, "\r")
 	if !strings.HasPrefix(transport, keychainTransportPrefix) {
-		return "", ErrSecretBackendUnavailable
+		return "", ErrKeychainTransport
 	}
 	value, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(transport, keychainTransportPrefix))
 	if err != nil {
-		return "", ErrSecretBackendUnavailable
+		return "", ErrKeychainTransport
 	}
 	return string(value), nil
 }
